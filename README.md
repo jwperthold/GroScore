@@ -143,9 +143,7 @@ groscore/
 
 If you use GroScore in your research, please cite:
 
-```
-[Citation information to be added]
-```
+> Perthold, J. W.; Oostenbrink, C. GroScore: Accurate Scoring of Protein–Protein Binding Poses Using Explicit-Solvent Free-Energy Calculations. *J. Chem. Inf. Model.* **2019**, *59* (12), 5074–5085. https://doi.org/10.1021/acs.jcim.9b00687
 
 ## License
 
