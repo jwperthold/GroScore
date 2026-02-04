@@ -22,9 +22,13 @@ do
   MAXRUNS=$b
 done < run.gs
 if [[ ! -f bindfwd_1.gro ]]; then
-  echo -e "16\n" | gmx pdb2gmx -f input.pdb -water spc -vsite hydrogens -ignh -missing -o conf.gro
+  # Renumber PDB to have unique sequential residue numbers across chains
+  python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
+  echo -e "16\n" | gmx pdb2gmx -f renumbered.pdb -water spc -vsite hydrogens -ignh -missing -o conf.gro
 fi
-python3 ../../utils/extract_chains.py -f input.pdb -c $PROTBCHAINS
+if [[ ! -f chain_map.gs ]]; then
+  python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
+fi
 bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
 if [[ $bl -eq 0 ]]; then
   # initial checks, prepare MD simulations
