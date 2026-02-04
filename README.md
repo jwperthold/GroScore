@@ -40,14 +40,16 @@ Ensure GROMACS and SLURM are available in your environment.
 
 ### 1. Prepare Input Files
 
-Create a structure parameter file (`sp.gs`) with your protein structures:
+Create a structure parameter file (`sp.gs`) specifying which PDB chain(s) to pull away as "protein B":
 
 ```
-# Structure ID    Chain B Start Residue
-1                 150
-2                 142
-3                 165
+# Structure_ID    Chains_for_Protein_B
+1                 B
+2                 B,C
+3                 D
 ```
+
+Each structure directory (e.g., `1/`, `2/`, `3/`) must contain an `input.pdb` file with the protein complex. The chain identifier(s) in the second column specify which chain(s) will be pulled away during the SMD simulations.
 
 ### 2. Run GroScore
 
@@ -105,6 +107,7 @@ groscore/
 │   ├── npt*.mdp         # NPT equilibration
 │   └── bind*.mdp        # SMD pulling parameters
 └── utils/
+    ├── extract_chains.py        # Chain-to-residue mapping from PDB
     ├── check_brokenloop.py      # Loop connectivity validation
     ├── check_entangledloops.py  # Topological knot detection
     ├── make_cutout.py           # Interface region extraction

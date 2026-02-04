@@ -39,6 +39,7 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
 | Script | Purpose |
 |--------|---------|
+| `extract_chains.py` | Extracts chain info from PDB and generates residue map for protein B |
 | `check_brokenloop.py` | Validates protein loop connectivity before simulation |
 | `check_entangledloops.py` | Detects topological knots that would invalidate results |
 | `make_cutout.py` | Extracts interface region from full protein structures |
@@ -67,10 +68,26 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 - Keep cutoff for interface extraction: 2.0 nm
 - Ion concentration: 0.15 M NaCl
 
+## Structure Parameter File (sp.gs)
+
+The `sp.gs` file specifies which structures to analyze and which PDB chain(s) constitute "protein B" (the protein to be pulled away):
+
+```
+# Structure_ID  Chains_for_Protein_B
+1               B
+2               B,C
+3               D
+```
+
+- **Structure_ID**: Directory name containing `input.pdb`
+- **Chains_for_Protein_B**: Comma-separated PDB chain identifiers to pull away
+
+The `extract_chains.py` utility reads the PDB file and generates `chain_map.gs` containing residue numbers for protein B, which other utilities use for protein separation.
+
 ## Code Patterns
 
 - File parsing filters comments with `if not line.strip().startswith("#")`
 - Large arrays pre-allocated (1,000,000 elements) then sliced to actual size
 - Distance calculations use explicit 3D Euclidean formula
 - Exit codes: 0 (success), 1 (failure); status strings: "OK", "BROKEN", "ENTANGLED"
-- Protein chains divided at configurable residue boundary (`-s/--startb` parameter)
+- Protein separation uses chain map file (`-m/--chainmap` parameter) containing residue numbers for protein B
