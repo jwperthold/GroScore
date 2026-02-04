@@ -11,9 +11,9 @@ GroScore is a computational chemistry toolkit for estimating binding free energi
 
 ## Tech Stack
 
-- Python 3 with NumPy
+- Python 3.13 with NumPy 2.3
 - GROMACS 2019.5 (external MD engine)
-- SLURM job scheduler for HPC execution
+- SLURM 23.11 job scheduler for HPC execution
 - SPC water model for solvation
 
 ## Running GroScore

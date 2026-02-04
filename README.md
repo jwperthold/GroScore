@@ -3,7 +3,7 @@
 **Computational Chemistry Toolkit for Protein-Protein Binding Free Energy Estimation**
 
 [![Version](https://img.shields.io/badge/version-0.82-blue.svg)](https://github.com/your-repo/groscore)
-[![Python](https://img.shields.io/badge/python-3.x-green.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org/)
 [![GROMACS](https://img.shields.io/badge/GROMACS-2019.5-orange.svg)](https://www.gromacs.org/)
 
 GroScore estimates binding free energies between protein pairs using steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
@@ -22,10 +22,10 @@ GroScore estimates binding free energies between protein pairs using steered mol
 
 | Dependency | Version |
 |------------|---------|
-| Python | 3.x |
-| NumPy | - |
+| Python | 3.13 |
+| NumPy | 2.3 |
 | GROMACS | 2019.5 |
-| SLURM | - |
+| SLURM | 23.11 |
 
 ## Installation
 
