@@ -13,13 +13,8 @@
 nt=2
 
 export GMX_MAXBACKUP=-1
-# Read structure ID from mapping file based on array task ID
-STRUCT_ID=$(awk -v idx="$SLURM_ARRAY_TASK_ID" '$1 == idx {print $2}' ../struct_map.gs)
-if [[ -z "$STRUCT_ID" ]]; then
-  echo "Error: Could not find structure ID for array task $SLURM_ARRAY_TASK_ID"
-  exit 1
-fi
-cd $STRUCT_ID
+# Get structure ID from current directory name
+STRUCT_ID=$(basename $(pwd))
 MAXRUNS=0
 while read -r a b c
 do

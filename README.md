@@ -42,40 +42,67 @@ Ensure GROMACS and SLURM are available in your environment.
 
 ## Quick Start
 
-### 1. Prepare Input Files
+### 1. Set Up Project Directory
 
-Create a structure parameter file (`sp.gs`) specifying which PDB chain(s) to pull away as "protein B":
+GroScore runs from a **project subdirectory** that contains your structures. Create a project folder and structure directories:
+
+```bash
+cd groscore
+mkdir -p myproject/6UD7
+mkdir -p myproject/1ABC
+```
+
+### 2. Prepare Input Files
+
+Place an `input.pdb` file in each structure directory:
+
+```
+myproject/
+├── sp.gs              # Structure parameter file
+├── 6UD7/
+│   └── input.pdb      # Protein complex PDB
+└── 1ABC/
+    └── input.pdb
+```
+
+Create `sp.gs` specifying which PDB chain(s) to pull away as "protein B":
 
 ```
 # Structure_ID    Chains_for_Protein_B
-1                 B
-2                 B,C
-3                 D
+6UD7              B
+1ABC              A,B
 ```
 
-Each structure directory (e.g., `1/`, `2/`, `3/`) must contain an `input.pdb` file with the protein complex. The chain identifier(s) in the second column specify which chain(s) will be pulled away during the SMD simulations.
+Structure IDs can be alphanumeric (e.g., PDB IDs) and must match the directory names.
 
-### 2. Run GroScore
+### 3. Run GroScore
+
+Run from within your project directory:
 
 ```bash
-# Run with 10 simulation cycles
-python groscore.py -n 10
-
-# With custom parameter file
-python groscore.py -s myparams.gs -n 10
+cd myproject
+python ../groscore.py -n 10
 ```
 
-### 3. Submit Jobs
+This will:
+- Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
+- Copy `job.run` to each structure directory
+- Create `run.gs` in each structure directory with chain and run parameters
+- Generate and submit `array_submit.run` (SLURM job array script)
 
-After initialization, submit the generated SLURM script:
+### 4. Monitor Progress
+
+GroScore uses SLURM job arrays to run simulations in parallel. Monitor with:
 
 ```bash
-sbatch array_submit.run
+squeue -u $USER
 ```
 
-### 4. Collect Results
+Re-run `python ../groscore.py -n 10` periodically to check progress and collect results.
 
-Results are written to two output files, each using a different statistical method:
+### 5. Collect Results
+
+Results are written to two output files ranked by binding affinity:
 
 | Output File | Method |
 |-------------|--------|

@@ -8,7 +8,7 @@
 #################################
 
 import string, math, array
-import os, sys, glob, re, time, argparse
+import os, sys, glob, re, time, argparse, shutil
 import numpy as np
 
 #------------------------------------------------------
@@ -130,13 +130,20 @@ while j <= args.numruns:
       f.write("%d %s\n"%(i, structids[i]))
       i += 1
     f.close()
-    # Write run.gs for each structure
+    # Write run.gs and copy job.run for each structure
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    job_run_src = os.path.join(script_dir, "job.run")
+    if not os.path.isfile(job_run_src):
+      print("Error: job.run not found in %s"%script_dir)
+      exit(1)
     i = 0
     while i < numstructs:
       if os.path.exists("./%s"%structids[i]):
-        f = open("./%s/run.gs"%structids[i], "a")
+        f = open("./%s/run.gs"%structids[i], "w")
         f.write("%s %d\n"%(structchains[i],args.numruns))
         f.close()
+        # Copy job.run to structure directory
+        shutil.copy(job_run_src, "./%s/job.run"%structids[i])
       else:
         print("Structure %s: directory doesn't exist."%structids[i])
         f = open("results_0.gs", "a")
@@ -144,8 +151,16 @@ while j <= args.numruns:
         f.close()
       i += 1
     #SBATCH array
-    f = open("array_submit.run", "a")
-    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.83\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=0-%d\n./job.run"%(numstructs-1))
+    f = open("array_submit.run", "w")
+    f.write("#!/bin/bash\n")
+    f.write("#SBATCH -J gs_0.83\n")
+    f.write("#SBATCH -n 4\n")
+    f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
+    f.write("\n")
+    f.write("# Read structure ID from mapping file\n")
+    f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
+    f.write("cd $STRUCT_ID\n")
+    f.write("./job.run\n")
     f.close()
     os.system("sbatch array_submit.run")
     print("Submitted all simulation jobs.")
