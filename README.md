@@ -27,6 +27,10 @@ GroScore estimates binding free energies between protein pairs using steered mol
 | GROMACS | 2026.0 |
 | SLURM | 23.11 |
 
+## Force Field
+
+GroScore uses the **GROMOS 54A7** united-atom force field for protein parametrization with **SPC** water model. The force field is automatically selected via `pdb2gmx` during structure preparation.
+
 ## Installation
 
 ```bash
@@ -119,6 +123,8 @@ groscore/
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
+| Force field | GROMOS 54A7 | United-atom protein parametrization |
+| Water model | SPC | Simple point charge water |
 | Interface cutoff | 0.6 nm | Defines protein-protein interface |
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |
