@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 #
-# PLEASE REPORT BUGS, QUESTIONS AND COMMENTS TO JAN.PERTHOLD@BOKU.AC.AT
+# PLEASE REPORT BUGS, QUESTIONS AND COMMENTS TO jan@ackergarten.at
 #
 import string
 import math
 import array
 import os, sys, glob, re, time, argparse
 import numpy as np
-import scipy.stats
-import scipy.optimize
 
 #------------------------------------------------------
 
