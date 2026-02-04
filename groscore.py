@@ -3,7 +3,7 @@
 
 #################################
 #                               #
-#         GroScore 0.82         #
+#         GroScore 0.83         #
 #                               #
 #################################
 
@@ -97,7 +97,7 @@ def countlines(filepath):
 print("")
 print("#################################")
 print("#                               #")
-print("#         GroScore 0.82         #")
+print("#         GroScore 0.83         #")
 print("#                               #")
 print("#################################")
 print("")
@@ -133,7 +133,7 @@ while j <= args.numruns:
       i += 1
     #SBATCH array
     f = open("array_submit.run", "a")
-    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.82\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=%d-%d\n./job.run"%(structnums[0],structnums[-1]))
+    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.83\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=%d-%d\n./job.run"%(structnums[0],structnums[-1]))
     f.close()
     os.system("sbatch array_submit.run")
     print("Submitted all simulation jobs.")

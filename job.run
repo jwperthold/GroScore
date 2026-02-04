@@ -5,7 +5,7 @@
 
 #################################
 #                               #
-#         GroScore 0.81a        #
+#         GroScore 0.83         #
 #    jan.perthold@boku.ac.at    #
 #                               #
 #################################
@@ -21,7 +21,7 @@ do
   MAXRUNS=$b
 done < run.gs
 if [[ ! -f bindfwd_1.gro ]]; then
-  echo -e "0\n0\n0\n0\n15\n" | gmx pdb2gmx -f input.pdb -water spc -vsite hydrogens -ignh -missing -o conf.gro
+  echo -e "16\n" | gmx pdb2gmx -f input.pdb -water spc -vsite hydrogens -ignh -missing -o conf.gro
 fi
 python3 ../../utils/extract_chains.py -f input.pdb -c $PROTBCHAINS
 bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
@@ -31,7 +31,7 @@ if [[ $bl -eq 0 ]]; then
     echo "npt.gro not found, equilibrating system."
     python3 ../../utils/make_cutout.py -m chain_map.gs
     # re-solvate cutout
-    echo -e "0\n0\n0\n0\n15\n" | gmx pdb2gmx -f cutout.pdb -water spc -vsite hydrogens -ignh -missing -o conf_cutout.gro
+    echo -e "16\n" | gmx pdb2gmx -f cutout.pdb -water spc -vsite hydrogens -ignh -missing -o conf_cutout.gro
     gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     gmx grompp -f ../../settings/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 1
     gmx mdrun -nt $nt -deffnm emin_vac
