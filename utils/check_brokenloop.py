@@ -13,8 +13,25 @@ import numpy as np
 
 parser = argparse.ArgumentParser(description="Calulate necesaary rotations to align CA-COMS with the z-axis.")
 parser.add_argument('-f','--confile', type=str, default="conf.gro", required=True, help="GROMACS coordinate file.")
-parser.add_argument('-s','--startb', type=int, default="24", required=True, help="Start residue for protein B.")
+parser.add_argument('-m','--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B.")
 args=parser.parse_args()
+
+#------------------------------------------------------
+
+def read_chain_map(filepath):
+  """Read chain_map.gs file and return set of residue numbers belonging to protein B."""
+  residues_b = set()
+  if os.path.isfile(filepath):
+    with open(filepath, "r") as f:
+      for line in f:
+        if not line.strip().startswith("#"):
+          try:
+            residues_b.add(int(line.strip()))
+          except (ValueError, IndexError):
+            pass
+  return residues_b
+
+residues_b = read_chain_map(args.chainmap)
 
 #------------------------------------------------------
 
@@ -42,12 +59,12 @@ if os.path.isfile(args.confile):
         try:
           s = re.search(r"\d+(\.\d+)?", tmp[0])
           tmp[0] = s.group(0)
-          if int(tmp[0]) < args.startb and tmp[1] == "CA":
+          if int(tmp[0]) not in residues_b and tmp[1] == "CA":
             num.append(int(tmp[0]))
             xC.append(float(tmp[3]))
             yC.append(float(tmp[4]))
             zC.append(float(tmp[5]))
-          if int(tmp[0]) >= args.startb and tmp[1] == "CA":
+          if int(tmp[0]) in residues_b and tmp[1] == "CA":
             num2.append(int(tmp[0]))
             xC2.append(float(tmp[3]))
             yC2.append(float(tmp[4]))
@@ -92,12 +109,12 @@ if os.path.isfile(args.confile):
         try:
           s = re.search(r"\d+(\.\d+)?", tmp[0])
           tmp[0] = s.group(0)
-          if int(tmp[0]) < args.startb and linecount > 1:
+          if int(tmp[0]) not in residues_b and linecount > 1:
             num.append(int(tmp[0]))
             xC.append(float(tmp[3]))
             yC.append(float(tmp[4]))
             zC.append(float(tmp[5]))
-          if int(tmp[0]) >= args.startb and linecount > 1:
+          if int(tmp[0]) in residues_b and linecount > 1:
             num2.append(int(tmp[0]))
             xC2.append(float(tmp[3]))
             yC2.append(float(tmp[4]))

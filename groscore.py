@@ -22,7 +22,7 @@ args=parser.parse_args()
 
 def readstructparams(filepath):
   num = []
-  start = []
+  chains = []
   if os.path.isfile(filepath):
     with open(filepath, "r") as f:
       for line in f:
@@ -30,17 +30,11 @@ def readstructparams(filepath):
           tmp = line.split()
           try:
             num.append(int(tmp[0]))
-            start.append(int(tmp[1]))
+            chains.append(tmp[1])
           except (ValueError, IndexError, AttributeError):
             i = 0
-  if len(num) == len(start):
-    params = np.zeros(shape=(len(num),3))
-    i = 0
-    while i < len(num):
-      params[i,0] = num[i]
-      params[i,1] = start[i]
-      i += 1
-    return params
+  if len(num) == len(chains):
+    return num, chains
   else:
     return False
 
@@ -108,13 +102,14 @@ print("#                               #")
 print("#################################")
 print("")
 
-structparams = readstructparams(args.structparams)
-calcstruct = np.zeros(shape=(structparams.shape[0]))
+structnums, structchains = readstructparams(args.structparams)
+numstructs = len(structnums)
+calcstruct = np.zeros(shape=(numstructs))
 calcstruct[:] = 1.0
-frenstruct = np.zeros(shape=(structparams.shape[0],args.numruns))
+frenstruct = np.zeros(shape=(numstructs,args.numruns))
 frenstruct[:,:] = "NaN"
 print("Reading input parameters finished.")
-print("GroScore will calculate a binding free energy estimate for " + str(structparams.shape[0]) + " structures.")
+print("GroScore will calculate a binding free energy estimate for " + str(numstructs) + " structures.")
 print("")
 
 j = 0
@@ -125,20 +120,20 @@ while j <= args.numruns:
     f.write("# Results for simulation fitness:\n")
     f.close()
     i = 0
-    while i < structparams.shape[0]:
-      if os.path.exists("./%.0f"%structparams[i,0]):
-        f = open("./%.0f/run.gs"%structparams[i,0], "a")
-        f.write("%.0f %.0f\n"%(structparams[i,1],args.numruns))
+    while i < numstructs:
+      if os.path.exists("./%d"%structnums[i]):
+        f = open("./%d/run.gs"%structnums[i], "a")
+        f.write("%s %d\n"%(structchains[i],args.numruns))
         f.close()
       else:
-        print("Structure %.0f: directory doesn't exist."%structparams[i,0])
+        print("Structure %d: directory doesn't exist."%structnums[i])
         f = open("results_0.gs", "a")
-        f.write("%.0f NODIR\n"%structparams[i,0])
+        f.write("%d NODIR\n"%structnums[i])
         f.close()
       i += 1
     #SBATCH array
     f = open("array_submit.run", "a")
-    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.82\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=%.0f-%.0f\n./job.run"%(structparams[0,0],structparams[structparams.shape[0]-1,0]))
+    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.82\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=%d-%d\n./job.run"%(structnums[0],structnums[-1]))
     f.close()
     os.system("sbatch array_submit.run")
     print("Submitted all simulation jobs.")
@@ -150,14 +145,14 @@ while j <= args.numruns:
     while i < len(results1):
       if results2[i] == "OK":
         l = 0
-        while l < structparams.shape[0]:
-          if structparams[l,0] == results1[i]:
+        while l < numstructs:
+          if structnums[l] == results1[i]:
             calcstruct[l] = 1
           l += 1
       else:
         l = 0
-        while l < structparams.shape[0]:
-          if structparams[l,0] == results1[i]:
+        while l < numstructs:
+          if structnums[l] == results1[i]:
             calcstruct[l] = 0
           l += 1
       i += 1
@@ -174,8 +169,8 @@ while j <= args.numruns:
     while k < len(results1):
       try:
         l = 0
-        while l < structparams.shape[0]:
-          if structparams[l,0] == results1[k]:
+        while l < numstructs:
+          if structnums[l] == results1[k]:
             frenstruct[l,j-1] = results2[k]
           l += 1
       except (IndexError, AttributeError, ValueError):
@@ -186,7 +181,7 @@ while j <= args.numruns:
       # check if last stage has finsihed
       i = 0
       ishould = np.sum(calcstruct)
-      seen = np.zeros(structparams.shape[0])
+      seen = np.zeros(numstructs)
       if os.path.isfile("results_%.0f.gs"%(args.numruns)):
         with open("results_%.0f.gs"%(args.numruns), "r") as f:
           for line in f:
@@ -209,14 +204,14 @@ while j <= args.numruns:
               print("Missing results for structure " +  str(k+1) + "!")
             k += 1
       # now do ranking
-      fren = np.zeros(shape=(structparams.shape[0],2))
-      frencgi = np.zeros(shape=(structparams.shape[0],2))
-      fren[:,0] = structparams[:,0]
-      frencgi[:,0] = structparams[:,0]
+      fren = np.zeros(shape=(numstructs,2))
+      frencgi = np.zeros(shape=(numstructs,2))
+      fren[:,0] = structnums
+      frencgi[:,0] = structnums
       fren[:,1] = "NaN"
       frencgi[:,1] = "NaN"
       i = 0
-      while i < structparams.shape[0]:
+      while i < numstructs:
         k = 0
         pulls = []
         pushes = []
@@ -256,7 +251,7 @@ while j <= args.numruns:
             frencgi[i,1] = tmpcgii
           else:
             frencgi[i,1] = tmpcgi
-        sys.stdout.write("\rCalculating results - " + str(round((float(i)+1.0)/structparams.shape[0]*100.0,1)) + "%")
+        sys.stdout.write("\rCalculating results - " + str(round((float(i)+1.0)/numstructs*100.0,1)) + "%")
         sys.stdout.flush()
         i += 1
       print("")

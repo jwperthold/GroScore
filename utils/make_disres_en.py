@@ -12,8 +12,25 @@ import numpy as np
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Generate distance restarints for pulling and elastic network.")
-parser.add_argument('-s','--startb', type=int, default="2500", required=True, help="Start residue for protein B.")
+parser.add_argument('-m','--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B.")
 args=parser.parse_args()
+
+#------------------------------------------------------
+
+def read_chain_map(filepath):
+  """Read chain_map.gs file and return set of residue numbers belonging to protein B."""
+  residues_b = set()
+  if os.path.isfile(filepath):
+    with open(filepath, "r") as f:
+      for line in f:
+        if not line.strip().startswith("#"):
+          try:
+            residues_b.add(int(line.strip()))
+          except (ValueError, IndexError):
+            pass
+  return residues_b
+
+residues_b = read_chain_map(args.chainmap)
 
 #------------------------------------------------------
 
@@ -45,10 +62,10 @@ if os.path.isfile("npt_center_prot.gro"):
         try:
           s = re.search(r"\d+(\.\d+)?", tmp[0])
           resnum = s.group(0)
-          if int(resnum) < args.startb and tmp[1] != "CL":
+          if int(resnum) not in residues_b and tmp[1] != "CL":
             prot1[len1] = [tmp[0], tmp[1], tmp[2], np.float64(tmp[3]), np.float64(tmp[4]), np.float64(tmp[5])]
             len1 += 1
-          if int(resnum) >= args.startb and tmp[1] != "CL":
+          if int(resnum) in residues_b and tmp[1] != "CL":
             prot2[len2] = [tmp[0], tmp[1], tmp[2], np.float64(tmp[3]), np.float64(tmp[4]), np.float64(tmp[5])]
             len2 += 1
         except (ValueError, IndexError, AttributeError):
