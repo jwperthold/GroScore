@@ -1,0 +1,58 @@
+integrator	           = md		
+nsteps		             = 1000000
+dt		                 = 0.005		
+
+nstxout		             = 200000
+nstxout-compressed     = 100000
+compressed-x-precision = 1000		
+nstvout		             = 100000
+nstfout                = 100000
+nstenergy	             = 2000
+nstlog		             = 10000
+nstcalcenergy          = 2000
+
+comm-mode              = linear
+nstcomm                = 1000
+
+continuation	         = yes		
+constraint_algorithm   = lincs	    
+constraints	           = all-bonds	
+lincs_iter	           = 1		    
+lincs_order	           = 4		    
+
+cutoff-scheme         = verlet
+ns_type		            = grid		
+rlist                 = 1.4		
+rcoulomb	            = 1.4		
+rvdw		              = 1.4		
+
+vdwtype                 = cut-off
+vdw-modifier            = none
+
+coulombtype	            = P3M-AD
+coulomb-modifier        = none
+
+tcoupl		             = V-rescale	            
+tc-grps		             = Protein Non-Protein	
+tau_t		               = 0.1	  0.1           
+ref_t		               = 310 	  310           
+
+pcoupl		             = Parrinello-Rahman
+pcoupltype	           = isotropic
+tau_p		               = 2.0
+ref_p		               = 1.0
+compressibility        = 4.5e-5
+refcoord_scaling       = com
+
+pbc		                 = xyz		    
+
+gen_vel		             = no
+
+pull                    = yes
+pull-print-com1         = no
+pull-print-com2         = no
+pull-print-ref-value    = no
+pull-print-components   = no
+pull-nstxout            = 500
+pull-nstfout            = 500
+
