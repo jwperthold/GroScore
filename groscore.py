@@ -142,8 +142,10 @@ while j <= args.numruns:
         f = open("./%s/run.gs"%structids[i], "w")
         f.write("%s %d\n"%(structchains[i],args.numruns))
         f.close()
-        # Copy job.run to structure directory
-        shutil.copy(job_run_src, "./%s/job.run"%structids[i])
+        # Copy job.run to structure directory and make executable
+        job_run_dst = "./%s/job.run"%structids[i]
+        shutil.copy(job_run_src, job_run_dst)
+        os.chmod(job_run_dst, 0o755)
       else:
         print("Structure %s: directory doesn't exist."%structids[i])
         f = open("results_0.gs", "a")
