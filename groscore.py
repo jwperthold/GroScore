@@ -21,7 +21,7 @@ args=parser.parse_args()
 #------------------------------------------------------
 
 def readstructparams(filepath):
-  num = []
+  ids = []
   chains = []
   if os.path.isfile(filepath):
     with open(filepath, "r") as f:
@@ -29,55 +29,55 @@ def readstructparams(filepath):
         if not line.strip().startswith("#"):
           tmp = line.split()
           try:
-            num.append(int(tmp[0]))
+            ids.append(tmp[0])
             chains.append(tmp[1])
-          except (ValueError, IndexError, AttributeError):
-            i = 0
-  if len(num) == len(chains):
-    return num, chains
+          except (IndexError, AttributeError):
+            pass
+  if len(ids) == len(chains) and len(ids) > 0:
+    return ids, chains
   else:
-    return False
+    return [], []
 
 #------------------------------------------------------
 
 def readtwocolumns(filepath):
-  num = []
-  num2 = []
+  ids = []
+  vals = []
   if os.path.isfile(filepath):
     with open(filepath, "r") as f:
       for line in f:
         if not line.strip().startswith("#"):
           tmp = line.split()
           try:
-            num.append(int(tmp[0]))
-            num2.append(tmp[1])
-          except (ValueError, IndexError, AttributeError):
-            i = 0
-  if len(num) == len(num2):
-    return num, num2
+            ids.append(tmp[0])
+            vals.append(tmp[1])
+          except (IndexError, AttributeError):
+            pass
+  if len(ids) == len(vals):
+    return ids, vals
   else:
     return False
 
 #------------------------------------------------------
 
 def readtwocolumnsfloat(filepath):
-  num = []
-  num2 = []
+  ids = []
+  vals = []
   if os.path.isfile(filepath):
     with open(filepath, "r") as f:
       for line in f:
         if not line.strip().startswith("#"):
           tmp = line.split()
           try:
-            num.append(int(tmp[0]))
-            num2.append(float(tmp[1]))
+            ids.append(tmp[0])
+            vals.append(float(tmp[1]))
           except (IndexError, AttributeError):
-            i = 0
+            pass
           except ValueError:
-            num.append(int(tmp[0]))
-            num2.append("NaN")
-  if len(num) == len(num2):
-    return num, num2
+            ids.append(tmp[0])
+            vals.append("NaN")
+  if len(ids) == len(vals):
+    return ids, vals
   else:
     return False
 
@@ -102,8 +102,11 @@ print("#                               #")
 print("#################################")
 print("")
 
-structnums, structchains = readstructparams(args.structparams)
-numstructs = len(structnums)
+structids, structchains = readstructparams(args.structparams)
+numstructs = len(structids)
+if numstructs == 0:
+  print("Error: No valid structures found in " + args.structparams)
+  exit(1)
 calcstruct = np.zeros(shape=(numstructs))
 calcstruct[:] = 1.0
 frenstruct = np.zeros(shape=(numstructs,args.numruns))
@@ -119,21 +122,30 @@ while j <= args.numruns:
     f = open("results_%.0f.gs"%j, "a")
     f.write("# Results for simulation fitness:\n")
     f.close()
+    # Write structure ID mapping file for job.run
+    f = open("struct_map.gs", "w")
+    f.write("# Array_Index Structure_ID\n")
     i = 0
     while i < numstructs:
-      if os.path.exists("./%d"%structnums[i]):
-        f = open("./%d/run.gs"%structnums[i], "a")
+      f.write("%d %s\n"%(i, structids[i]))
+      i += 1
+    f.close()
+    # Write run.gs for each structure
+    i = 0
+    while i < numstructs:
+      if os.path.exists("./%s"%structids[i]):
+        f = open("./%s/run.gs"%structids[i], "a")
         f.write("%s %d\n"%(structchains[i],args.numruns))
         f.close()
       else:
-        print("Structure %d: directory doesn't exist."%structnums[i])
+        print("Structure %s: directory doesn't exist."%structids[i])
         f = open("results_0.gs", "a")
-        f.write("%d NODIR\n"%structnums[i])
+        f.write("%s NODIR\n"%structids[i])
         f.close()
       i += 1
     #SBATCH array
     f = open("array_submit.run", "a")
-    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.83\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=%d-%d\n./job.run"%(structnums[0],structnums[-1]))
+    f.write("#!/bin/bash\n#\n#SBATCH -J gs_0.83\n#SBATCH -n 4\n#SBATCH --partition NGN\n#SBATCH --gres mps:33\n#SBATCH --mail-type=FAIL\n#SBATCH --mail-user=jan@ackergarten.at\n#SBATCH --array=0-%d\n./job.run"%(numstructs-1))
     f.close()
     os.system("sbatch array_submit.run")
     print("Submitted all simulation jobs.")
@@ -146,13 +158,13 @@ while j <= args.numruns:
       if results2[i] == "OK":
         l = 0
         while l < numstructs:
-          if structnums[l] == results1[i]:
+          if structids[l] == results1[i]:
             calcstruct[l] = 1
           l += 1
       else:
         l = 0
         while l < numstructs:
-          if structnums[l] == results1[i]:
+          if structids[l] == results1[i]:
             calcstruct[l] = 0
           l += 1
       i += 1
@@ -170,7 +182,7 @@ while j <= args.numruns:
       try:
         l = 0
         while l < numstructs:
-          if structnums[l] == results1[k]:
+          if structids[l] == results1[k]:
             frenstruct[l,j-1] = results2[k]
           l += 1
       except (IndexError, AttributeError, ValueError):
@@ -178,38 +190,36 @@ while j <= args.numruns:
       k += 1
     np.savetxt("frenstruct.gs",frenstruct,delimiter="\t")
     if j == args.numruns:
-      # check if last stage has finsihed
+      # check if last stage has finished
       i = 0
-      ishould = np.sum(calcstruct)
-      seen = np.zeros(numstructs)
+      ishould = int(np.sum(calcstruct))
+      seen = set()
       if os.path.isfile("results_%.0f.gs"%(args.numruns)):
         with open("results_%.0f.gs"%(args.numruns), "r") as f:
           for line in f:
             if not line.strip().startswith("#"):
               tmp = line.split()
-            try:
-              test = int(tmp[0])
-              if calcstruct[test-1] == 1 and seen[test-1] == 0.0:
-                seen[test-1] = 1.0
-                i += 1
-            except (ValueError, IndexError, AttributeError):
-              xyz = 0
+              try:
+                struct_id = tmp[0]
+                if struct_id in structids:
+                  idx = structids.index(struct_id)
+                  if calcstruct[idx] == 1 and struct_id not in seen:
+                    seen.add(struct_id)
+                    i += 1
+              except (IndexError, AttributeError):
+                pass
         if i == ishould:
           print("All simulations are done!")
         else:
           print("Simulations are not done yet!")
           k = 0
-          while k < seen.shape[0]:
-            if calcstruct[k] == 1 and seen[k] == 0:
-              print("Missing results for structure " +  str(k+1) + "!")
+          while k < numstructs:
+            if calcstruct[k] == 1 and structids[k] not in seen:
+              print("Missing results for structure %s!"%structids[k])
             k += 1
       # now do ranking
-      fren = np.zeros(shape=(numstructs,2))
-      frencgi = np.zeros(shape=(numstructs,2))
-      fren[:,0] = structnums
-      frencgi[:,0] = structnums
-      fren[:,1] = "NaN"
-      frencgi[:,1] = "NaN"
+      fren = []  # list of (struct_id, score)
+      frencgi = []  # list of (struct_id, score)
       i = 0
       while i < numstructs:
         k = 0
@@ -230,13 +240,15 @@ while j <= args.numruns:
         varpulls = 0
         avgpushes = 0
         varpushes = 0
+        avg_score = float('nan')
+        cgi_score = float('nan')
         if len(pulls) > 0 and len(pushes) > 0:
           # pulls
           avgpulls = np.average(pulls)
           # pushes
           avgpushes = np.average(pushes)
           # combine fwd + rev with averages
-          fren[i,1] = (avgpulls + avgpushes) / 2.0
+          avg_score = (avgpulls + avgpushes) / 2.0
         if len(pulls) > 2 and len(pushes) > 2:
           # pulls
           varpulls = np.var(pulls)
@@ -248,16 +260,24 @@ while j <= args.numruns:
           disti = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgi)
           distii = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgii)
           if disti > distii:
-            frencgi[i,1] = tmpcgii
+            cgi_score = tmpcgii
           else:
-            frencgi[i,1] = tmpcgi
+            cgi_score = tmpcgi
+        fren.append((structids[i], avg_score))
+        frencgi.append((structids[i], cgi_score))
         sys.stdout.write("\rCalculating results - " + str(round((float(i)+1.0)/numstructs*100.0,1)) + "%")
         sys.stdout.flush()
         i += 1
       print("")
       print("")
-      fren = fren[fren[:,1].argsort()]
-      frencgi = frencgi[frencgi[:,1].argsort()]
-      np.savetxt("scores_avg.gs",fren,delimiter="\t")
-      np.savetxt("scores_cgi.gs",frencgi,delimiter="\t")
+      # Sort by score (NaN values go to end)
+      fren.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+      frencgi.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+      # Write output files
+      with open("scores_avg.gs", "w") as f:
+        for struct_id, score in fren:
+          f.write("%s\t%s\n"%(struct_id, score))
+      with open("scores_cgi.gs", "w") as f:
+        for struct_id, score in frencgi:
+          f.write("%s\t%s\n"%(struct_id, score))
   j += 1
