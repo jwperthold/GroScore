@@ -30,7 +30,8 @@ residues_b = set()
 
 with open(args.pdbfile, "r") as f:
     for line in f:
-        if line.startswith("ATOM") or line.startswith("HETATM"):
+        # Only process ATOM records (skip HETATM - ligands, waters, etc.)
+        if line.startswith("ATOM"):
             chain_id = line[21]
             try:
                 orig_resnum = int(line[22:26].strip())
@@ -44,10 +45,10 @@ with open(args.pdbfile, "r") as f:
             except (ValueError, IndexError):
                 pass
 
-# Second pass: write renumbered PDB
+# Second pass: write renumbered PDB (only ATOM records, skip HETATM)
 with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
     for line in fin:
-        if line.startswith("ATOM") or line.startswith("HETATM"):
+        if line.startswith("ATOM"):
             chain_id = line[21]
             try:
                 orig_resnum = int(line[22:26].strip())
@@ -58,8 +59,9 @@ with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
                 fout.write(new_line)
             except (ValueError, IndexError):
                 fout.write(line)
-        else:
+        elif line.startswith("TER") or line.startswith("END"):
             fout.write(line)
+        # Skip HETATM, CONECT, and other non-protein records
 
 # Write chain_map.gs with the new sequential residue numbers for protein B
 with open("chain_map.gs", "w") as f:
