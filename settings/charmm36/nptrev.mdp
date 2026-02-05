@@ -16,7 +16,7 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = h-bonds
+constraints              = all-bonds
 lincs_iter               = 1
 lincs_order              = 4
 

@@ -39,15 +39,15 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 ## Force Fields
 
-GroScore supports two force fields, selectable via the `-ff` option:
+GroScore supports three force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs |
 |-------------|------|-------------|-------------|---------|
 | **GROMOS 54A7** (default) | United-atom | SPC | all-bonds | 1.4 nm |
-| **CHARMM36** (experimental) | All-atom | TIP3P | h-bonds | 1.2 nm |
-| **AMBER19SB** (experimental) | All-atom | OPC | h-bonds | 1.0 nm |
+| **CHARMM36** (experimental) | All-atom | TIP3P | all-bonds | 1.2 nm |
+| **AMBER19SB** (experimental) | All-atom | OPC | all-bonds | 1.0 nm |
 
-All use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
+All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps.
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
