@@ -40,8 +40,8 @@ GroScore supports two force fields, selectable via the `-ff` option:
 | Force Field | Type | Water Model | Constraints | Cutoffs |
 |-------------|------|-------------|-------------|---------|
 | **GROMOS 54A7** (default) | United-atom | SPC | all-bonds | 1.4 nm |
-| **CHARMM36** | All-atom | TIP3P | h-bonds | 1.2 nm |
-| **AMBER19SB** | All-atom | OPC | h-bonds | 1.0 nm |
+| **CHARMM36** (experimental) | All-atom | TIP3P | h-bonds | 1.2 nm |
+| **AMBER19SB** (experimental) | All-atom | OPC | h-bonds | 1.0 nm |
 
 All use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
 
@@ -185,7 +185,7 @@ groscore/
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |
 | Ion concentration | 0.15 M | NaCl for physiological conditions |
-| Minimum fragment size | 3 residues | Ensures stable fragments in cutout mode |
+| Minimum fragment size | 5 residues | Ensures stable fragments in cutout mode |
 
 ## Fragment Handling
 

@@ -157,7 +157,7 @@ def get_resnum(resname):
   return int(digits)
 
 # Minimum fragment length (residues)
-MIN_FRAGMENT_LEN = 3
+MIN_FRAGMENT_LEN = 5
 
 def extend_small_fragments(kept_resnames, all_resnames):
   """Extend fragments smaller than MIN_FRAGMENT_LEN by adding neighboring residues."""
