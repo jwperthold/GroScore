@@ -16,6 +16,9 @@ import numpy as np
 parser = argparse.ArgumentParser(description="Input files for GroScore")
 parser.add_argument('-s','--structparams', type=str, default="sp.gs", required=False, help="GroSscore strucutre parameter file")
 parser.add_argument('-n','--numruns', type=int, default=10, required=True, help="Number of runs GroSscore should perform")
+parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable interface cutout (default)")
+parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
+parser.set_defaults(cutout=True)
 args=parser.parse_args()
 
 #------------------------------------------------------
@@ -140,7 +143,8 @@ while j <= args.numruns:
     while i < numstructs:
       if os.path.exists("./%s"%structids[i]):
         f = open("./%s/run.gs"%structids[i], "w")
-        f.write("%s %d\n"%(structchains[i],args.numruns))
+        cutout_flag = 1 if args.cutout else 0
+        f.write("%s %d %d\n"%(structchains[i],args.numruns,cutout_flag))
         f.close()
         # Copy job.run to structure directory and make executable
         job_run_dst = "./%s/job.run"%structids[i]

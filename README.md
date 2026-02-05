@@ -17,6 +17,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Multiple Scoring Methods** - Two different ranking approaches for robust results
 - **Structure Validation** - Built-in checks for broken loops and topological knots
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
+- **Optional Cutout Mode** - Choose between interface-only (faster) or full-protein simulations
 
 ## Requirements
 
@@ -25,12 +26,14 @@ GroScore estimates binding affinities between protein pairs using short steered 
 | Python | 3.13 |
 | NumPy | 2.3 |
 | SciPy | 1.16 |
+| OpenMM | 8.2 |
+| PDBFixer | 1.9 |
 | GROMACS | 2026.0 |
 | SLURM | 23.11 |
 
 ## Force Field
 
-GroScore uses the **GROMOS 54A7** united-atom force field for protein parametrization with **SPC** water model. The force field is automatically selected via `pdb2gmx` during structure preparation.
+GroScore uses the **GROMOS 54A7** united-atom force field for protein parametrization with **SPC** water model. Heavy hydrogen masses (`-heavyh` flag) are used to enable 4 fs timesteps. The force field is automatically selected via `pdb2gmx` during structure preparation.
 
 ## Installation
 
@@ -85,6 +88,12 @@ cd myproject
 python ../groscore.py -n 10
 ```
 
+**Options:**
+- `-n, --numruns` - Number of pull/push cycles (required)
+- `-s, --structparams` - Structure parameter file (default: `sp.gs`)
+- `--cutout` - Extract interface region only (default, faster)
+- `--no-cutout` - Use full protein structure (slower, more accurate)
+
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
 - Copy `job.run` to each structure directory
@@ -114,8 +123,9 @@ Results are written to two output files ranked by binding affinity:
 
 ```
 Stage 0: Preparation
+├── PDB fixing (missing atoms, non-standard residues)
 ├── Structure validation
-├── PDB conversion
+├── PDB conversion (heavy hydrogen)
 ├── Solvation (SPC water, 0.15 M NaCl)
 └── Equilibration (5-phase NVT + NPT)
 
@@ -139,6 +149,7 @@ groscore/
 │   ├── npt*.mdp         # NPT equilibration
 │   └── bind*.mdp        # SMD pulling parameters
 └── utils/
+    ├── fix_pdb.py               # Fix missing atoms with PDBFixer
     ├── extract_chains.py        # Chain-to-residue mapping from PDB
     ├── check_brokenloop.py      # Loop connectivity validation
     ├── check_entangledloops.py  # Topological knot detection
@@ -153,6 +164,7 @@ groscore/
 |-----------|-------|-------------|
 | Force field | GROMOS 54A7 | United-atom protein parametrization |
 | Water model | SPC | Simple point charge water |
+| Timestep | 4 fs | Integration timestep (heavy hydrogen) |
 | Interface cutoff | 0.6 nm | Defines protein-protein interface |
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |

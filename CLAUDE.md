@@ -11,7 +11,7 @@ GroScore is a computational chemistry toolkit for protein-protein affinity scori
 
 ## Tech Stack
 
-- Python 3.13 with NumPy 2.3 and SciPy 1.16
+- Python 3.13 with NumPy 2.3, SciPy 1.16, OpenMM, and PDBFixer
 - GROMACS 2026.0 (external MD engine)
 - SLURM 23.11 job scheduler for HPC execution
 - GROMOS 54A7 united-atom force field for protein parametrization
@@ -25,7 +25,16 @@ python groscore.py -n 10
 
 # With custom structure parameter file (default: sp.gs)
 python groscore.py -s myparams.gs -n 10
+
+# Disable interface cutout (use full protein structure)
+python groscore.py -n 10 --no-cutout
 ```
+
+**Command-line options:**
+- `-n, --numruns` - Number of pull/push cycles (required)
+- `-s, --structparams` - Structure parameter file (default: `sp.gs`)
+- `--cutout` - Extract interface region only (default, faster)
+- `--no-cutout` - Use full protein structure (slower, more accurate)
 
 After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
@@ -40,6 +49,7 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
 | Script | Purpose |
 |--------|---------|
+| `fix_pdb.py` | Fixes missing atoms and non-standard residues using PDBFixer |
 | `extract_chains.py` | Extracts chain info from PDB and generates residue map for protein B |
 | `check_brokenloop.py` | Validates protein loop connectivity before simulation |
 | `check_entangledloops.py` | Detects topological knots that would invalidate results |
@@ -55,6 +65,18 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
    - `scores_avg.gs` - Simple average of pulls/pushes
    - `scores_cgi.gs` - Crooks Gaussian Intersection
 
+### Cutout Mode
+
+By default (`--cutout`), GroScore extracts only interface-proximal residues for faster simulation:
+```
+conf.gro → make_cutout.py → cutout.pdb → pdb2gmx → conf_cutout.gro → editconf → conf_vacbox.gro
+```
+
+With `--no-cutout`, the full protein structure is used:
+```
+conf.gro → editconf → conf_vacbox.gro
+```
+
 ## File Formats
 
 - `.gs` - GroScore data files (two/three column, `#` for comments)
@@ -64,6 +86,7 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
 ## Key Parameters
 
+- Timestep: 4 fs (heavy hydrogen masses)
 - Interface cutoff: 0.6 nm
 - Elastic network range: 0.4-0.9 nm
 - Keep cutoff for interface extraction: 2.0 nm

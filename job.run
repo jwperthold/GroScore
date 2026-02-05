@@ -16,15 +16,21 @@ export GMX_MAXBACKUP=-1
 # Get structure ID from current directory name
 STRUCT_ID=$(basename $(pwd))
 MAXRUNS=0
+CUTOUT=1
 while read -r a b c
 do
   PROTBCHAINS=$a
   MAXRUNS=$b
+  if [[ -n "$c" ]]; then
+    CUTOUT=$c
+  fi
 done < run.gs
 if [[ ! -f bindfwd_1.gro ]]; then
   # Renumber PDB to have unique sequential residue numbers across chains
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
-  echo -e "16\n" | gmx pdb2gmx -f renumbered.pdb -water spc -vsite hydrogens -ignh -missing -o conf.gro
+  # Fix missing atoms and non-standard residues
+  python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
+  echo -e "16\n" | gmx pdb2gmx -f fixed.pdb -water spc -heavyh -ignh -missing -o conf.gro
 fi
 if [[ ! -f chain_map.gs ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
@@ -34,10 +40,14 @@ if [[ $bl -eq 0 ]]; then
   # initial checks, prepare MD simulations
   if [[ ! -f npt.gro ]]; then
     echo "npt.gro not found, equilibrating system."
-    python3 ../../utils/make_cutout.py -m chain_map.gs
-    # re-solvate cutout
-    echo -e "16\n" | gmx pdb2gmx -f cutout.pdb -water spc -vsite hydrogens -ignh -missing -o conf_cutout.gro
-    gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
+    if [[ $CUTOUT -eq 1 ]]; then
+      python3 ../../utils/make_cutout.py -m chain_map.gs
+      # re-solvate cutout
+      echo -e "16\n" | gmx pdb2gmx -f cutout.pdb -water spc -heavyh -ignh -missing -o conf_cutout.gro
+      gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
+    else
+      gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
+    fi
     gmx grompp -f ../../settings/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 1
     gmx mdrun -nt $nt -deffnm emin_vac
     et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
