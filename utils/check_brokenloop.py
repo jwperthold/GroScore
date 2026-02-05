@@ -3,15 +3,13 @@
 # PLEASE REPORT BUGS, QUESTIONS AND COMMENTS TO JAN.PERTHOLD@BOKU.AC.AT
 #
 
-import string
-import math
-import array
-import os, sys, glob, re, time, argparse
+import os, sys, re, argparse
 import numpy as np
+from scipy.spatial.distance import cdist
 
 #------------------------------------------------------
 
-parser = argparse.ArgumentParser(description="Calulate necesaary rotations to align CA-COMS with the z-axis.")
+parser = argparse.ArgumentParser(description="Check for broken loops at protein-protein interface.")
 parser.add_argument('-f','--confile', type=str, default="conf.gro", required=True, help="GROMACS coordinate file.")
 parser.add_argument('-m','--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B.")
 args=parser.parse_args()
@@ -35,71 +33,16 @@ residues_b = read_chain_map(args.chainmap)
 
 #------------------------------------------------------
 
-def getdistance(x1, y1, z1, x2, y2, z2):
-  """ Gives the distance between two points in 3D space.
-  """  
-  return math.sqrt((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)+(z1-z2)*(z1-z2))
+# Read coordinate file in a single pass, collecting both CA and all atoms
+ca1_resnums = []
+ca1_coords = []
+ca2_resnums = []
+ca2_coords = []
+all1_resnums = []
+all1_coords = []
+all2_resnums = []
+all2_coords = []
 
-#------------------------------------------------------
-
-# read coordinate file - only CAs
-num = []
-num2 = []
-xC = []
-xC2 = []
-yC = []
-yC2 = []
-zC = []
-zC2 = []
-if os.path.isfile(args.confile):
-  with open(args.confile, "r") as f:
-    for line in f:
-      if not line.strip().startswith("#"):
-        tmp = line.split()
-        try:
-          s = re.search(r"\d+(\.\d+)?", tmp[0])
-          tmp[0] = s.group(0)
-          if int(tmp[0]) not in residues_b and tmp[1] == "CA":
-            num.append(int(tmp[0]))
-            xC.append(float(tmp[3]))
-            yC.append(float(tmp[4]))
-            zC.append(float(tmp[5]))
-          if int(tmp[0]) in residues_b and tmp[1] == "CA":
-            num2.append(int(tmp[0]))
-            xC2.append(float(tmp[3]))
-            yC2.append(float(tmp[4]))
-            zC2.append(float(tmp[5]))
-        except (ValueError, IndexError, AttributeError):
-          i=0
-
-foundbrokenloops = []
-foundbrokenloops2 = []
-
-i = 0
-while i < len(num)-1:
-  if getdistance(xC[i],yC[i],zC[i],xC[i+1],yC[i+1],zC[i+1]) > 0.4:
-    #loop is broken
-    foundbrokenloops.append(num[i])
-    foundbrokenloops.append(num[i+1])
-  i += 1
-
-i = 0
-while i < len(num2)-1:
-  if getdistance(xC2[i],yC2[i],zC2[i],xC2[i+1],yC2[i+1],zC2[i+1]) > 0.4:
-    #loop is broken
-    foundbrokenloops2.append(num2[i])
-    foundbrokenloops2.append(num2[i+1])
-  i += 1
-
-#reload file with all atoms
-del num[:]
-del num2[:]
-del xC[:]
-del xC2[:]
-del yC[:]
-del yC2[:]
-del zC[:]
-del zC2[:]
 linecount = 0
 if os.path.isfile(args.confile):
   with open(args.confile, "r") as f:
@@ -108,96 +51,100 @@ if os.path.isfile(args.confile):
         tmp = line.split()
         try:
           s = re.search(r"\d+(\.\d+)?", tmp[0])
-          tmp[0] = s.group(0)
-          if int(tmp[0]) not in residues_b and linecount > 1:
-            num.append(int(tmp[0]))
-            xC.append(float(tmp[3]))
-            yC.append(float(tmp[4]))
-            zC.append(float(tmp[5]))
-          if int(tmp[0]) in residues_b and linecount > 1:
-            num2.append(int(tmp[0]))
-            xC2.append(float(tmp[3]))
-            yC2.append(float(tmp[4]))
-            zC2.append(float(tmp[5]))
+          resnum = int(s.group(0))
+          x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
+          atomname = tmp[1]
+
+          if resnum not in residues_b:
+            if atomname == "CA":
+              ca1_resnums.append(resnum)
+              ca1_coords.append([x, y, z])
+            if linecount > 1:
+              all1_resnums.append(resnum)
+              all1_coords.append([x, y, z])
+          else:
+            if atomname == "CA":
+              ca2_resnums.append(resnum)
+              ca2_coords.append([x, y, z])
+            if linecount > 1:
+              all2_resnums.append(resnum)
+              all2_coords.append([x, y, z])
         except (ValueError, IndexError, AttributeError):
-          i=0
+          pass
         linecount += 1
 
-#print str(foundbrokenloops)
-#print str(foundbrokenloops2)
+# Convert to numpy arrays
+ca1_coords = np.array(ca1_coords) if ca1_coords else np.empty((0, 3))
+ca2_coords = np.array(ca2_coords) if ca2_coords else np.empty((0, 3))
+all1_coords = np.array(all1_coords) if all1_coords else np.empty((0, 3))
+all2_coords = np.array(all2_coords) if all2_coords else np.empty((0, 3))
 
-#first partner
-bothnear = 0
-i = 0
-while i < len(foundbrokenloops):
-  #search in first end
-  j = 0
-  while j < len(num):
-    if num[j] == foundbrokenloops[i]:
-      k = 0
-      while k < len(num2):
-        if getdistance(xC[j],yC[j],zC[j],xC2[k],yC2[k],zC2[k]) < 0.4:
-          #print str(num2[k])
-          bothnear = 1
-          break
-        k += 1
-    if bothnear == 1:
-      break
-    j += 1
-  #search in second end if we found something in first end
-  if bothnear == 1:
-    j = 0
-    while j < len(num):
-      if num[j] == foundbrokenloops[i+1]:
-        k = 0
-        while k < len(num2):
-          if getdistance(xC[j],yC[j],zC[j],xC2[k],yC2[k],zC2[k]) < 0.4:
-            #print str(num2[k])
-            bothnear = 2
-            break
-          k += 1
-      if bothnear == 2:
-        break
-      j += 1
-  i += 2
+# Find broken loops (consecutive CAs > 0.4 nm apart)
+def find_broken_loops(resnums, coords):
+  """Find pairs of residue numbers where consecutive CAs are > 0.4 nm apart."""
+  broken = []
+  if len(coords) < 2:
+    return broken
 
-#second partner
-if bothnear != 2:
-  bothnear = 0
-  i = 0
-  while i < len(foundbrokenloops2):
-    #search in first end
-    j = 0
-    while j < len(num2):
-      if num2[j] == foundbrokenloops2[i]:
-        k = 0
-        while k < len(num):
-          if getdistance(xC[k],yC[k],zC[k],xC2[j],yC2[j],zC2[j]) < 0.4:
-            #print str(num[k])
-            bothnear = 1
-            break
-          k += 1
-      if bothnear == 1:
-        break
-      j += 1
-    #search in second end if we found something in first end
-    if bothnear == 1:
-      j = 0
-      while j < len(num2):
-        if num2[j] == foundbrokenloops2[i+1]:
-          k = 0
-          while k < len(num):
-            if getdistance(xC[k],yC[k],zC[k],xC2[j],yC2[j],zC2[j]) < 0.4:
-              #print str(num[k])
-              bothnear = 2
-              break
-            k += 1
-        if bothnear == 2:
-          break
-        j += 1
-    i += 2
+  # Calculate distances between consecutive CAs
+  diffs = coords[1:] - coords[:-1]
+  distances = np.sqrt(np.sum(diffs**2, axis=1))
 
-if bothnear == 2:
+  # Find where distance > 0.4
+  broken_indices = np.where(distances > 0.4)[0]
+  for idx in broken_indices:
+    broken.append((resnums[idx], resnums[idx + 1]))
+
+  return broken
+
+foundbrokenloops1 = find_broken_loops(ca1_resnums, ca1_coords)
+foundbrokenloops2 = find_broken_loops(ca2_resnums, ca2_coords)
+
+# Check if both ends of a broken loop are near atoms of the other protein
+def check_broken_loop_near_other(broken_loops, own_resnums, own_coords, other_coords, cutoff=0.4):
+  """Check if both ends of any broken loop are within cutoff of the other protein."""
+  if len(broken_loops) == 0 or len(other_coords) == 0:
+    return False
+
+  # Build index: resnum -> list of atom indices
+  resnum_to_indices = {}
+  for i, resnum in enumerate(own_resnums):
+    if resnum not in resnum_to_indices:
+      resnum_to_indices[resnum] = []
+    resnum_to_indices[resnum].append(i)
+
+  for res1, res2 in broken_loops:
+    # Check if any atom of res1 is near any atom of other protein
+    res1_near = False
+    if res1 in resnum_to_indices:
+      res1_indices = resnum_to_indices[res1]
+      res1_coords = own_coords[res1_indices]
+      # Calculate min distance from res1 atoms to all other protein atoms
+      distances = cdist(res1_coords, other_coords)
+      if np.any(distances < cutoff):
+        res1_near = True
+
+    if not res1_near:
+      continue
+
+    # Check if any atom of res2 is near any atom of other protein
+    if res2 in resnum_to_indices:
+      res2_indices = resnum_to_indices[res2]
+      res2_coords = own_coords[res2_indices]
+      distances = cdist(res2_coords, other_coords)
+      if np.any(distances < cutoff):
+        return True  # Both ends are near
+
+  return False
+
+# Check broken loops in protein 1 against protein 2
+bothnear = check_broken_loop_near_other(foundbrokenloops1, all1_resnums, all1_coords, all2_coords)
+
+# If not found, check broken loops in protein 2 against protein 1
+if not bothnear:
+  bothnear = check_broken_loop_near_other(foundbrokenloops2, all2_resnums, all2_coords, all1_coords)
+
+if bothnear:
   print("1")
 else:
   print("0")

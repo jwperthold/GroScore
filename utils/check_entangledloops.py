@@ -3,15 +3,13 @@
 # PLEASE REPORT BUGS, QUESTIONS AND COMMENTS TO JAN.PERTHOLD@BOKU.AC.AT
 #
 
-import string
-import math
-import array
-import os, sys, glob, re, time, argparse
+import os, sys, re, argparse
 import numpy as np
+from scipy.spatial.distance import cdist
 
 #------------------------------------------------------
 
-parser = argparse.ArgumentParser(description="Calulate necesaary rotations to align CA-COMS with the z-axis.")
+parser = argparse.ArgumentParser(description="Check for entangled loops between proteins.")
 parser.add_argument('-f','--confile', type=str, default="conf.gro", required=True, help="GROMACS coordinate file.")
 parser.add_argument('-m','--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B.")
 args=parser.parse_args()
@@ -35,27 +33,10 @@ residues_b = read_chain_map(args.chainmap)
 
 #------------------------------------------------------
 
-def getdistance(x1, y1, z1, x2, y2, z2):
-  """ Gives the distance between two points in 3D space.
-  """  
-  return math.sqrt((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)+(z1-z2)*(z1-z2))
+# Read coordinate file - only CAs
+ca1_coords = []
+ca2_coords = []
 
-def getmeanpos(x1, y1, z1, x2, y2, z2):
-  """ Returns the mean position of two points in 3D space.
-  """  
-  return 0.5*(x1+x2), 0.5*(y1+y2), 0.5*(z1+z2)
-
-#------------------------------------------------------
-
-# read coordinate file - only CAs
-num = []
-num2 = []
-xC = []
-xC2 = []
-yC = []
-yC2 = []
-zC = []
-zC2 = []
 if os.path.isfile(args.confile):
   with open(args.confile, "r") as f:
     for line in f:
@@ -63,66 +44,119 @@ if os.path.isfile(args.confile):
         tmp = line.split()
         try:
           s = re.search(r"\d+(\.\d+)?", tmp[0])
-          tmp[0] = s.group(0)
-          if int(tmp[0]) not in residues_b and tmp[1] == "CA":
-            num.append(int(tmp[2]))
-            xC.append(float(tmp[3]))
-            yC.append(float(tmp[4]))
-            zC.append(float(tmp[5]))
-          if int(tmp[0]) in residues_b and tmp[1] == "CA":
-            num2.append(int(tmp[2]))
-            xC2.append(float(tmp[3]))
-            yC2.append(float(tmp[4]))
-            zC2.append(float(tmp[5]))
+          resnum = int(s.group(0))
+          if tmp[1] == "CA":
+            coords = [float(tmp[3]), float(tmp[4]), float(tmp[5])]
+            if resnum not in residues_b:
+              ca1_coords.append(coords)
+            else:
+              ca2_coords.append(coords)
         except (ValueError, IndexError, AttributeError):
-          i=0
+          pass
 
-score = 0
+# Convert to numpy arrays
+coords1 = np.array(ca1_coords, dtype=np.float64)
+coords2 = np.array(ca2_coords, dtype=np.float64)
 
-i = 5
-outeroutermax = 0
-while i < 21:
-  #all ms of first partner
-  outermax = 0
-  j = 0
-  while j < len(num)-i:
-    #all threads of first partner
-    outer = 0
-    #if outer thread ends are within 1 nm
-    if getdistance(xC[j],yC[j],zC[j],xC[i+j-1],yC[i+j-1],zC[i+j-1]) < 1.0:
-      k = j
-      while k < i+j:
-        l = 5
-        innermax = 0
-        while l < 21:
-          #all ms of second partner
-          m = 0
-          while m < len(num2)-l:
-            #all threads of second partner
-            #if inner thread ends are within 1 nm AND Cas of the central residues of both threads are within 1 nm
-            if getdistance(xC2[m],yC2[m],zC2[m],xC2[l+m-1],yC2[l+m-1],zC2[l+m-1]) < 1.0 and getdistance(xC[i//2+j-1],yC[i//2+j-1],zC[i//2+j-1],xC2[l//2+m-1],yC2[l//2+m-1],zC2[l//2+m-1]) < 1.0:
-              inner = 0
-              n = m
-              while n < l+m:
-                a1, a2, a3 = getmeanpos(xC[k],yC[k],zC[k],xC[k+1],yC[k+1],zC[k+1])
-                b1, b2, b3 = getmeanpos(xC2[n],yC2[n],zC2[n],xC2[n+1],yC2[n+1],zC2[n+1])
-                dif = np.array([a1,a2,a3]) - np.array([b1,b2,b3])
-                inner += np.dot((dif / (np.linalg.norm(dif)**3)), np.cross(np.array([xC[k+1]-xC[k],yC[k+1]-yC[k],zC[k+1]-zC[k]]),np.array([xC2[n+1]-xC2[n],yC2[n+1]-yC2[n],zC2[n+1]-zC2[n]])))
-                n += 1
-              if innermax < abs(inner):
-                innermax = abs(inner) 
-            m += 1
-          l += 1
-        outer += innermax
-        k += 1
-    if outermax < abs(outer):
+len1 = len(coords1)
+len2 = len(coords2)
+
+# Pre-compute segment vectors (CA[i+1] - CA[i]) for both proteins
+if len1 > 1:
+  segments1 = coords1[1:] - coords1[:-1]  # Shape: (len1-1, 3)
+else:
+  segments1 = np.empty((0, 3))
+
+if len2 > 1:
+  segments2 = coords2[1:] - coords2[:-1]  # Shape: (len2-1, 3)
+else:
+  segments2 = np.empty((0, 3))
+
+# Pre-compute midpoints of segments
+if len1 > 1:
+  midpoints1 = 0.5 * (coords1[1:] + coords1[:-1])
+else:
+  midpoints1 = np.empty((0, 3))
+
+if len2 > 1:
+  midpoints2 = 0.5 * (coords2[1:] + coords2[:-1])
+else:
+  midpoints2 = np.empty((0, 3))
+
+# Pre-compute distances between all CA pairs for thread endpoint checks
+# and distances between thread centers
+if len1 > 0 and len2 > 0:
+  ca_distances_within1 = cdist(coords1, coords1)
+  ca_distances_within2 = cdist(coords2, coords2)
+  ca_distances_cross = cdist(coords1, coords2)
+
+outeroutermax = 0.0
+
+# Thread lengths from 5 to 20
+for thread_len1 in range(5, 21):
+  outermax = 0.0
+
+  # All starting positions for threads in protein 1
+  for j in range(len1 - thread_len1):
+    # Check if thread ends are within 1 nm
+    if ca_distances_within1[j, j + thread_len1 - 1] >= 1.0:
+      continue
+
+    outer = 0.0
+    center1_idx = j + thread_len1 // 2 - 1  # Center CA of thread 1
+
+    # For each segment k in this thread
+    for k in range(j, j + thread_len1):
+      if k >= len1 - 1:
+        break
+
+      innermax = 0.0
+
+      # Thread lengths for protein 2
+      for thread_len2 in range(5, 21):
+        # All starting positions for threads in protein 2
+        for m in range(len2 - thread_len2):
+          # Check if thread ends are within 1 nm AND centers are within 1 nm
+          center2_idx = m + thread_len2 // 2 - 1
+
+          if ca_distances_within2[m, m + thread_len2 - 1] >= 1.0:
+            continue
+          if ca_distances_cross[center1_idx, center2_idx] >= 1.0:
+            continue
+
+          inner = 0.0
+
+          # Compute linking number contribution for all segment pairs
+          # between segment k of thread 1 and all segments in thread 2
+          for n in range(m, m + thread_len2):
+            if n >= len2 - 1:
+              break
+
+            # Difference vector between midpoints
+            dif = midpoints1[k] - midpoints2[n]
+            norm = np.linalg.norm(dif)
+
+            if norm > 0:
+              # Cross product of segment vectors
+              cross = np.cross(segments1[k], segments2[n])
+              # Gauss linking integral contribution
+              inner += np.dot(dif / (norm ** 3), cross)
+
+          if abs(inner) > innermax:
+            innermax = abs(inner)
+
+      outer += innermax
+
+    if abs(outer) > outermax:
       outermax = abs(outer)
-    j += 1
-  if outeroutermax < outermax:
-    outeroutermax = outermax
-  i += 1
 
-if (1/(4*3.14159265359)*outeroutermax) > 1.0:
+  if outermax > outeroutermax:
+    outeroutermax = outermax
+
+# Check if linking number exceeds threshold
+linking_number = (1.0 / (4.0 * 3.14159265359)) * outeroutermax
+
+if linking_number > 1.0:
   print("1")
 else:
   print("0")
