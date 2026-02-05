@@ -36,7 +36,7 @@ python groscore.py -n 10 --no-cutout
 **Command-line options:**
 - `-n, --numruns` - Number of pull/push cycles (required)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `charmm36` (default) or `gromos54a7`
+- `-ff, --forcefield` - Force field: `gromos54a7` (default) or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 
