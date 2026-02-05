@@ -4,18 +4,11 @@ emstep                   = 0.01
 nsteps                   = 5000
 
 nstlist                  = 1
-cutoff-scheme            = Verlet
+cutoff-scheme            = verlet
 ns_type                  = grid
-rlist                    = 1.2
-rcoulomb                 = 1.2
-rvdw                     = 1.2
-rvdw-switch              = 1.0
-
-vdwtype                  = cutoff
-vdw-modifier             = force-switch
-
-coulombtype              = PME
-
-DispCorr                 = no
-
+coulombtype              = reaction-field
+epsilon-rf               = 61
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
 pbc                      = xyz
