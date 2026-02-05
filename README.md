@@ -1,5 +1,9 @@
 # GroScore
 
+<p align="center">
+  <img src="logo.png" alt="GroScore Logo" width="200">
+</p>
+
 **Computational Chemistry Toolkit for Protein-Protein Affinity Scoring**
 
 [![Version](https://img.shields.io/badge/version-0.90-blue.svg)](https://github.com/jwperthold/GroScore)
