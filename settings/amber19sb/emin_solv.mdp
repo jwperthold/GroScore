@@ -1,0 +1,23 @@
+define                   = -DPOSRES
+
+integrator               = steep
+emtol                    = 10.0
+emstep                   = 0.01
+nsteps                   = 5000
+
+nstlist                  = 1
+cutoff-scheme            = Verlet
+ns_type                  = grid
+rlist                    = 1.0
+rcoulomb                 = 1.0
+rvdw                     = 1.0
+
+vdwtype                  = cutoff
+vdw-modifier             = Potential-shift
+
+coulombtype              = PME
+fourierspacing           = 0.125
+
+DispCorr                 = EnerPres
+
+pbc                      = xyz
