@@ -3,11 +3,9 @@
 # PLEASE REPORT BUGS, QUESTIONS AND COMMENTS TO JAN.PERTHOLD@BOKU.AC.AT
 #
 
-import string
-import math
-import array
-import os, sys, glob, re, time, argparse
+import os, sys, re, argparse
 import numpy as np
+from scipy.spatial.distance import cdist
 
 #------------------------------------------------------
 
@@ -34,239 +32,174 @@ residues_b = read_chain_map(args.chainmap)
 
 #------------------------------------------------------
 
-def getdistance(x1, y1, z1, x2, y2, z2):
-  """ Gives the distance between two points in 3D space.
-  """  
-  return np.sqrt((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)+(z1-z2)*(z1-z2))
-
-#------------------------------------------------------
-
 # cutoff parameters
 interfacecutoff = 0.6
 keepcutoff = 2.0
+en_min = 0.4
+en_max = 0.9
 
-# read coordinate file
-# prot1[residue, atomname, xC, yC, zC]
-# prot2[residue, atomname, xC, yC, zC]
-prot1 = np.empty(shape=(1000000, 5), dtype=object)
-prot2 = np.empty(shape=(1000000, 5), dtype=object)
-len1 = 0
-len2 = 0
+# read coordinate file - separate string and numeric data for efficiency
+# Lists for string data (residue name, atom name)
+prot1_resname = []
+prot1_atomname = []
+prot2_resname = []
+prot2_atomname = []
+
+# Lists for coordinates (will convert to numpy array)
+prot1_coords = []
+prot2_coords = []
+
 if os.path.isfile("conf.gro"):
   with open("conf.gro", "r") as f:
     for line in f:
       if not line.strip().startswith("#"):
-        left = line[:15] 
-        right = line[15:] 
+        left = line[:15]
+        right = line[15:]
         tmp = left.split() + right.split()
         try:
           s = re.search(r"\d+(\.\d+)?", tmp[0])
-          resnum = s.group(0)
-          if int(resnum) not in residues_b and tmp[1] != "CL" and tmp[1][0] != "H" and tmp[1][:2] != "MN":
-            prot1[len1] = [tmp[0], tmp[1], np.float64(tmp[3]), np.float64(tmp[4]), np.float64(tmp[5])]
-            len1 += 1
-          if int(resnum) in residues_b and tmp[1] != "CL" and tmp[1][0] != "H" and tmp[1][:2] != "MN":
-            prot2[len2] = [tmp[0], tmp[1], np.float64(tmp[3]), np.float64(tmp[4]), np.float64(tmp[5])]
-            len2 += 1
+          resnum = int(s.group(0))
+          atomname = tmp[1]
+          # Skip CL, H*, MN*
+          if atomname == "CL" or atomname[0] == "H" or atomname[:2] == "MN":
+            continue
+          coords = [float(tmp[3]), float(tmp[4]), float(tmp[5])]
+          if resnum not in residues_b:
+            prot1_resname.append(tmp[0])
+            prot1_atomname.append(atomname)
+            prot1_coords.append(coords)
+          else:
+            prot2_resname.append(tmp[0])
+            prot2_atomname.append(atomname)
+            prot2_coords.append(coords)
         except (ValueError, IndexError, AttributeError):
-          i = 0
+          pass
 
-# calculate inter protein distances
-# interdis[atom1, atom2, distance]
-interdis = np.empty(shape=(1000000, 3))
-numinterdis = 0
-tempdis = 0.0
-i = 0
-while i < len1:
-  j = 0
-  while j < len2:
-    tempdis = getdistance(prot1[i,2], prot1[i,3], prot1[i,4], prot2[j,2], prot2[j,3], prot2[j,4])
-    if tempdis <= interfacecutoff:
-      interdis[numinterdis] = [i, j, tempdis]
-      numinterdis += 1
-    j += 1
-  i += 1
+# Convert to numpy arrays
+prot1_coords = np.array(prot1_coords, dtype=np.float64)
+prot2_coords = np.array(prot2_coords, dtype=np.float64)
+len1 = len(prot1_resname)
+len2 = len(prot2_resname)
 
-# find residues around interface
-keep1 = []
-keep2 = []
-laterkeep1 = []
-laterkeep2 = []
-protkeep1 = np.empty(shape=(1000000, 5), dtype=object)
-protkeep2 = np.empty(shape=(1000000, 5), dtype=object)
-protlaterkeep1 = np.empty(shape=(1000000, 5), dtype=object)
-protlaterkeep2 = np.empty(shape=(1000000, 5), dtype=object)
-lenk1 = 0
-lenk2 = 0
-lenlk1 = 0
-lenlk2 = 0
-# prot1
-i = 0
-while i < len1:
-  j = 0
-  while j < numinterdis:
-    # distance between atom and interface atom of the same protein
-    tempdis = getdistance(prot1[i,2], prot1[i,3], prot1[i,4], prot1[int(interdis[j,0]),2], prot1[int(interdis[j,0]),3], prot1[int(interdis[j,0]),4])
-    if tempdis <= keepcutoff:
-      keep1.append(prot1[i,0])
-      break
-    j += 1
-  i += 1
-# get all coordinates to keep for check whether the kept atoms are within elastic network distance
-i = 0
-while i < len1:
-  j = 0
-  while j < len(keep1):
-    if prot1[i,0] == keep1[j]:
-      if prot1[i,1] == "CA":
-        protkeep1[lenk1] = prot1[i]
-        lenk1 += 1
-    j += 1
-  i += 1
-# check whether the kept atoms are within elastic network distance
-i = 0
-while i < lenk1:
-  j = i + 1
-  while j < lenk1:
-    tempdis = getdistance(protkeep1[i,2], protkeep1[i,3], protkeep1[i,4], protkeep1[j,2], protkeep1[j,3], protkeep1[j,4])
-    if tempdis <= 0.9 and tempdis >= 0.4:
-      laterkeep1.append(protkeep1[i,0])
-      break
-    j += 1
-  i += 1
-# get all coordinates to keep
-i = 0
-while i < len1:
-  j = 0
-  while j < len(laterkeep1):
-    if prot1[i,0] == laterkeep1[j]:
-      protlaterkeep1[lenlk1] = prot1[i]
-      lenlk1 += 1
-      break
-    j += 1
-  i += 1
-# prot2
-i = 0
-while i < len2:
-  j = 0
-  while j < numinterdis:
-    # distance between atom and interface atom of the same protein
-    tempdis = getdistance(prot2[i,2], prot2[i,3], prot2[i,4], prot2[int(interdis[j,1]),2], prot2[int(interdis[j,1]),3], prot2[int(interdis[j,1]),4])
-    if tempdis <= keepcutoff:
-      keep2.append(prot2[i,0])
-      break
-    j += 1
-  i += 1
-# get all coordinates to keep for check whether the kept atoms are within elastic network distance
-i = 0
-while i < len2:
-  j = 0
-  while j < len(keep2):
-    if prot2[i,0] == keep2[j]:
-      if prot2[i,1] == "CA":
-        protkeep2[lenk2] = prot2[i]
-        lenk2 += 1
-    j += 1
-  i += 1
-# check whether the kept atoms are within elastic network distance
-i = 0
-while i < lenk2:
-  j = i + 1
-  while j < lenk2:
-    tempdis = getdistance(protkeep2[i,2], protkeep2[i,3], protkeep2[i,4], protkeep2[j,2], protkeep2[j,3], protkeep2[j,4])
-    if tempdis <= 0.9 and tempdis >= 0.4:
-      laterkeep2.append(protkeep2[i,0])
-      break
-    j += 1
-  i += 1
-# get all coordinates to keep
-i = 0
-while i < len2:
-  j = 0
-  while j < len(laterkeep2):
-    if prot2[i,0] == laterkeep2[j]:
-      protlaterkeep2[lenlk2] = prot2[i]
-      lenlk2 += 1
-      break
-    j += 1
-  i += 1
+if len1 == 0 or len2 == 0:
+  # No atoms in one or both proteins - write empty file
+  open("cutout.pdb", "w").close()
+  sys.exit(0)
 
-# write cutout pdb file
-pdbfile = open("cutout.pdb", "a")
-i = 0
-while i < (lenlk1 + lenlk2):
-  if i < lenlk1:
+# Calculate all inter-protein distances at once using cdist
+# This replaces the O(n*m) nested loop with a single vectorized call
+all_distances = cdist(prot1_coords, prot2_coords)
+
+# Find interface atom pairs (distance <= interfacecutoff)
+interface_mask = all_distances <= interfacecutoff
+interface_pairs = np.argwhere(interface_mask)
+
+if len(interface_pairs) == 0:
+  # No interface found
+  open("cutout.pdb", "w").close()
+  sys.exit(0)
+
+# Get unique interface atom indices for each protein
+interface_atoms1 = np.unique(interface_pairs[:, 0])
+interface_atoms2 = np.unique(interface_pairs[:, 1])
+
+# Find atoms within keepcutoff of interface atoms
+# For prot1: calculate distances from all prot1 atoms to prot1 interface atoms
+dist_to_interface1 = cdist(prot1_coords, prot1_coords[interface_atoms1])
+keep1_mask = np.any(dist_to_interface1 <= keepcutoff, axis=1)
+keep1_indices = np.where(keep1_mask)[0]
+keep1_resnames = set(prot1_resname[i] for i in keep1_indices)
+
+# For prot2: calculate distances from all prot2 atoms to prot2 interface atoms
+dist_to_interface2 = cdist(prot2_coords, prot2_coords[interface_atoms2])
+keep2_mask = np.any(dist_to_interface2 <= keepcutoff, axis=1)
+keep2_indices = np.where(keep2_mask)[0]
+keep2_resnames = set(prot2_resname[i] for i in keep2_indices)
+
+# Get CA atoms from kept residues for elastic network check
+protkeep1_indices = [i for i in range(len1) if prot1_resname[i] in keep1_resnames and prot1_atomname[i] == "CA"]
+protkeep2_indices = [i for i in range(len2) if prot2_resname[i] in keep2_resnames and prot2_atomname[i] == "CA"]
+
+# Check elastic network distances for CA atoms
+laterkeep1_resnames = set()
+if len(protkeep1_indices) > 1:
+  ca_coords1 = prot1_coords[protkeep1_indices]
+  ca_distances1 = cdist(ca_coords1, ca_coords1)
+  # For each CA, check if any other CA is within EN distance range
+  for i in range(len(protkeep1_indices)):
+    # Check distances to all other CAs (excluding self)
+    dists = ca_distances1[i]
+    mask = (dists >= en_min) & (dists <= en_max)
+    mask[i] = False  # Exclude self
+    if np.any(mask):
+      laterkeep1_resnames.add(prot1_resname[protkeep1_indices[i]])
+
+laterkeep2_resnames = set()
+if len(protkeep2_indices) > 1:
+  ca_coords2 = prot2_coords[protkeep2_indices]
+  ca_distances2 = cdist(ca_coords2, ca_coords2)
+  for i in range(len(protkeep2_indices)):
+    dists = ca_distances2[i]
+    mask = (dists >= en_min) & (dists <= en_max)
+    mask[i] = False
+    if np.any(mask):
+      laterkeep2_resnames.add(prot2_resname[protkeep2_indices[i]])
+
+# Collect final atoms to keep
+protlaterkeep1 = [(prot1_resname[i], prot1_atomname[i], prot1_coords[i])
+                  for i in range(len1) if prot1_resname[i] in laterkeep1_resnames]
+protlaterkeep2 = [(prot2_resname[i], prot2_atomname[i], prot2_coords[i])
+                  for i in range(len2) if prot2_resname[i] in laterkeep2_resnames]
+
+lenlk1 = len(protlaterkeep1)
+lenlk2 = len(protlaterkeep2)
+
+# Helper function to extract residue number from resname (e.g., "123ALA" -> 123)
+def get_resnum(resname):
+  return int(resname[:-3])
+
+# Write cutout PDB file
+with open("cutout.pdb", "w") as pdbfile:
+  atom_num = 0
+
+  # Write protein A atoms
+  for i in range(lenlk1):
+    resname, atomname, coords = protlaterkeep1[i]
+    resnum = get_resnum(resname)
+    res3 = resname[-3:]
+
+    # Write TER record if there's a gap in residue numbering
     if i > 0:
-      if int(protlaterkeep1[i,0][:-3]) > int(protlaterkeep1[i-1,0][:-3]) + 1:
-        pdbfile.write("{0: <5}".format("TER"))
-        pdbfile.write("{0: >6}".format(str(i+1)))
-        pdbfile.write("   ")
-        pdbfile.write("{0: <3}".format(" "))
-        pdbfile.write(" ") #Alternate location indicator
-        pdbfile.write("{0: >2}".format(" "))
-        pdbfile.write(" ")
-        pdbfile.write("A")
-        pdbfile.write("{0: >4}".format(protlaterkeep1[i-1,0][:-3]))
-        pdbfile.write("\n")
-    pdbfile.write("{0: <5}".format("ATOM"))
-    pdbfile.write("{0: >6}".format(str(i+1)))
-    pdbfile.write("  ")
-    pdbfile.write("{0: <3}".format(protlaterkeep1[i,1]))
-    pdbfile.write(" ") #Alternate location indicator
-    pdbfile.write("{0: >2}".format(protlaterkeep1[i,0][-3:]))
-    pdbfile.write(" ")
-    pdbfile.write("A")
-    pdbfile.write("{0: >4}".format(protlaterkeep1[i,0][:-3]))
-    pdbfile.write("    ") #Code for insertions of residues
-    pdbfile.write("{:8.3f}".format(protlaterkeep1[i,2]*10))
-    pdbfile.write("{:8.3f}".format(protlaterkeep1[i,3]*10))
-    pdbfile.write("{:8.3f}".format(protlaterkeep1[i,4]*10))
-    pdbfile.write("{0: >6}".format("1.00"))
-    pdbfile.write("{0: >6}".format("0.00"))
-    pdbfile.write("          ") #Segment identifier
-    pdbfile.write("{0: >2}".format(protlaterkeep1[i,1][0]))
-    pdbfile.write("\n")
-  else:
-    if i-lenlk1 == 0:
-        pdbfile.write("{0: <5}".format("TER"))
-        pdbfile.write("{0: >6}".format(str(i+1)))
-        pdbfile.write("   ")
-        pdbfile.write("{0: <3}".format(" "))
-        pdbfile.write(" ") #Alternate location indicator
-        pdbfile.write("{0: >2}".format(" "))
-        pdbfile.write(" ")
-        pdbfile.write("A")
-        pdbfile.write("{0: >4}".format(protlaterkeep1[i-1,0][:-3]))
-        pdbfile.write("\n")
-    if i-lenlk1 > 0:
-      if int(protlaterkeep2[i-lenlk1,0][:-3]) > int(protlaterkeep2[i-lenlk1-1,0][:-3]) + 1:
-        pdbfile.write("{0: <5}".format("TER"))
-        pdbfile.write("{0: >6}".format(str(i+1)))
-        pdbfile.write("   ")
-        pdbfile.write("{0: <3}".format(" "))
-        pdbfile.write(" ") #Alternate location indicator
-        pdbfile.write("{0: >2}".format(" "))
-        pdbfile.write(" ")
-        pdbfile.write("B")
-        pdbfile.write("{0: >4}".format(protlaterkeep2[i-lenlk1-1,0][:-3]))
-        pdbfile.write("\n")
-    pdbfile.write("{0: <5}".format("ATOM"))
-    pdbfile.write("{0: >6}".format(str(i+1)))
-    pdbfile.write("  ")
-    pdbfile.write("{0: <3}".format(protlaterkeep2[i-lenlk1,1]))
-    pdbfile.write(" ") #Alternate location indicator
-    pdbfile.write("{0: >2}".format(protlaterkeep2[i-lenlk1,0][-3:]))
-    pdbfile.write(" ")
-    pdbfile.write("B")
-    pdbfile.write("{0: >4}".format(protlaterkeep2[i-lenlk1,0][:-3]))
-    pdbfile.write("    ") #Code for insertions of residues
-    pdbfile.write("{:8.3f}".format(protlaterkeep2[i-lenlk1,2]*10))
-    pdbfile.write("{:8.3f}".format(protlaterkeep2[i-lenlk1,3]*10))
-    pdbfile.write("{:8.3f}".format(protlaterkeep2[i-lenlk1,4]*10))
-    pdbfile.write("{0: >6}".format("1.00"))
-    pdbfile.write("{0: >6}".format("0.00"))
-    pdbfile.write("          ") #Segment identifier
-    pdbfile.write("{0: >2}".format(protlaterkeep2[i-lenlk1,1][0]))
-    pdbfile.write("\n")
-  i += 1
-pdbfile.close()
+      prev_resnum = get_resnum(protlaterkeep1[i-1][0])
+      if resnum > prev_resnum + 1:
+        atom_num += 1
+        pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
+
+    atom_num += 1
+    pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} A{resnum:>4}    "
+                  f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
+                  f"  1.00  0.00          {atomname[0]:>2}\n")
+
+  # Write TER between chains
+  if lenlk1 > 0 and lenlk2 > 0:
+    atom_num += 1
+    prev_resnum = get_resnum(protlaterkeep1[-1][0])
+    pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
+
+  # Write protein B atoms
+  for i in range(lenlk2):
+    resname, atomname, coords = protlaterkeep2[i]
+    resnum = get_resnum(resname)
+    res3 = resname[-3:]
+
+    # Write TER record if there's a gap in residue numbering
+    if i > 0:
+      prev_resnum = get_resnum(protlaterkeep2[i-1][0])
+      if resnum > prev_resnum + 1:
+        atom_num += 1
+        pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
+
+    atom_num += 1
+    pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} B{resnum:>4}    "
+                  f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
+                  f"  1.00  0.00          {atomname[0]:>2}\n")
