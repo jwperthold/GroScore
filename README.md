@@ -2,7 +2,7 @@
 
 **Computational Chemistry Toolkit for Protein-Protein Binding Free Energy Estimation**
 
-[![Version](https://img.shields.io/badge/version-0.83-blue.svg)](https://github.com/your-repo/groscore)
+[![Version](https://img.shields.io/badge/version-0.84-blue.svg)](https://github.com/your-repo/groscore)
 [![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org/)
 [![GROMACS](https://img.shields.io/badge/GROMACS-2026.0-orange.svg)](https://www.gromacs.org/)
 
