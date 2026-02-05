@@ -144,15 +144,27 @@ Stage 0: Preparation
 ├── Structure validation
 ├── PDB conversion (heavy hydrogen)
 ├── Solvation (SPC water, 0.15 M NaCl)
-└── Equilibration (5-phase NVT + NPT)
+└── Energy minimization → emin_solv.gro
 
-Stages 1-N: Production
-├── Unbinding (pulling SMD)
-└── Binding (pushing SMD)
+Initial Equilibration (for distance restraints)
+└── 5-phase NVT + NPT → npt_init_cluster.gro
+
+Independent Cycles (N cycles, default 5)
+├── Cycle 1:
+│   ├── Fresh full equilibration (NVT 1-5 + NPT)
+│   ├── Pull (unbinding SMD)
+│   └── Short NPT + Push (binding SMD)
+├── Cycle 2:
+│   ├── Fresh full equilibration (NVT 1-5 + NPT)
+│   ├── Pull (unbinding SMD)
+│   └── Short NPT + Push (binding SMD)
+└── ... (each cycle independent, new random velocities)
 
 Final: Analysis
 └── Statistical scoring (2 methods)
 ```
+
+Each cycle starts fresh from `emin_solv.gro` with independent equilibration, providing statistically independent samples for robust scoring.
 
 ## Project Structure
 
