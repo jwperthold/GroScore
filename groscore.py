@@ -15,7 +15,7 @@ import numpy as np
 
 parser = argparse.ArgumentParser(description="Input files for GroScore")
 parser.add_argument('-s','--structparams', type=str, default="sp.gs", required=False, help="GroSscore strucutre parameter file")
-parser.add_argument('-n','--numruns', type=int, default=10, required=True, help="Number of pull/push cycles to perform")
+parser.add_argument('-n','--numruns', type=int, default=5, required=False, help="Number of pull/push cycles to perform (default: 5)")
 parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable interface cutout (default)")
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('-ff','--forcefield', type=str, default="gromos54a7", choices=["gromos54a7", "charmm36", "amber19sb"], help="Force field to use (default: gromos54a7)")

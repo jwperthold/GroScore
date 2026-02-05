@@ -97,11 +97,11 @@ Run from within your project directory:
 
 ```bash
 cd myproject
-python ../groscore.py -n 10
+python ../groscore.py
 ```
 
 **Options:**
-- `-n, --numruns` - Number of pull/push cycles (required)
+- `-n, --numruns` - Number of pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `gromos54a7` (default), `charmm36`, or `amber19sb`
 - `--cutout` - Extract interface region only (default, faster)
@@ -121,7 +121,7 @@ GroScore uses SLURM job arrays to run simulations in parallel. Monitor with:
 squeue -u $USER
 ```
 
-Re-run `python ../groscore.py -n 10` periodically to check progress and collect results.
+Re-run `python ../groscore.py` periodically to check progress and collect results.
 
 ### 5. Collect Results
 

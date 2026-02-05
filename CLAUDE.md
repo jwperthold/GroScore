@@ -20,21 +20,21 @@ GroScore is a computational chemistry toolkit for protein-protein affinity scori
 ## Running GroScore
 
 ```bash
-# Run with N simulation cycles (required parameter)
+# Run with default settings (5 cycles)
+python groscore.py
+
+# Run with 10 simulation cycles
 python groscore.py -n 10
 
 # With custom structure parameter file (default: sp.gs)
-python groscore.py -s myparams.gs -n 10
-
-# Use GROMOS 54A7 force field instead of CHARMM36
-python groscore.py -n 10 -ff gromos54a7
+python groscore.py -s myparams.gs
 
 # Disable interface cutout (use full protein structure)
-python groscore.py -n 10 --no-cutout
+python groscore.py --no-cutout
 ```
 
 **Command-line options:**
-- `-n, --numruns` - Number of pull/push cycles (required)
+- `-n, --numruns` - Number of pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `gromos54a7` (default), `charmm36`, or `amber19sb`
 - `--cutout` - Extract interface region only (default, faster)
