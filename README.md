@@ -18,6 +18,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Structure Validation** - Built-in checks for broken loops and topological knots
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Optional Cutout Mode** - Choose between interface-only (faster) or full-protein simulations
+- **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom) and CHARMM36 (all-atom)
 
 ## Requirements
 
@@ -31,9 +32,16 @@ GroScore estimates binding affinities between protein pairs using short steered 
 | GROMACS | 2026.0 |
 | SLURM | 23.11 |
 
-## Force Field
+## Force Fields
 
-GroScore uses the **GROMOS 54A7** united-atom force field for protein parametrization with **SPC** water model. Heavy hydrogen masses (`-heavyh` flag) are used to enable 4 fs timesteps. The force field is automatically selected via `pdb2gmx` during structure preparation.
+GroScore supports two force fields, selectable via the `-ff` option:
+
+| Force Field | Type | Water Model | Constraints | Cutoffs |
+|-------------|------|-------------|-------------|---------|
+| **GROMOS 54A7** (default) | United-atom | SPC | all-bonds | 1.4 nm |
+| **CHARMM36** | All-atom | TIP3P | h-bonds | 1.2 nm |
+
+Both use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
 
 ## Installation
 
@@ -91,6 +99,7 @@ python ../groscore.py -n 10
 **Options:**
 - `-n, --numruns` - Number of pull/push cycles (required)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
+- `-ff, --forcefield` - Force field: `gromos54a7` (default) or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 
@@ -143,11 +152,14 @@ Final: Analysis
 groscore/
 ├── groscore.py          # Main orchestrator
 ├── job.run              # SLURM job template
-├── settings/            # GROMACS parameter files
-│   ├── emin_*.mdp       # Energy minimization
-│   ├── nvt_*.mdp        # NVT equilibration phases
-│   ├── npt*.mdp         # NPT equilibration
-│   └── bind*.mdp        # SMD pulling parameters
+├── settings/
+│   ├── gromos54a7/      # GROMOS 54A7 parameter files
+│   │   ├── emin_*.mdp   # Energy minimization
+│   │   ├── nvt_*.mdp    # NVT equilibration phases
+│   │   ├── npt*.mdp     # NPT equilibration
+│   │   └── bind*.mdp    # SMD pulling parameters
+│   └── charmm36/        # CHARMM36 parameter files
+│       └── (same files)
 └── utils/
     ├── fix_pdb.py               # Fix missing atoms with PDBFixer
     ├── extract_chains.py        # Chain-to-residue mapping from PDB
@@ -162,8 +174,6 @@ groscore/
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Force field | GROMOS 54A7 | United-atom protein parametrization |
-| Water model | SPC | Simple point charge water |
 | Timestep | 4 fs | Integration timestep (heavy hydrogen) |
 | Interface cutoff | 0.6 nm | Defines protein-protein interface |
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |

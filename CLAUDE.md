@@ -14,8 +14,8 @@ GroScore is a computational chemistry toolkit for protein-protein affinity scori
 - Python 3.13 with NumPy 2.3, SciPy 1.16, OpenMM, and PDBFixer
 - GROMACS 2026.0 (external MD engine)
 - SLURM 23.11 job scheduler for HPC execution
-- GROMOS 54A7 united-atom force field for protein parametrization
-- SPC water model for solvation
+- Force fields: GROMOS 54A7 (united-atom) or CHARMM36 (all-atom)
+- Water models: SPC (GROMOS) or TIP3P (CHARMM)
 
 ## Running GroScore
 
@@ -26,6 +26,9 @@ python groscore.py -n 10
 # With custom structure parameter file (default: sp.gs)
 python groscore.py -s myparams.gs -n 10
 
+# Use CHARMM36 force field instead of GROMOS 54A7
+python groscore.py -n 10 -ff charmm36
+
 # Disable interface cutout (use full protein structure)
 python groscore.py -n 10 --no-cutout
 ```
@@ -33,6 +36,7 @@ python groscore.py -n 10 --no-cutout
 **Command-line options:**
 - `-n, --numruns` - Number of pull/push cycles (required)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
+- `-ff, --forcefield` - Force field: `gromos54a7` (default) or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 
@@ -77,10 +81,23 @@ With `--no-cutout`, the full protein structure is used:
 conf.gro → editconf → conf_vacbox.gro
 ```
 
+## Force Fields
+
+Settings are organized by force field in `settings/<forcefield>/`:
+
+| Setting | GROMOS 54A7 | CHARMM36 |
+|---------|-------------|----------|
+| Water model | SPC | TIP3P |
+| Constraints | all-bonds | h-bonds |
+| Coulomb | P3M-AD | PME |
+| VdW modifier | none | force-switch |
+| Cutoffs | 1.4 nm | 1.2 nm |
+| pdb2gmx | interactive (16) | -ff charmm36-jul2022 |
+
 ## File Formats
 
 - `.gs` - GroScore data files (two/three column, `#` for comments)
-- `.mdp` - GROMACS parameter files (in `settings/`)
+- `.mdp` - GROMACS parameter files (in `settings/<forcefield>/`)
 - `.gro` - GROMACS coordinate files
 - `.xvg` - GROMACS output data (force curves)
 
