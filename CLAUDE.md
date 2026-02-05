@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GroScore is a computational chemistry toolkit for estimating binding free energies between protein pairs using steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
+GroScore is a computational chemistry toolkit for protein-protein affinity scoring using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
 
 **Version:** 0.84
 **Contact:** jan@ackergarten.at
@@ -53,7 +53,7 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 2. **Stages 1-N**: Alternating unbinding (pulling) and binding (pushing) SMD simulations
 3. **Final**: Statistical analysis producing two ranking methods:
    - `scores_avg.gs` - Simple average of pulls/pushes
-   - `scores_cgi.gs` - Gaussian intersection
+   - `scores_cgi.gs` - Crooks Gaussian Intersection
 
 ## File Formats
 
