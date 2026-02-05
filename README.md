@@ -38,8 +38,8 @@ GroScore supports two force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs |
 |-------------|------|-------------|-------------|---------|
-| **GROMOS 54A7** (default) | United-atom | SPC | all-bonds | 1.4 nm |
-| **CHARMM36** | All-atom | TIP3P | h-bonds | 1.2 nm |
+| **CHARMM36** (default) | All-atom | TIP3P | h-bonds | 1.2 nm |
+| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm |
 
 Both use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
 
@@ -101,7 +101,7 @@ python ../groscore.py -n 10
 **Options:**
 - `-n, --numruns` - Number of pull/push cycles (required)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `gromos54a7` (default) or `charmm36`
+- `-ff, --forcefield` - Force field: `charmm36` (default) or `gromos54a7`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 

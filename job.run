@@ -17,7 +17,7 @@ export GMX_MAXBACKUP=-1
 STRUCT_ID=$(basename $(pwd))
 MAXRUNS=0
 CUTOUT=1
-FORCEFIELD="gromos54a7"
+FORCEFIELD="charmm36"
 while read -r a b c d
 do
   PROTBCHAINS=$a

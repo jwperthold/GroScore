@@ -26,8 +26,8 @@ python groscore.py -n 10
 # With custom structure parameter file (default: sp.gs)
 python groscore.py -s myparams.gs -n 10
 
-# Use CHARMM36 force field instead of GROMOS 54A7
-python groscore.py -n 10 -ff charmm36
+# Use GROMOS 54A7 force field instead of CHARMM36
+python groscore.py -n 10 -ff gromos54a7
 
 # Disable interface cutout (use full protein structure)
 python groscore.py -n 10 --no-cutout
@@ -36,7 +36,7 @@ python groscore.py -n 10 --no-cutout
 **Command-line options:**
 - `-n, --numruns` - Number of pull/push cycles (required)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `gromos54a7` (default) or `charmm36`
+- `-ff, --forcefield` - Force field: `charmm36` (default) or `gromos54a7`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 
