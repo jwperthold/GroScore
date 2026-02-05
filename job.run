@@ -48,7 +48,7 @@ elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
   # AMBER ff19SB included in standard GROMACS installation
   FF_FLAG="-ff amber19sb"
   WATER_MODEL="opc"
-  WATER_BOX="spc216.gro"
+  WATER_BOX="tip4p.gro"
 else
   # gromos54a7
   FF_FLAG="-ff gromos54a7"
