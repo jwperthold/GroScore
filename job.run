@@ -165,7 +165,7 @@ if [[ $bl -eq 0 ]]; then
     gmx mdrun -nt $nt -deffnm npt_init
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
     echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster
-    echo -e "1\n" | gmx editconf -f npt_init_cluster.gro -o npt_init_cluster_prot.pdb
+    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster
     python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
   fi
 
