@@ -218,9 +218,9 @@ while i < (lenlk1 + lenlk2):
     pdbfile.write("A")
     pdbfile.write("{0: >4}".format(protlaterkeep1[i,0][:-3]))
     pdbfile.write("    ") #Code for insertions of residues
-    pdbfile.write("{0: >8}".format(protlaterkeep1[i,2]*10))
-    pdbfile.write("{0: >8}".format(protlaterkeep1[i,3]*10))
-    pdbfile.write("{0: >8}".format(protlaterkeep1[i,4]*10))
+    pdbfile.write("{:8.3f}".format(protlaterkeep1[i,2]*10))
+    pdbfile.write("{:8.3f}".format(protlaterkeep1[i,3]*10))
+    pdbfile.write("{:8.3f}".format(protlaterkeep1[i,4]*10))
     pdbfile.write("{0: >6}".format("1.00"))
     pdbfile.write("{0: >6}".format("0.00"))
     pdbfile.write("          ") #Segment identifier
@@ -260,9 +260,9 @@ while i < (lenlk1 + lenlk2):
     pdbfile.write("B")
     pdbfile.write("{0: >4}".format(protlaterkeep2[i-lenlk1,0][:-3]))
     pdbfile.write("    ") #Code for insertions of residues
-    pdbfile.write("{0: >8}".format(protlaterkeep2[i-lenlk1,2]*10))
-    pdbfile.write("{0: >8}".format(protlaterkeep2[i-lenlk1,3]*10))
-    pdbfile.write("{0: >8}".format(protlaterkeep2[i-lenlk1,4]*10))
+    pdbfile.write("{:8.3f}".format(protlaterkeep2[i-lenlk1,2]*10))
+    pdbfile.write("{:8.3f}".format(protlaterkeep2[i-lenlk1,3]*10))
+    pdbfile.write("{:8.3f}".format(protlaterkeep2[i-lenlk1,4]*10))
     pdbfile.write("{0: >6}".format("1.00"))
     pdbfile.write("{0: >6}".format("0.00"))
     pdbfile.write("          ") #Segment identifier
