@@ -220,6 +220,10 @@ If you use GroScore in your research, please cite:
 
 > Perthold, J. W.; Oostenbrink, C. GroScore: Accurate Scoring of Protein–Protein Binding Poses Using Explicit-Solvent Free-Energy Calculations. *J. Chem. Inf. Model.* **2019**, *59* (12), 5074–5085. https://doi.org/10.1021/acs.jcim.9b00687
 
+For the improved method (Chapter 3 included in `theory/`), see:
+
+> Perthold, J. W. New developments and critical views on binding free-energy calculations using molecular mechanics. *PhD Thesis*, University of Natural Resources and Life Sciences, Vienna (BOKU), **2023**. [Library catalog](https://litsearch.boku.ac.at/primo-explore/fulldisplay?docid=BOK_alma2198734100003345&vid=BOK)
+
 ## License
 
 [License information to be added]
