@@ -46,9 +46,11 @@ if [[ "$FORCEFIELD" == "charmm36" ]]; then
   WATER_BOX="spc216.gro"
 elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
   # AMBER ff19SB included in standard GROMACS installation
+  # Use tip4p for pdb2gmx, then replace with OPC in topology (recommended for ff19SB)
   FF_FLAG="-ff amber19sb_OL15"
-  WATER_MODEL="tip3p"
-  WATER_BOX="spc216.gro"
+  WATER_MODEL="tip4p"
+  WATER_BOX="tip4p.gro"
+  USE_OPC=1
 else
   # gromos54a7
   FF_FLAG="-ff gromos54a7"
@@ -82,6 +84,10 @@ if [[ ! -f bindfwd_1.gro ]]; then
   TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f fixed.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
+  # For AMBER19SB: replace TIP4P with OPC water model in topology
+  if [[ "${USE_OPC:-0}" -eq 1 ]]; then
+    sed -i 's/tip4p\.itp/opc.itp/g' topol.top
+  fi
 fi
 if [[ ! -f chain_map.gs ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
@@ -115,6 +121,10 @@ if [[ $bl -eq 0 ]]; then
       TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
       # Merge questions come first, then terminal selections
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f cutout.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
+      # For AMBER19SB: replace TIP4P with OPC water model in topology
+      if [[ "${USE_OPC:-0}" -eq 1 ]]; then
+        sed -i 's/tip4p\.itp/opc.itp/g' topol.top
+      fi
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro

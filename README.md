@@ -41,7 +41,7 @@ GroScore supports two force fields, selectable via the `-ff` option:
 |-------------|------|-------------|-------------|---------|
 | **GROMOS 54A7** (default) | United-atom | SPC | all-bonds | 1.4 nm |
 | **CHARMM36** | All-atom | TIP3P | h-bonds | 1.2 nm |
-| **AMBER19SB** | All-atom | TIP3P | h-bonds | 1.0 nm |
+| **AMBER19SB** | All-atom | OPC | h-bonds | 1.0 nm |
 
 Both use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
 
