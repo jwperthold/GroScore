@@ -33,6 +33,8 @@ done < run.gs
 # Set force field specific parameters
 MDP_DIR="../../settings/$FORCEFIELD"
 if [[ "$FORCEFIELD" == "charmm36" ]]; then
+  # Add local forcefield directory to GMXLIB so GROMACS can find charmm36-jul2022.ff
+  export GMXLIB="../../forcefield:${GMXLIB:-}"
   FF_FLAG="-ff charmm36-jul2022"
   WATER_MODEL="tip3p"
   WATER_BOX="tip3p.gro"

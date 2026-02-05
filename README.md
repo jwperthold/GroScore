@@ -43,6 +43,8 @@ GroScore supports two force fields, selectable via the `-ff` option:
 
 Both use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
 
+The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
+
 ## Installation
 
 ```bash
@@ -152,6 +154,8 @@ Final: Analysis
 groscore/
 ├── groscore.py          # Main orchestrator
 ├── job.run              # SLURM job template
+├── forcefield/
+│   └── charmm36-jul2022.ff/  # CHARMM36 force field parameters
 ├── settings/
 │   ├── gromos54a7/      # GROMOS 54A7 parameter files
 │   │   ├── emin_*.mdp   # Energy minimization

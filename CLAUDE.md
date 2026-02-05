@@ -94,6 +94,8 @@ Settings are organized by force field in `settings/<forcefield>/`:
 | Cutoffs | 1.4 nm | 1.2 nm |
 | pdb2gmx | interactive (16) | -ff charmm36-jul2022 |
 
+CHARMM36 parameters are bundled in `forcefield/charmm36-jul2022.ff/` (from MacKerell lab).
+
 ## File Formats
 
 - `.gs` - GroScore data files (two/three column, `#` for comments)
