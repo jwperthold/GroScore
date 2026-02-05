@@ -215,6 +215,16 @@ This ensures proper topology generation even for structures with missing loops o
 
 **Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment.
 
+## Benchmark
+
+The `benchmark/` directory contains a setup script for the [HADDOCKING Protein-Protein Affinity Benchmark](https://github.com/haddocking/binding-affinity-benchmark) (46 structures). To run the benchmark:
+
+```bash
+cd benchmark
+python setup_benchmark.py  # Downloads PDBs and creates sp.gs
+python ../groscore.py
+```
+
 ## Citation
 
 If you use GroScore in your research, please cite:
