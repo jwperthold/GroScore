@@ -31,10 +31,16 @@ do
 done < run.gs
 
 # Set force field specific parameters
-MDP_DIR="../../settings/$FORCEFIELD"
+# Get absolute path to GroScore root (two levels up from structure directory)
+GROSCORE_ROOT="$(cd ../.. && pwd)"
+MDP_DIR="${GROSCORE_ROOT}/settings/$FORCEFIELD"
 if [[ "$FORCEFIELD" == "charmm36" ]]; then
   # Add local forcefield directory to GMXLIB so GROMACS can find charmm36-jul2022.ff
-  export GMXLIB="../../forcefield:${GMXLIB:-}"
+  if [[ -n "${GMXLIB:-}" ]]; then
+    export GMXLIB="${GROSCORE_ROOT}/forcefield:${GMXLIB}"
+  else
+    export GMXLIB="${GROSCORE_ROOT}/forcefield"
+  fi
   FF_FLAG="-ff charmm36-jul2022"
   WATER_MODEL="tip3p"
   WATER_BOX="tip3p.gro"
