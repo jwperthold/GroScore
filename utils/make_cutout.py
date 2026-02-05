@@ -145,9 +145,16 @@ if len(protkeep2_indices) > 1:
     if np.any(mask):
       laterkeep2_resnames.add(prot2_resname[protkeep2_indices[i]])
 
-# Helper function to extract residue number from resname (e.g., "123ALA" -> 123)
+# Helper function to extract residue number from resname (e.g., "123ALA" -> 123, "123CLYS" -> 123)
 def get_resnum(resname):
-  return int(resname[:-3])
+  # Extract leading digits to handle both 3-letter (ALA) and 4-letter (CLYS, NLYS) residue codes
+  digits = ''
+  for c in resname:
+    if c.isdigit():
+      digits += c
+    else:
+      break
+  return int(digits)
 
 # Minimum fragment length (residues)
 MIN_FRAGMENT_LEN = 3
