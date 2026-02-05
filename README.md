@@ -19,6 +19,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Optional Cutout Mode** - Choose between interface-only (faster) or full-protein simulations
 - **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom) and CHARMM36 (all-atom)
+- **Automatic Fragment Handling** - Chain break detection, minimum fragment size enforcement, and same-chain fragment merging
 
 ## Requirements
 
@@ -183,6 +184,18 @@ groscore/
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |
 | Ion concentration | 0.15 M | NaCl for physiological conditions |
+| Minimum fragment size | 3 residues | Ensures stable fragments in cutout mode |
+
+## Fragment Handling
+
+GroScore automatically handles complex protein structures with multiple chains and chain breaks:
+
+- **Chain Break Detection** - Gaps in residue numbering within a chain are detected and marked with TER records
+- **Minimum Fragment Size** - Fragments smaller than 3 residues are automatically extended by adding neighboring residues
+- **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
+- **Uncharged Termini** - All fragment termini use uncharged patches (NH2/COOH) rather than charged termini
+
+This ensures proper topology generation even for structures with missing loops or multi-chain complexes.
 
 ## File Formats
 
