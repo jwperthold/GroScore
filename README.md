@@ -24,6 +24,7 @@ GroScore estimates binding free energies between protein pairs using steered mol
 |------------|---------|
 | Python | 3.13 |
 | NumPy | 2.3 |
+| SciPy | 1.16 |
 | GROMACS | 2026.0 |
 | SLURM | 23.11 |
 
