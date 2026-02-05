@@ -4,3 +4,4 @@ __pycache__/
 .claude/
 test/
 test_charmm/
+test_amber/
