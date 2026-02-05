@@ -43,7 +43,7 @@ GroScore supports two force fields, selectable via the `-ff` option:
 | **CHARMM36** | All-atom | TIP3P | h-bonds | 1.2 nm |
 | **AMBER19SB** | All-atom | OPC | h-bonds | 1.0 nm |
 
-Both use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
+All use heavy hydrogen masses (`-heavyh` flag) for 4 fs timesteps.
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
