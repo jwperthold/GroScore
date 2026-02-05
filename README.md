@@ -1,12 +1,12 @@
 # GroScore
 
-**Computational Chemistry Toolkit for Protein-Protein Binding Free Energy Estimation**
+**Computational Chemistry Toolkit for Protein-Protein Affinity Scoring**
 
 [![Version](https://img.shields.io/badge/version-0.84-blue.svg)](https://github.com/jwperthold/GroScore)
 [![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org/)
 [![GROMACS](https://img.shields.io/badge/GROMACS-2026.0-orange.svg)](https://www.gromacs.org/)
 
-GroScore estimates binding free energies between protein pairs using steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
+GroScore estimates binding affinities between protein pairs using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
 
 ---
 
@@ -108,7 +108,7 @@ Results are written to two output files ranked by binding affinity:
 | Output File | Method |
 |-------------|--------|
 | `scores_avg.gs` | Simple average of pulls/pushes |
-| `scores_cgi.gs` | Gaussian intersection |
+| `scores_cgi.gs` | Crooks Gaussian Intersection |
 
 ## Simulation Pipeline
 
