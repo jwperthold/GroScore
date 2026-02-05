@@ -15,7 +15,7 @@ import numpy as np
 
 parser = argparse.ArgumentParser(description="Input files for GroScore")
 parser.add_argument('-s','--structparams', type=str, default="sp.gs", required=False, help="GroSscore strucutre parameter file")
-parser.add_argument('-n','--numruns', type=int, default=10, required=True, help="Number of runs GroSscore should perform")
+parser.add_argument('-n','--numruns', type=int, default=10, required=True, help="Number of pull/push cycles to perform")
 parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable interface cutout (default)")
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('-ff','--forcefield', type=str, default="gromos54a7", choices=["gromos54a7", "charmm36", "amber19sb"], help="Force field to use (default: gromos54a7)")
@@ -113,14 +113,14 @@ if numstructs == 0:
   exit(1)
 calcstruct = np.zeros(shape=(numstructs))
 calcstruct[:] = 1.0
-frenstruct = np.zeros(shape=(numstructs,args.numruns))
+frenstruct = np.zeros(shape=(numstructs,args.numruns*2))
 frenstruct[:,:] = "NaN"
 print("Reading input parameters finished.")
 print("GroScore will calculate a binding free energy estimate for " + str(numstructs) + " structures.")
 print("")
 
 j = 0
-while j <= args.numruns:
+while j <= args.numruns*2:
   # setup simulations
   if j == 0 and not os.path.isfile("results_%.0f.gs"%j):
     f = open("results_%.0f.gs"%j, "a")
@@ -145,7 +145,8 @@ while j <= args.numruns:
       if os.path.exists("./%s"%structids[i]):
         f = open("./%s/run.gs"%structids[i], "w")
         cutout_flag = 1 if args.cutout else 0
-        f.write("%s %d %d %s\n"%(structchains[i],args.numruns,cutout_flag,args.forcefield))
+        # MAXRUNS = numruns * 2 because each cycle has one pull (odd) and one push (even)
+        f.write("%s %d %d %s\n"%(structchains[i],args.numruns*2,cutout_flag,args.forcefield))
         f.close()
         # Copy job.run to structure directory and make executable
         job_run_dst = "./%s/job.run"%structids[i]
@@ -212,13 +213,13 @@ while j <= args.numruns:
         print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
       k += 1
     np.savetxt("frenstruct.gs",frenstruct,delimiter="\t")
-    if j == args.numruns:
+    if j == args.numruns*2:
       # check if last stage has finished
       i = 0
       ishould = int(np.sum(calcstruct))
       seen = set()
-      if os.path.isfile("results_%.0f.gs"%(args.numruns)):
-        with open("results_%.0f.gs"%(args.numruns), "r") as f:
+      if os.path.isfile("results_%.0f.gs"%(args.numruns*2)):
+        with open("results_%.0f.gs"%(args.numruns*2), "r") as f:
           for line in f:
             if not line.strip().startswith("#"):
               tmp = line.split()
