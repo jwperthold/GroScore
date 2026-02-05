@@ -117,6 +117,7 @@ frenstruct = np.zeros(shape=(numstructs,args.numruns*2))
 frenstruct[:,:] = "NaN"
 print("Reading input parameters finished.")
 print("GroScore will calculate a binding free energy estimate for " + str(numstructs) + " structures.")
+print("Each structure will undergo " + str(args.numruns) + " independent equilibration cycles (each cycle = 1 pull + 1 push).")
 print("")
 
 j = 0
@@ -162,7 +163,7 @@ while j <= args.numruns*2:
     f = open("array_submit.run", "w")
     f.write("#!/bin/bash\n")
     f.write("#SBATCH -J gs_0.86\n")
-    f.write("#SBATCH -n 2\n")
+    f.write("#SBATCH -n 4\n")
     f.write("#SBATCH --mem=4G\n")
     f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
     f.write("\n")

@@ -10,6 +10,7 @@ from scipy.spatial.distance import cdist
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Generate distance restraints for pulling and elastic network.")
+parser.add_argument('-f','--input', type=str, default="npt_cluster.gro", help="Input coordinate file (default: npt_cluster.gro)")
 parser.add_argument('-m','--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B.")
 args=parser.parse_args()
 
@@ -43,8 +44,8 @@ enk = 250
 prot1_data = []  # [(resname, atomname, atomnum, x, y, z), ...]
 prot2_data = []
 
-if os.path.isfile("npt_cluster.gro"):
-  with open("npt_cluster.gro", "r") as f:
+if os.path.isfile(args.input):
+  with open(args.input, "r") as f:
     for line in f:
       if not line.strip().startswith("#"):
         left = line[:15]
@@ -292,9 +293,6 @@ def write_mdp_config(filename, interdis, en1dis, en2dis, protkeep1, protkeep2,
 k = 25000.0 / numinterdis if numinterdis > 0 else 0
 
 # Write all MDP files
-write_mdp_config("nptfwd.mdp", interdis, en1dis, en2dis, protkeep1, protkeep2,
-                 prot1_data, prot2_data, k, enk, rate_inter=0, init_offset_inter=0)
-
 write_mdp_config("bind.mdp", interdis, en1dis, en2dis, protkeep1, protkeep2,
                  prot1_data, prot2_data, k, enk, rate_inter=0.0002, init_offset_inter=0)
 

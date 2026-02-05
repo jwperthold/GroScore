@@ -6,11 +6,10 @@
 #################################
 #                               #
 #         GroScore 0.86         #
-#      jan@ackergarten.at       #
 #                               #
 #################################
 
-nt=2
+nt=4
 
 export GMX_MAXBACKUP=-1
 # Get structure ID from current directory name
@@ -56,9 +55,11 @@ else
   WATER_BOX="spc216.gro"
 fi
 
-if [[ ! -f bindfwd_1.gro ]]; then
-  # Renumber PDB to have unique sequential residue numbers across chains
+# Renumber PDB to have unique sequential residue numbers across chains
+if [[ ! -f chain_map.gs ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
+fi
+if [[ ! -f conf.gro ]]; then
   # Fix missing atoms and non-standard residues
   python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
   # Get chain ID of first atom in each segment
@@ -83,14 +84,11 @@ if [[ ! -f bindfwd_1.gro ]]; then
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f fixed.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
 fi
-if [[ ! -f chain_map.gs ]]; then
-  python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
-fi
 bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
 if [[ $bl -eq 0 ]]; then
-  # initial checks, prepare MD simulations
-  if [[ ! -f npt.gro ]]; then
-    echo "npt.gro not found, equilibrating system."
+  # Stage 0: Prepare system up to emin_solv.gro
+  if [[ ! -f emin_solv.gro ]]; then
+    echo "emin_solv.gro not found, preparing system."
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
       # re-solvate cutout
@@ -123,7 +121,7 @@ if [[ $bl -eq 0 ]]; then
     gmx mdrun -nt $nt -deffnm emin_vac
     et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
     if [[ $et -eq 0 ]]; then
-      echo "after quilibration no entagled loops were found."
+      echo "after equilibration no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
       gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d 1.5
       gmx solvate -cp box.gro -cs $WATER_BOX -o box_solv.gro -p topol.top
@@ -132,81 +130,104 @@ if [[ $bl -eq 0 ]]; then
       gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 2
       gmx mdrun -nt $nt -deffnm emin_solv
       echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
-      # equilibrate cutout
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1 -maxwarn 10
-      timeout -k 1s 10m gmx mdrun -nt $nt -deffnm nvt_1
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1.tpr -t nvt_1.cpt -p topol.top -o nvt_2 -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_2
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2.tpr -t nvt_2.cpt -p topol.top -o nvt_3 -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_3
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3.tpr -t nvt_3.cpt -p topol.top -o nvt_4 -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_4
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4.tpr -t nvt_4.cpt -p topol.top -o nvt_5 -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_5
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5.tpr -t nvt_5.cpt -p topol.top -o npt -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt -deffnm npt
-      cp $MDP_DIR/nptfwd.mdp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
-      echo -e "0\n" | gmx trjconv -f npt.gro -s emin_solv.tpr -o npt_whole.gro -pbc whole
-      echo -e "1\n1\n" | gmx trjconv -f npt_whole.gro -s emin_solv.tpr -o npt_cluster.gro -pbc cluster
-      python3 ../../utils/make_disres_en.py -m chain_map.gs > numpertres.gs
+      cp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
     else
-      echo "after quilibration entagled loops were found."
+      echo "after equilibration entangled loops were found."
       echo $STRUCT_ID "ENTANGLED" >> ../results_0.gs
       exit 0
     fi
   else
     et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
     if [[ $et -eq 0 ]]; then
-      echo "no entagled loops were found."
+      echo "no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
     else
-      echo "entagled loops were found."
+      echo "entangled loops were found."
       echo $STRUCT_ID "ENTANGLED" >> ../results_0.gs
       exit 0
     fi
   fi
-  # now simulate unbinding and binding x times
-  rm DG.dat dGdt.dat
+
+  # Run one equilibration to generate disres (needs equilibrated structure for distances)
+  if [[ ! -f numpertres.gs ]]; then
+    echo "Generating distance restraints from initial equilibration."
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_init -maxwarn 10
+    timeout -k 1s 10m gmx mdrun -nt $nt -deffnm nvt_1_init
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_init.tpr -t nvt_1_init.cpt -p topol.top -o nvt_2_init -maxwarn 10
+    gmx mdrun -nt $nt -deffnm nvt_2_init
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_init.tpr -t nvt_2_init.cpt -p topol.top -o nvt_3_init -maxwarn 10
+    gmx mdrun -nt $nt -deffnm nvt_3_init
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_init.tpr -t nvt_3_init.cpt -p topol.top -o nvt_4_init -maxwarn 10
+    gmx mdrun -nt $nt -deffnm nvt_4_init
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_init.tpr -t nvt_4_init.cpt -p topol.top -o nvt_5_init -n index.ndx -maxwarn 10
+    gmx mdrun -nt $nt -deffnm nvt_5_init
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
+    gmx mdrun -nt $nt -deffnm npt_init
+    echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
+    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster
+    python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
+  fi
+
+  # Read NUMPERTRES for integration
   while read -r a b
   do
     NUMPERTRES=$a
   done < numpertres.gs
-  i=1
-  while [[ $i -le $MAXRUNS ]]
-  do
-    # unbinding
-    if [[ $(($i%2)) -ne 0 ]]; then
-      if [[ $i -eq 1 && ! -f bindfwd_$(($i)).gro ]]; then
-        gmx grompp -r emin_solv.gro -f bind.mdp -c npt.tpr -t npt.cpt -p topol.top -o bindfwd_$i -n index.ndx -maxwarn 10
-        gmx mdrun -nt $nt -deffnm bindfwd_$i
-      elif [[ ! -f bindfwd_$(($i)).gro ]]; then
-        gmx grompp -r emin_solv.gro -f nptfwd.mdp -c bindrev_$(($i-1)).tpr -t bindrev_$(($i-1)).cpt -p topol.top -o nptfwd_$i -n index.ndx -maxwarn 10
-        gmx mdrun -nt $nt -deffnm nptfwd_$i
-        gmx grompp -r emin_solv.gro -f bind.mdp -c nptfwd_$i.tpr -t nptfwd_$i.cpt -p topol.top -o bindfwd_$i -n index.ndx -maxwarn 10
-        gmx mdrun -nt $nt -deffnm bindfwd_$i
-      fi
-      if [[ -f bindfwd_$(($i))_pullf.xvg ]]; then
-        dG=$(python3 ../../utils/integrate.py -f bindfwd_$(($i))_pullf.xvg -nr $NUMPERTRES)
-        echo $STRUCT_ID $dG >> ../results_$i.gs
-      else
-        echo $STRUCT_ID "NaN" >> ../results_$i.gs
-      fi
-    # binding
-    else
-      if [[ ! -f bindrev_$(($i)).gro ]]; then
-        gmx grompp -r emin_solv.gro -f nptrev.mdp -c bindfwd_$(($i-1)).tpr -t bindfwd_$(($i-1)).cpt -p topol.top -o nptrev_$i -n index.ndx -maxwarn 10
-        gmx mdrun -nt $nt -deffnm nptrev_$i
-        gmx grompp -r emin_solv.gro -f bindrev.mdp -c nptrev_$i.tpr -t nptrev_$i.cpt -p topol.top -o bindrev_$i -n index.ndx -maxwarn 10
-        gmx mdrun -nt $nt -deffnm bindrev_$i
-      fi
-      if [[ -f bindrev_$(($i))_pullf.xvg ]]; then
-        dG=$(python3 ../../utils/integrate.py -f bindrev_$(($i))_pullf.xvg -nr $NUMPERTRES)
-        echo $STRUCT_ID $dG >> ../results_$i.gs
-      else
-        echo $STRUCT_ID "NaN" >> ../results_$i.gs
-      fi
+
+  # Independent equilibration cycles
+  # Each cycle: fresh equilibration -> pull -> short NPT -> push
+  NUMCYCLES=$((MAXRUNS/2))
+  cycle=1
+  while [[ $cycle -le $NUMCYCLES ]]; do
+    PULL_IDX=$((cycle*2-1))  # 1, 3, 5, ...
+    PUSH_IDX=$((cycle*2))    # 2, 4, 6, ...
+
+    echo "=== Cycle $cycle: Pull=$PULL_IDX, Push=$PUSH_IDX ==="
+
+    # Full equilibration for this cycle (NVT 1-5 + NPT)
+    if [[ ! -f npt_c${cycle}.gro ]]; then
+      echo "Running full equilibration for cycle $cycle"
+      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_c${cycle} -maxwarn 10
+      timeout -k 1s 10m gmx mdrun -nt $nt -deffnm nvt_1_c${cycle}
+      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_c${cycle}.tpr -t nvt_1_c${cycle}.cpt -p topol.top -o nvt_2_c${cycle} -maxwarn 10
+      gmx mdrun -nt $nt -deffnm nvt_2_c${cycle}
+      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_c${cycle}.tpr -t nvt_2_c${cycle}.cpt -p topol.top -o nvt_3_c${cycle} -maxwarn 10
+      gmx mdrun -nt $nt -deffnm nvt_3_c${cycle}
+      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_c${cycle}.tpr -t nvt_3_c${cycle}.cpt -p topol.top -o nvt_4_c${cycle} -maxwarn 10
+      gmx mdrun -nt $nt -deffnm nvt_4_c${cycle}
+      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_c${cycle}.tpr -t nvt_4_c${cycle}.cpt -p topol.top -o nvt_5_c${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt -deffnm nvt_5_c${cycle}
+      gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt -deffnm npt_c${cycle}
     fi
-    i=$(($i+1))
+
+    # Pull simulation (from equilibrated state)
+    if [[ ! -f bindfwd_${PULL_IDX}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f bind.mdp -c npt_c${cycle}.tpr -t npt_c${cycle}.cpt -p topol.top -o bindfwd_${PULL_IDX} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt -deffnm bindfwd_${PULL_IDX}
+    fi
+    if [[ -f bindfwd_${PULL_IDX}_pullf.xvg ]]; then
+      dG=$(python3 ../../utils/integrate.py -f bindfwd_${PULL_IDX}_pullf.xvg -nr $NUMPERTRES)
+      echo $STRUCT_ID $dG >> ../results_${PULL_IDX}.gs
+    else
+      echo $STRUCT_ID "NaN" >> ../results_${PULL_IDX}.gs
+    fi
+
+    # Short re-equilibration + Push simulation
+    if [[ ! -f bindrev_${PUSH_IDX}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f nptrev.mdp -c bindfwd_${PULL_IDX}.tpr -t bindfwd_${PULL_IDX}.cpt -p topol.top -o nptrev_${PUSH_IDX} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt -deffnm nptrev_${PUSH_IDX}
+      gmx grompp -r emin_solv.gro -f bindrev.mdp -c nptrev_${PUSH_IDX}.tpr -t nptrev_${PUSH_IDX}.cpt -p topol.top -o bindrev_${PUSH_IDX} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt -deffnm bindrev_${PUSH_IDX}
+    fi
+    if [[ -f bindrev_${PUSH_IDX}_pullf.xvg ]]; then
+      dG=$(python3 ../../utils/integrate.py -f bindrev_${PUSH_IDX}_pullf.xvg -nr $NUMPERTRES)
+      echo $STRUCT_ID $dG >> ../results_${PUSH_IDX}.gs
+    else
+      echo $STRUCT_ID "NaN" >> ../results_${PUSH_IDX}.gs
+    fi
+
+    cycle=$((cycle+1))
   done
 else
   echo $STRUCT_ID "BROKEN" >> ../results_0.gs

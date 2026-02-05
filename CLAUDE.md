@@ -63,11 +63,17 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
 ### Simulation Pipeline
 
-1. **Stage 0**: Structure validation, PDB conversion, solvation, 5-phase NVT + NPT equilibration
-2. **Stages 1-N**: Alternating unbinding (pulling) and binding (pushing) SMD simulations
-3. **Final**: Statistical analysis producing two ranking methods:
+1. **Stage 0**: Structure validation, PDB conversion, solvation, energy minimization (creates `emin_solv.gro`)
+2. **Initial Equilibration**: One full equilibration to generate distance restraints (creates `npt_init_cluster.gro` for `make_disres_en.py`)
+3. **Independent Cycles**: N cycles, each with:
+   - Fresh full equilibration (NVT 1-5 + NPT) from `emin_solv.gro` with new random velocities
+   - Pull simulation (unbinding)
+   - Short NPT re-equilibration + Push simulation (binding)
+4. **Final**: Statistical analysis producing two ranking methods:
    - `scores_avg.gs` - Simple average of pulls/pushes
    - `scores_cgi.gs` - Crooks Gaussian Intersection
+
+This architecture ensures statistically independent samples by starting each pull/push cycle from a fresh equilibration.
 
 ### Cutout Mode
 
