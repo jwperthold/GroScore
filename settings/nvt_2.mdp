@@ -1,47 +1,46 @@
-define		             = -DPOSRES
+define                   = -DPOSRES
 
-integrator	           = md		
-nsteps		             = 5000
-dt		                 = 0.004		
+integrator               = md
+nsteps                   = 5000
+dt                       = 0.004
 
-nstxout		             = 4000
-nstxout-compressed     = 4000
-compressed-x-precision = 1000		
-nstvout		             = 4000
-nstfout                = 4000
-nstenergy	             = 1000		
-nstlog		             = 1000
-nstcalcenergy          = 1000
+nstxout                  = 4000
+nstxout-compressed       = 4000
+compressed-x-precision   = 1000
+nstvout                  = 4000
+nstfout                  = 4000
+nstenergy                = 1000
+nstlog                   = 1000
+nstcalcenergy            = 1000
 
-comm-mode              = linear
-nstcomm                = 1000
+comm-mode                = linear
+nstcomm                  = 1000
 
-continuation	         = yes		
-constraint_algorithm   = lincs	    
-constraints	           = all-bonds	
-lincs_iter	           = 1		    
-lincs_order	           = 4		    
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = all-bonds
+lincs_iter               = 1
+lincs_order              = 4
 
-cutoff-scheme         = verlet
-ns_type		            = grid		
-rlist                 = 1.4		
-rcoulomb	            = 1.4		
-rvdw		              = 1.4		
+cutoff-scheme            = verlet
+ns_type                  = grid
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
 
-vdwtype                 = cut-off
-vdw-modifier            = none
+vdwtype                  = cut-off
+vdw-modifier             = none
 
-coulombtype	            = P3M-AD
-coulomb-modifier        = none
+coulombtype              = P3M-AD
+coulomb-modifier         = none
 
-tcoupl		             = V-rescale	            
-tc-grps		             = Protein Non-Protein	
-tau_t		               = 0.1	  0.1           
-ref_t		               = 124 	124
+tcoupl                   = V-rescale
+tc-grps                  = Protein Non-Protein
+tau_t                    = 0.1  0.1
+ref_t                    = 124  124
 
-pcoupl		             = no 		
+pcoupl                   = no
 
-pbc		                 = xyz		    
+pbc                      = xyz
 
-gen_vel		             = no		
-
+gen_vel                  = no
