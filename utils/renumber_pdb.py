@@ -24,9 +24,14 @@ if not os.path.isfile(args.pdbfile):
 seen_residues = {}  # (chain, resnum) -> new_resnum
 current_resnum = 0
 last_key = None
+prev_chain = None
+prev_orig_resnum = None
 
 # Also track which new residue numbers belong to protein B
 residues_b = set()
+
+# Track where chain breaks occur (gaps in original residue numbering)
+chain_breaks = set()  # Set of (chain, orig_resnum) keys that follow a gap
 
 with open(args.pdbfile, "r") as f:
     for line in f:
@@ -37,15 +42,24 @@ with open(args.pdbfile, "r") as f:
                 orig_resnum = int(line[22:26].strip())
                 key = (chain_id, orig_resnum)
                 if key != last_key:
+                    # Detect gaps in original residue numbering within same chain
+                    if prev_chain == chain_id and prev_orig_resnum is not None:
+                        if orig_resnum > prev_orig_resnum + 1:
+                            chain_breaks.add(key)
                     current_resnum += 1
                     seen_residues[key] = current_resnum
                     if chain_id in chains_b:
                         residues_b.add(current_resnum)
+                    prev_chain = chain_id
+                    prev_orig_resnum = orig_resnum
                     last_key = key
             except (ValueError, IndexError):
                 pass
 
 # Second pass: write renumbered PDB (only ATOM records, skip HETATM)
+# Add TER records at chain breaks (gaps in original residue numbering)
+written_breaks = set()  # Track which chain breaks have had TER written
+last_key = None
 with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
     for line in fin:
         if line.startswith("ATOM"):
@@ -54,9 +68,14 @@ with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
                 orig_resnum = int(line[22:26].strip())
                 key = (chain_id, orig_resnum)
                 new_resnum = seen_residues.get(key, orig_resnum)
+                # Add TER record before this residue if there was a gap in original numbering
+                if key in chain_breaks and key not in written_breaks:
+                    fout.write(f"TER\n")
+                    written_breaks.add(key)
                 # Rebuild line with new residue number (columns 23-26, right-justified)
                 new_line = line[:22] + f"{new_resnum:4d}" + line[26:]
                 fout.write(new_line)
+                last_key = key
             except (ValueError, IndexError):
                 fout.write(line)
         elif line.startswith("TER") or line.startswith("END"):
@@ -71,4 +90,5 @@ with open("chain_map.gs", "w") as f:
         f.write(f"{resnum}\n")
 
 print(f"Renumbered {current_resnum} residues, wrote {args.output}")
+print(f"Detected {len(chain_breaks)} chain breaks (gaps in residue numbering)")
 print(f"Generated chain_map.gs with {len(residues_b)} residues for chain(s) {args.chains}")

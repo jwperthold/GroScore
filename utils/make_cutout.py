@@ -145,6 +145,94 @@ if len(protkeep2_indices) > 1:
     if np.any(mask):
       laterkeep2_resnames.add(prot2_resname[protkeep2_indices[i]])
 
+# Helper function to extract residue number from resname (e.g., "123ALA" -> 123)
+def get_resnum(resname):
+  return int(resname[:-3])
+
+# Minimum fragment length (residues)
+MIN_FRAGMENT_LEN = 3
+
+def extend_small_fragments(kept_resnames, all_resnames):
+  """Extend fragments smaller than MIN_FRAGMENT_LEN by adding neighboring residues."""
+  if len(kept_resnames) == 0:
+    return kept_resnames
+
+  # Get unique residue numbers from kept resnames
+  kept_resnums = sorted(set(get_resnum(rn) for rn in kept_resnames))
+
+  # Get all available residue numbers from original protein
+  all_resnums = sorted(set(get_resnum(rn) for rn in all_resnames))
+  all_resnums_set = set(all_resnums)
+
+  # Build mapping from resnum to resname (for adding back)
+  resnum_to_resname = {}
+  for rn in all_resnames:
+    resnum = get_resnum(rn)
+    if resnum not in resnum_to_resname:
+      resnum_to_resname[resnum] = rn
+
+  # Identify fragments (contiguous residue groups)
+  fragments = []
+  current_frag = [kept_resnums[0]]
+  for i in range(1, len(kept_resnums)):
+    if kept_resnums[i] == kept_resnums[i-1] + 1:
+      current_frag.append(kept_resnums[i])
+    else:
+      fragments.append(current_frag)
+      current_frag = [kept_resnums[i]]
+  fragments.append(current_frag)
+
+  # Extend small fragments
+  extended_resnums = set(kept_resnums)
+  for frag in fragments:
+    if len(frag) < MIN_FRAGMENT_LEN:
+      needed = MIN_FRAGMENT_LEN - len(frag)
+      frag_start = frag[0]
+      frag_end = frag[-1]
+
+      # Try to extend in both directions alternately
+      added = 0
+      extend_before = 1
+      extend_after = 1
+      while added < needed:
+        # Try extending before
+        candidate = frag_start - extend_before
+        if candidate in all_resnums_set and candidate not in extended_resnums:
+          extended_resnums.add(candidate)
+          added += 1
+          extend_before += 1
+          if added >= needed:
+            break
+        else:
+          extend_before += 1
+
+        # Try extending after
+        candidate = frag_end + extend_after
+        if candidate in all_resnums_set and candidate not in extended_resnums:
+          extended_resnums.add(candidate)
+          added += 1
+          extend_after += 1
+          if added >= needed:
+            break
+        else:
+          extend_after += 1
+
+        # Prevent infinite loop if no more residues available
+        if extend_before > 100 and extend_after > 100:
+          break
+
+  # Convert back to resnames
+  extended_resnames = set()
+  for rn in all_resnames:
+    if get_resnum(rn) in extended_resnums:
+      extended_resnames.add(rn)
+
+  return extended_resnames
+
+# Extend small fragments by adding neighboring residues
+laterkeep1_resnames = extend_small_fragments(laterkeep1_resnames, prot1_resname)
+laterkeep2_resnames = extend_small_fragments(laterkeep2_resnames, prot2_resname)
+
 # Collect final atoms to keep
 protlaterkeep1 = [(prot1_resname[i], prot1_atomname[i], prot1_coords[i])
                   for i in range(len1) if prot1_resname[i] in laterkeep1_resnames]
@@ -154,13 +242,10 @@ protlaterkeep2 = [(prot2_resname[i], prot2_atomname[i], prot2_coords[i])
 lenlk1 = len(protlaterkeep1)
 lenlk2 = len(protlaterkeep2)
 
-# Helper function to extract residue number from resname (e.g., "123ALA" -> 123)
-def get_resnum(resname):
-  return int(resname[:-3])
-
 # Write cutout PDB file
 with open("cutout.pdb", "w") as pdbfile:
   atom_num = 0
+  prev_resnum = None
 
   # Write protein A atoms
   for i in range(lenlk1):
@@ -169,22 +254,22 @@ with open("cutout.pdb", "w") as pdbfile:
     res3 = resname[-3:]
 
     # Write TER record if there's a gap in residue numbering
-    if i > 0:
-      prev_resnum = get_resnum(protlaterkeep1[i-1][0])
-      if resnum > prev_resnum + 1:
-        atom_num += 1
-        pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
+    if prev_resnum is not None and resnum > prev_resnum + 1:
+      atom_num += 1
+      pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
 
     atom_num += 1
     pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} A{resnum:>4}    "
                   f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
                   f"  1.00  0.00          {atomname[0]:>2}\n")
+    prev_resnum = resnum
 
-  # Write TER between chains
+  # Write TER between protein A and protein B
   if lenlk1 > 0 and lenlk2 > 0:
     atom_num += 1
-    prev_resnum = get_resnum(protlaterkeep1[-1][0])
     pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
+
+  prev_resnum = None
 
   # Write protein B atoms
   for i in range(lenlk2):
@@ -193,13 +278,12 @@ with open("cutout.pdb", "w") as pdbfile:
     res3 = resname[-3:]
 
     # Write TER record if there's a gap in residue numbering
-    if i > 0:
-      prev_resnum = get_resnum(protlaterkeep2[i-1][0])
-      if resnum > prev_resnum + 1:
-        atom_num += 1
-        pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
+    if prev_resnum is not None and resnum > prev_resnum + 1:
+      atom_num += 1
+      pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
 
     atom_num += 1
     pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} B{resnum:>4}    "
                   f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
                   f"  1.00  0.00          {atomname[0]:>2}\n")
+    prev_resnum = resnum

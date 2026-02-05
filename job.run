@@ -43,10 +43,10 @@ if [[ "$FORCEFIELD" == "charmm36" ]]; then
   fi
   FF_FLAG="-ff charmm36-jul2022"
   WATER_MODEL="tip3p"
-  WATER_BOX="tip3p.gro"
+  WATER_BOX="spc216.gro"
 else
-  # gromos54a7 (default)
-  FF_FLAG=""
+  # gromos54a7
+  FF_FLAG="-ff gromos54a7"
   WATER_MODEL="spc"
   WATER_BOX="spc216.gro"
 fi
@@ -56,11 +56,27 @@ if [[ ! -f bindfwd_1.gro ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
   # Fix missing atoms and non-standard residues
   python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
-  if [[ "$FORCEFIELD" == "charmm36" ]]; then
-    gmx pdb2gmx -f fixed.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -o conf.gro
-  else
-    echo -e "16\n" | gmx pdb2gmx -f fixed.pdb -water $WATER_MODEL -heavyh -ignh -missing -o conf.gro
-  fi
+  # Get chain ID of first atom in each segment
+  CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' fixed.pdb)
+  # Merge selections: y if same chain ID as previous, n if different
+  MERGE_INPUT=""
+  prev_chain=""
+  for chain in $CHAIN_IDS; do
+    if [[ -n "$prev_chain" ]]; then
+      if [[ "$chain" == "$prev_chain" ]]; then
+        MERGE_INPUT="${MERGE_INPUT}y\n"
+      else
+        MERGE_INPUT="${MERGE_INPUT}n\n"
+      fi
+    fi
+    prev_chain=$chain
+  done
+  # Count chain segments by counting TER records + 1
+  NSEGS=$(($(grep -c "^TER" fixed.pdb) + 1))
+  # Terminal selections: 1 = uncharged termini for each N/C terminus of all fragments
+  TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
+  # Merge questions come first, then terminal selections
+  echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f fixed.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
 fi
 if [[ ! -f chain_map.gs ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
@@ -73,16 +89,32 @@ if [[ $bl -eq 0 ]]; then
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
       # re-solvate cutout
-      if [[ "$FORCEFIELD" == "charmm36" ]]; then
-        gmx pdb2gmx -f cutout.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -o conf_cutout.gro
-      else
-        echo -e "16\n" | gmx pdb2gmx -f cutout.pdb -water $WATER_MODEL -heavyh -ignh -missing -o conf_cutout.gro
-      fi
+      # Get chain ID of first atom in each segment
+      CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' cutout.pdb)
+      # Merge selections: y if same chain ID as previous, n if different
+      MERGE_INPUT=""
+      prev_chain=""
+      for chain in $CHAIN_IDS; do
+        if [[ -n "$prev_chain" ]]; then
+          if [[ "$chain" == "$prev_chain" ]]; then
+            MERGE_INPUT="${MERGE_INPUT}y\n"
+          else
+            MERGE_INPUT="${MERGE_INPUT}n\n"
+          fi
+        fi
+        prev_chain=$chain
+      done
+      # Count segments for terminal selections (all fragments need termini)
+      NSEGS=$(($(grep -c "^TER" cutout.pdb) + 1))
+      # Terminal selections: 1 = uncharged termini for each N/C terminus of all fragments
+      TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
+      # Merge questions come first, then terminal selections
+      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f cutout.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     fi
-    gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 1
+    gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 2
     gmx mdrun -nt $nt -deffnm emin_vac
     et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
     if [[ $et -eq 0 ]]; then
@@ -90,9 +122,9 @@ if [[ $bl -eq 0 ]]; then
       echo $STRUCT_ID "OK" >> ../results_0.gs
       gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d 1.5
       gmx solvate -cp box.gro -cs $WATER_BOX -o box_solv.gro -p topol.top
-      gmx grompp -r box_solv.gro -f $MDP_DIR/emin_vac.mdp -c box_solv.gro -o ions.tpr -maxwarn 1
+      gmx grompp -r box_solv.gro -f $MDP_DIR/emin_vac.mdp -c box_solv.gro -o ions.tpr -maxwarn 2
       echo -e "SOL\n" | gmx genion -s ions.tpr -o solv_ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
-      gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 1
+      gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 2
       gmx mdrun -nt $nt -deffnm emin_solv
       echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
       # equilibrate cutout
@@ -110,8 +142,7 @@ if [[ $bl -eq 0 ]]; then
       gmx mdrun -nt $nt -deffnm npt
       cp $MDP_DIR/nptfwd.mdp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
       echo -e "0\n" | gmx trjconv -f npt.gro -s emin_solv.tpr -o npt_whole.gro -pbc whole
-      echo -e "1\n0\n" | gmx trjconv -f npt_whole.gro -s emin_solv.tpr -o npt_center.gro -center -ur compact -pbc nojump
-      echo -e "1\n1\n" | gmx trjconv -f npt_whole.gro -s emin_solv.tpr -o npt_center_prot.gro -center -ur compact -pbc nojump
+      echo -e "1\n1\n" | gmx trjconv -f npt_whole.gro -s emin_solv.tpr -o npt_cluster.gro -pbc cluster
       python3 ../../utils/make_disres_en.py -m chain_map.gs > numpertres.gs
     else
       echo "after quilibration entagled loops were found."

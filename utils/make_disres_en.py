@@ -43,8 +43,8 @@ enk = 250
 prot1_data = []  # [(resname, atomname, atomnum, x, y, z), ...]
 prot2_data = []
 
-if os.path.isfile("npt_center_prot.gro"):
-  with open("npt_center_prot.gro", "r") as f:
+if os.path.isfile("npt_cluster.gro"):
+  with open("npt_cluster.gro", "r") as f:
     for line in f:
       if not line.strip().startswith("#"):
         left = line[:15]

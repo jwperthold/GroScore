@@ -96,9 +96,40 @@
     HGA3    CG331    CG1T1    CG1T2     9     0.000000     0.000000     1 ;
 
 
-; When looking for improper dihedral parameters, GROMACS does an A-B-C-D -> D-C-B-A reversal automatically. 
-; However, when the phase offset parameter of the improper dihedral is 0, the corresponding potential term is an 
-; even function of the dihedral angle, thus the permutation A-B-C-D -> A-C-B-D gives the same potential energy. 
+; Missing dihedrals for uncharged N-terminus (NH2 type)
+; These occur when using -ter option with uncharged termini
+[ dihedraltypes ]
+;      i        j        k        l  func         phi0         kphi  mult
+; NH2-CT1-C-X: phi angle for N-terminal residue with uncharged terminus
+     NH2      CT1        C        N     9     0.000000     0.000000     1 ;
+     NH2      CT1        C      NH1     9     0.000000     0.000000     1 ;
+; NH2-CT1-CT2-X: sidechain dihedrals for N-terminal residue
+     NH2      CT1      CT2      CT2     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2      CT1     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2      CT3     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2       CA     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2      CPH1    9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2       CC     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2        S     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2      SM     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2      NC2     9     0.000000     0.000000     1 ;
+     NH2      CT1      CT2      NY     9     0.000000     0.000000     1 ;
+; NH2-CT1-CT2A-X: sidechain dihedrals for GLU/ASP N-terminal residue
+     NH2      CT1     CT2A      CT2     9     0.000000     0.000000     1 ;
+; NH2-CT1-CT3-X: for terminal residues with CT3 sidechain (ALA)
+     NH2      CT1      CT3      HA3     9     0.000000     0.000000     1 ;
+; For uncharged C-terminus (COOH/CD type)
+      CT1       CD       OB      OH1     9     0.000000     0.000000     1 ;
+      CT2      CT1       CD       OB     9     0.000000     0.000000     1 ;
+      CT2      CT1       CD      OH1     9     0.000000     0.000000     1 ;
+      HB1      CT1       CD       OB     9     0.000000     0.000000     1 ;
+      HB1      CT1       CD      OH1     9     0.000000     0.000000     1 ;
+        N      CT1       CD       OB     9     0.000000     0.000000     1 ;
+        N      CT1       CD      OH1     9     0.000000     0.000000     1 ;
+
+; When looking for improper dihedral parameters, GROMACS does an A-B-C-D -> D-C-B-A reversal automatically.
+; However, when the phase offset parameter of the improper dihedral is 0, the corresponding potential term is an
+; even function of the dihedral angle, thus the permutation A-B-C-D -> A-C-B-D gives the same potential energy.
 ; The CHARMM engine seemingly does this automatically, e.g. in the residue SAH (in CGenFF), but GROMACS does
 ; not support this. In order to satisfy grompp, we generate the corresponding dihedral types here.
 [ dihedraltypes ]
