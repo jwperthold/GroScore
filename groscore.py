@@ -156,7 +156,7 @@ while j <= args.numruns:
     f = open("array_submit.run", "w")
     f.write("#!/bin/bash\n")
     f.write("#SBATCH -J gs_0.84\n")
-    f.write("#SBATCH -n 4\n")
+    f.write("#SBATCH -n 2\n")
     f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
     f.write("\n")
     f.write("# Read structure ID from mapping file\n")
