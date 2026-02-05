@@ -3,7 +3,7 @@
 
 #################################
 #                               #
-#         GroScore 0.85         #
+#         GroScore 0.86         #
 #                               #
 #################################
 
@@ -101,7 +101,7 @@ def countlines(filepath):
 print("")
 print("#################################")
 print("#                               #")
-print("#         GroScore 0.85         #")
+print("#         GroScore 0.86         #")
 print("#                               #")
 print("#################################")
 print("")
@@ -160,7 +160,7 @@ while j <= args.numruns:
     #SBATCH array
     f = open("array_submit.run", "w")
     f.write("#!/bin/bash\n")
-    f.write("#SBATCH -J gs_0.85\n")
+    f.write("#SBATCH -J gs_0.86\n")
     f.write("#SBATCH -n 2\n")
     f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
     f.write("\n")
