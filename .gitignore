@@ -5,3 +5,4 @@ __pycache__/
 test/
 test_charmm/
 test_amber/
+benchmark/*/
