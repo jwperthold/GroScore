@@ -49,7 +49,7 @@ elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
   # Use tip4p for pdb2gmx, then replace with OPC in topology (recommended for ff19SB)
   FF_FLAG="-ff amber19sb_OL15"
   WATER_MODEL="tip4p"
-  WATER_BOX="tip4p.gro"
+  WATER_BOX="spc216.gro"
   USE_OPC=1
 else
   # gromos54a7
