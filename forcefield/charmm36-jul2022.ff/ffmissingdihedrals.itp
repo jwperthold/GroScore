@@ -126,6 +126,8 @@
       HB1      CT1       CD      OH1     9     0.000000     0.000000     1 ;
         N      CT1       CD       OB     9     0.000000     0.000000     1 ;
         N      CT1       CD      OH1     9     0.000000     0.000000     1 ;
+; special case?
+        N       C        CP1       H     9     0.000000     0.000000     1 ;
 
 ; When looking for improper dihedral parameters, GROMACS does an A-B-C-D -> D-C-B-A reversal automatically.
 ; However, when the phase offset parameter of the improper dihedral is 0, the corresponding potential term is an
@@ -133,4 +135,5 @@
 ; The CHARMM engine seemingly does this automatically, e.g. in the residue SAH (in CGenFF), but GROMACS does
 ; not support this. In order to satisfy grompp, we generate the corresponding dihedral types here.
 [ dihedraltypes ]
-;      i        j        k        l  func         phi0         kphi  mult
+;      i        j        k        l  func         phi0         kphi
+       N        C        CP1      H     2     0.000000     0.000000 ;
