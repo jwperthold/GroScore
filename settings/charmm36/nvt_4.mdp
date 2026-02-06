@@ -20,7 +20,7 @@ continuation             = yes
 constraint_algorithm     = lincs
 constraints              = all-bonds
 lincs_iter               = 1
-lincs_order              = 4
+lincs_order              = 6
 
 cutoff-scheme            = Verlet
 ns_type                  = grid
