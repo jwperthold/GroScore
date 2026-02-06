@@ -23,7 +23,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Optional Cutout Mode** - Choose between interface-only (faster) or full-protein simulations
 - **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom), CHARMM36 (all-atom), and AMBER19SB (all-atom)
-- **Automatic Fragment Handling** - Chain break detection, minimum fragment size enforcement, and same-chain fragment merging
+- **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
 
 ## Requirements
 
@@ -206,20 +206,24 @@ groscore/
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |
 | Ion concentration | 0.15 M | NaCl for physiological conditions |
-| Minimum fragment size | 3 residues | Ensures stable fragments in cutout mode |
+| Minimum fragment size | 5 residues | Ensures stable fragments in cutout mode |
+| Gap filling threshold | < 4 residues | Fills small gaps to avoid artificial chain breaks |
+| LINCS order | 6 | Enhanced constraint stability |
 
 ## Fragment Handling
 
 GroScore automatically handles complex protein structures with multiple chains and chain breaks:
 
 - **Chain Break Detection** - Gaps in residue numbering within a chain are detected and marked with TER records
-- **Minimum Fragment Size** - Fragments smaller than 3 residues are automatically extended by adding neighboring residues
+- **Small Gap Filling** - Gaps < 4 residues introduced by interface filtering are automatically filled to avoid introducing artificial chain breaks, while respecting TER positions (never merges different chains)
+- **Minimum Fragment Size** - Fragments smaller than 5 residues are automatically extended by adding neighboring residues for improved stability
+- **Isolated Cap Removal** - ACE/NME caps that lost their partners during interface filtering are removed to prevent orphaned caps
 - **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
 - **Terminal Capping** - Fragment termini are capped to provide neutral ends:
   - **CHARMM36/AMBER19SB**: ACE/NME residues added explicitly via `cap_termini.py` before pdb2gmx
   - **GROMOS 54A7**: NH2/COOH patches applied during pdb2gmx processing
 
-This ensures proper topology generation even for structures with missing loops or multi-chain complexes.
+This ensures proper topology generation even for structures with missing loops or multi-chain complexes, while maintaining chain boundaries and avoiding artificial chain breaks.
 
 ## File Formats
 
