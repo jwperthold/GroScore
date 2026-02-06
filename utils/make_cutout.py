@@ -283,10 +283,14 @@ with open("cutout.pdb", "w") as pdbfile:
     resnum = get_resnum(resname)
     res3 = resname[-3:]
 
-    # Write TER record if there's a gap in residue numbering OR if TER exists in fixed.pdb
-    if prev_resnum is not None and (resnum > prev_resnum + 1 or prev_resnum in ter_positions):
-      atom_num += 1
-      pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
+    # Write TER record if there's a gap in residue numbering
+    # OR if residues are consecutive but TER existed in fixed.pdb (real chain break)
+    if prev_resnum is not None:
+      has_gap = resnum > prev_resnum + 1
+      has_ter_in_fixed = prev_resnum in ter_positions and resnum == prev_resnum + 1
+      if has_gap or has_ter_in_fixed:
+        atom_num += 1
+        pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
 
     atom_num += 1
     pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} A{resnum:>4}    "
@@ -307,10 +311,14 @@ with open("cutout.pdb", "w") as pdbfile:
     resnum = get_resnum(resname)
     res3 = resname[-3:]
 
-    # Write TER record if there's a gap in residue numbering OR if TER exists in fixed.pdb
-    if prev_resnum is not None and (resnum > prev_resnum + 1 or prev_resnum in ter_positions):
-      atom_num += 1
-      pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
+    # Write TER record if there's a gap in residue numbering
+    # OR if residues are consecutive but TER existed in fixed.pdb (real chain break)
+    if prev_resnum is not None:
+      has_gap = resnum > prev_resnum + 1
+      has_ter_in_fixed = prev_resnum in ter_positions and resnum == prev_resnum + 1
+      if has_gap or has_ter_in_fixed:
+        atom_num += 1
+        pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
 
     atom_num += 1
     pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} B{resnum:>4}    "
