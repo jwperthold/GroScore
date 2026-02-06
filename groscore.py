@@ -231,7 +231,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles):
 print("")
 print("#################################")
 print("#                               #")
-print("#         GroScore 0.92         #")
+print("#         GroScore 0.93         #")
 print("#                               #")
 print("#################################")
 print("")
@@ -292,7 +292,7 @@ while j <= args.numruns*2:
     #SBATCH array
     f = open("array_submit.run", "w")
     f.write("#!/bin/bash\n")
-    f.write("#SBATCH -J gs_0.92\n")
+    f.write("#SBATCH -J gs_0.93\n")
     f.write("#SBATCH -n 4\n")
     f.write("#SBATCH --mem=4G\n")
     f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
