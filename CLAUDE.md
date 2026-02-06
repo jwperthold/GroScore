@@ -133,7 +133,7 @@ AMBER19SB is included in standard GROMACS installations.
 - Interface cutoff: 0.6 nm
 - Elastic network range: 0.4-0.9 nm
 - Keep cutoff for interface extraction: 2.0 nm
-- Minimum fragment size: 5 residues
+- Minimum fragment size: 3 residues
 - Ion concentration: 0.15 M NaCl
 
 ## Structure Parameter File (sp.gs)

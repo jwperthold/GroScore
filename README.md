@@ -201,7 +201,7 @@ groscore/
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |
 | Ion concentration | 0.15 M | NaCl for physiological conditions |
-| Minimum fragment size | 5 residues | Ensures stable fragments in cutout mode |
+| Minimum fragment size | 3 residues | Ensures stable fragments in cutout mode |
 
 ## Fragment Handling
 
