@@ -172,32 +172,40 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
   max_idx = num_cycles * 2 if not use_max_data else frenstruct.shape[1]
 
   for i in range(numstructs):
-    pulls = []
-    pushes = []
+    # Collect complete cycles (matching pull-push pairs)
+    complete_cycles = []
+    max_cycles = frenstruct.shape[1] // 2
 
-    # Collect data up to max_idx (first num_cycles if use_max_data=False, all data if True)
-    for k in range(min(max_idx, frenstruct.shape[1])):
-      # pulling (odd result numbers = even indices: 0,2,4,...)
-      if k % 2 == 0 and not np.isnan(frenstruct[i,k]):
-        pulls.append(frenstruct[i,k])
-      # pushing (even result numbers = odd indices: 1,3,5,...)
-      elif k % 2 != 0 and not np.isnan(frenstruct[i,k]):
-        pushes.append(frenstruct[i,k])
+    for cycle_idx in range(max_cycles):
+      pull_idx = cycle_idx * 2
+      push_idx = cycle_idx * 2 + 1
 
-    # Count complete cycles (minimum of pulls and pushes)
-    num_complete_cycles = min(len(pulls), len(pushes))
+      if pull_idx < frenstruct.shape[1] and push_idx < frenstruct.shape[1]:
+        pull_val = frenstruct[i, pull_idx]
+        push_val = frenstruct[i, push_idx]
 
-    # Skip this structure if it doesn't have enough cycles
+        # Only include if BOTH pull and push exist for this cycle
+        if not np.isnan(pull_val) and not np.isnan(push_val):
+          complete_cycles.append((pull_val, push_val))
+
+    num_complete_cycles = len(complete_cycles)
+
+    # Skip this structure if it doesn't have enough complete cycles
     if num_complete_cycles < num_cycles:
       continue
 
-    # For convergence tracking, only use first num_cycles
+    # For convergence tracking, use first num_cycles complete cycles
+    # For max data, use all complete cycles
     if not use_max_data and num_complete_cycles > num_cycles:
-      pulls = pulls[:num_cycles]
-      pushes = pushes[:num_cycles]
+      cycles_to_use = complete_cycles[:num_cycles]
       num_cycles_used = num_cycles
     else:
+      cycles_to_use = complete_cycles
       num_cycles_used = num_complete_cycles
+
+    # Extract pulls and pushes from selected cycles
+    pulls = [cycle[0] for cycle in cycles_to_use]
+    pushes = [cycle[1] for cycle in cycles_to_use]
 
     avg_score = float('nan')
     avg_ci95 = float('nan')
