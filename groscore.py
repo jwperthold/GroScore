@@ -98,6 +98,69 @@ def countlines(filepath):
 
 #------------------------------------------------------
 
+def calculate_scores(frenstruct, structids, numstructs, num_cycles):
+  """Calculate scores using data from the first num_cycles cycles.
+
+  Args:
+    frenstruct: Array of free energy values [numstructs x (numruns*2)]
+    structids: List of structure IDs
+    numstructs: Number of structures
+    num_cycles: Number of complete cycles to include (each cycle = pull + push)
+
+  Returns:
+    fren: List of (struct_id, avg_score) tuples
+    frencgi: List of (struct_id, cgi_score) tuples
+  """
+  fren = []
+  frencgi = []
+  max_idx = num_cycles * 2  # Each cycle has 2 results (pull + push)
+
+  for i in range(numstructs):
+    pulls = []
+    pushes = []
+
+    for k in range(min(max_idx, frenstruct.shape[1])):
+      # pulling (odd result numbers = even indices: 0,2,4,...)
+      if k % 2 == 0 and not np.isnan(frenstruct[i,k]):
+        pulls.append(frenstruct[i,k])
+      # pushing (even result numbers = odd indices: 1,3,5,...)
+      elif k % 2 != 0 and not np.isnan(frenstruct[i,k]):
+        pushes.append(frenstruct[i,k])
+
+    avg_score = float('nan')
+    cgi_score = float('nan')
+
+    # Calculate average score if we have data
+    if len(pulls) > 0 and len(pushes) > 0:
+      avgpulls = np.average(pulls)
+      avgpushes = np.average(pushes)
+      avg_score = (avgpulls + avgpushes) / 2.0
+
+    # Calculate CGI score if we have enough data
+    if len(pulls) > 2 and len(pushes) > 2:
+      avgpulls = np.average(pulls)
+      varpulls = np.var(pulls)
+      avgpushes = np.average(pushes)
+      varpushes = np.var(pushes)
+
+      # Crooks Gaussian Intersection
+      tmpcgi = (avgpulls/varpulls - avgpushes/varpushes + math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
+      tmpcgii = (avgpulls/varpulls - avgpushes/varpushes - math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
+      disti = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgi)
+      distii = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgii)
+
+      if disti > distii:
+        cgi_score = tmpcgii
+      else:
+        cgi_score = tmpcgi
+
+    fren.append((structids[i], avg_score))
+    frencgi.append((structids[i], cgi_score))
+
+  return fren, frencgi
+
+#------------------------------------------------------
+
 print("")
 print("#################################")
 print("#                               #")
@@ -214,95 +277,51 @@ while j <= args.numruns*2:
         print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
       k += 1
     np.savetxt("frenstruct.gs",frenstruct,delimiter="\t")
-    if j == args.numruns*2:
-      # check if last stage has finished
-      i = 0
-      ishould = int(np.sum(calcstruct))
-      seen = set()
-      if os.path.isfile("results_%.0f.gs"%(args.numruns*2)):
-        with open("results_%.0f.gs"%(args.numruns*2), "r") as f:
-          for line in f:
-            if not line.strip().startswith("#"):
-              tmp = line.split()
-              try:
-                struct_id = tmp[0]
-                if struct_id in structids:
-                  idx = structids.index(struct_id)
-                  if calcstruct[idx] == 1 and struct_id not in seen:
-                    seen.add(struct_id)
-                    i += 1
-              except (IndexError, AttributeError):
-                pass
-        if i == ishould:
-          print("All simulations are done!")
-        else:
-          print("Simulations are not done yet!")
-          k = 0
-          while k < numstructs:
-            if calcstruct[k] == 1 and structids[k] not in seen:
-              print("Missing results for structure %s!"%structids[k])
-            k += 1
-      # now do ranking
-      fren = []  # list of (struct_id, score)
-      frencgi = []  # list of (struct_id, score)
-      i = 0
-      while i < numstructs:
-        k = 0
-        pulls = []
-        pushes = []
-        while k < frenstruct.shape[1]:
-          # pulling
-          if k%2 == 0.0 and np.isnan(frenstruct[i,k]) == False:
-            # the dW direction in the file is -1*unbinding=binding
-            pulls.append(frenstruct[i,k])
-          # pushing
-          if k%2 != 0.0 and np.isnan(frenstruct[i,k]) == False:
-            # the dW direction in the file is -1*-1*binding=binding
-            pushes.append(frenstruct[i,k])
-          k += 1
-        # fren
-        avgpulls = 0
-        varpulls = 0
-        avgpushes = 0
-        varpushes = 0
-        avg_score = float('nan')
-        cgi_score = float('nan')
-        if len(pulls) > 0 and len(pushes) > 0:
-          # pulls
-          avgpulls = np.average(pulls)
-          # pushes
-          avgpushes = np.average(pushes)
-          # combine fwd + rev with averages
-          avg_score = (avgpulls + avgpushes) / 2.0
-        if len(pulls) > 2 and len(pushes) > 2:
-          # pulls
-          varpulls = np.var(pulls)
-          # pushes
-          varpushes = np.var(pushes)
-          # combine fwd + rev with gaussian intersection
-          tmpcgi = (avgpulls/varpulls - avgpushes/varpushes + math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
-          tmpcgii = (avgpulls/varpulls - avgpushes/varpushes - math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
-          disti = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgi)
-          distii = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgii)
-          if disti > distii:
-            cgi_score = tmpcgii
-          else:
-            cgi_score = tmpcgi
-        fren.append((structids[i], avg_score))
-        frencgi.append((structids[i], cgi_score))
-        sys.stdout.write("\rCalculating results - " + str(round((float(i)+1.0)/numstructs*100.0,1)) + "%")
-        sys.stdout.flush()
-        i += 1
-      print("")
-      print("")
+
+    # Check if we have a complete cycle (pull + push pair)
+    # j is the result number (1-indexed), so j=2,4,6,... means a cycle just completed
+    if j >= 2 and j % 2 == 0:
+      current_cycle = j // 2
+
+      # Calculate cumulative scores using all cycles up to current_cycle
+      sys.stdout.write("\rCalculating scores for cycle %d... "%current_cycle)
+      sys.stdout.flush()
+
+      fren, frencgi = calculate_scores(frenstruct, structids, numstructs, current_cycle)
+
       # Sort by score (NaN values go to end)
       fren.sort(key=lambda x: (math.isnan(x[1]), x[1]))
       frencgi.sort(key=lambda x: (math.isnan(x[1]), x[1]))
-      # Write output files
-      with open("scores_avg.gs", "w") as f:
+
+      # Write cumulative scores for this cycle
+      cycle_label = "cycle 1" if current_cycle == 1 else "cycles 1-%d"%current_cycle
+
+      with open("scores_avg_c%d.gs"%current_cycle, "w") as f:
+        f.write("# Cumulative scores using %s\n"%cycle_label)
         for struct_id, score in fren:
           f.write("%s\t%s\n"%(struct_id, score))
-      with open("scores_cgi.gs", "w") as f:
+
+      with open("scores_cgi_c%d.gs"%current_cycle, "w") as f:
+        f.write("# Cumulative scores using %s\n"%cycle_label)
         for struct_id, score in frencgi:
           f.write("%s\t%s\n"%(struct_id, score))
+
+      # Also update main score files (always reflect latest complete data)
+      with open("scores_avg.gs", "w") as f:
+        f.write("# Cumulative scores using %s\n"%cycle_label)
+        for struct_id, score in fren:
+          f.write("%s\t%s\n"%(struct_id, score))
+
+      with open("scores_cgi.gs", "w") as f:
+        f.write("# Cumulative scores using %s\n"%cycle_label)
+        for struct_id, score in frencgi:
+          f.write("%s\t%s\n"%(struct_id, score))
+
+      print("Done!")
+
+      # Check if all expected cycles are complete
+      if j == args.numruns*2:
+        print("")
+        print("All %d requested cycles are complete!"%args.numruns)
+        print("")
   j += 1
