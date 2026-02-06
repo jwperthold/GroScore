@@ -153,34 +153,41 @@ def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
 
 #------------------------------------------------------
 
-def calculate_scores(frenstruct, structids, numstructs, num_cycles):
-  """Calculate scores using data from the first num_cycles cycles.
+def calculate_scores(frenstruct, structids, numstructs, min_cycles):
+  """Calculate scores for structures with at least min_cycles complete cycles.
 
   Args:
     frenstruct: Array of free energy values [numstructs x (numruns*2)]
     structids: List of structure IDs
     numstructs: Number of structures
-    num_cycles: Number of complete cycles to include (each cycle = pull + push)
+    min_cycles: Minimum number of complete cycles required (each cycle = pull + push)
 
   Returns:
-    fren: List of (struct_id, avg_score, ci95) tuples
-    frencgi: List of (struct_id, cgi_score, ci95) tuples
+    fren: List of (struct_id, avg_score, ci95, num_cycles) tuples (only structures with >= min_cycles)
+    frencgi: List of (struct_id, cgi_score, ci95, num_cycles) tuples (only structures with >= min_cycles)
   """
   fren = []
   frencgi = []
-  max_idx = num_cycles * 2  # Each cycle has 2 results (pull + push)
 
   for i in range(numstructs):
     pulls = []
     pushes = []
 
-    for k in range(min(max_idx, frenstruct.shape[1])):
+    # Collect ALL available data for this structure
+    for k in range(frenstruct.shape[1]):
       # pulling (odd result numbers = even indices: 0,2,4,...)
       if k % 2 == 0 and not np.isnan(frenstruct[i,k]):
         pulls.append(frenstruct[i,k])
       # pushing (even result numbers = odd indices: 1,3,5,...)
       elif k % 2 != 0 and not np.isnan(frenstruct[i,k]):
         pushes.append(frenstruct[i,k])
+
+    # Count complete cycles (minimum of pulls and pushes)
+    num_complete_cycles = min(len(pulls), len(pushes))
+
+    # Skip this structure if it doesn't have enough cycles
+    if num_complete_cycles < min_cycles:
+      continue
 
     avg_score = float('nan')
     avg_ci95 = float('nan')
@@ -221,8 +228,8 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles):
       if not np.isnan(cgi_stderr):
         cgi_ci95 = 1.96 * cgi_stderr
 
-    fren.append((structids[i], avg_score, avg_ci95))
-    frencgi.append((structids[i], cgi_score, cgi_ci95))
+    fren.append((structids[i], avg_score, avg_ci95, num_complete_cycles))
+    frencgi.append((structids[i], cgi_score, cgi_ci95, num_complete_cycles))
 
   return fren, frencgi
 
@@ -350,55 +357,59 @@ while j <= args.numruns*2:
     if j >= 2 and j % 2 == 0:
       current_cycle = j // 2
 
-      # Calculate cumulative scores using all cycles up to current_cycle
       sys.stdout.write("\rCalculating scores for cycle %d... "%current_cycle)
       sys.stdout.flush()
 
-      fren, frencgi = calculate_scores(frenstruct, structids, numstructs, current_cycle)
+      # Write score files for each cycle threshold (1 to current_cycle)
+      for cycle_threshold in range(1, current_cycle + 1):
+        # Calculate scores for structures with at least cycle_threshold complete cycles
+        fren, frencgi = calculate_scores(frenstruct, structids, numstructs, cycle_threshold)
 
-      # Sort by score (NaN values go to end)
-      fren.sort(key=lambda x: (math.isnan(x[1]), x[1]))
-      frencgi.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+        # Sort by score (NaN values go to end)
+        fren.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+        frencgi.sort(key=lambda x: (math.isnan(x[1]), x[1]))
 
-      # Write cumulative scores for this cycle
-      cycle_label = "cycle 1" if current_cycle == 1 else "cycles 1-%d"%current_cycle
+        # Write scores for this cycle threshold
+        with open("scores_avg_c%d.gs"%cycle_threshold, "w") as f:
+          f.write("# Scores for structures with at least %d complete cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
+          f.write("# Structure_ID  Score  CI95  Num_Cycles\n")
+          for struct_id, score, ci95, num_cycles in fren:
+            if not np.isnan(score):
+              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
+            else:
+              f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
 
-      with open("scores_avg_c%d.gs"%current_cycle, "w") as f:
-        f.write("# Cumulative scores using %s\n"%cycle_label)
-        f.write("# Structure_ID  Score  CI95\n")
-        for struct_id, score, ci95 in fren:
-          if not np.isnan(score):
-            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
-          else:
-            f.write("%s\tnan\tnan\n"%struct_id)
+        with open("scores_cgi_c%d.gs"%cycle_threshold, "w") as f:
+          f.write("# Scores for structures with at least %d complete cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
+          f.write("# Structure_ID  Score  CI95  Num_Cycles\n")
+          for struct_id, score, ci95, num_cycles in frencgi:
+            if not np.isnan(score):
+              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
+            else:
+              f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
 
-      with open("scores_cgi_c%d.gs"%current_cycle, "w") as f:
-        f.write("# Cumulative scores using %s\n"%cycle_label)
-        f.write("# Structure_ID  Score  CI95\n")
-        for struct_id, score, ci95 in frencgi:
-          if not np.isnan(score):
-            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
-          else:
-            f.write("%s\tnan\tnan\n"%struct_id)
+      # Update main score files (always use cycle threshold of 1 = all structures with any data)
+      fren_all, frencgi_all = calculate_scores(frenstruct, structids, numstructs, 1)
+      fren_all.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+      frencgi_all.sort(key=lambda x: (math.isnan(x[1]), x[1]))
 
-      # Also update main score files (always reflect latest complete data)
       with open("scores_avg.gs", "w") as f:
-        f.write("# Cumulative scores using %s\n"%cycle_label)
-        f.write("# Structure_ID  Score  CI95\n")
-        for struct_id, score, ci95 in fren:
+        f.write("# Scores for all structures with at least 1 complete cycle\n")
+        f.write("# Structure_ID  Score  CI95  Num_Cycles\n")
+        for struct_id, score, ci95, num_cycles in fren_all:
           if not np.isnan(score):
-            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
+            f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
           else:
-            f.write("%s\tnan\tnan\n"%struct_id)
+            f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
 
       with open("scores_cgi.gs", "w") as f:
-        f.write("# Cumulative scores using %s\n"%cycle_label)
-        f.write("# Structure_ID  Score  CI95\n")
-        for struct_id, score, ci95 in frencgi:
+        f.write("# Scores for all structures with at least 1 complete cycle\n")
+        f.write("# Structure_ID  Score  CI95  Num_Cycles\n")
+        for struct_id, score, ci95, num_cycles in frencgi_all:
           if not np.isnan(score):
-            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
+            f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
           else:
-            f.write("%s\tnan\tnan\n"%struct_id)
+            f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
 
       print("Done!")
 
