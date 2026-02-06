@@ -41,13 +41,17 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 GroScore supports three force fields, selectable via the `-ff` option:
 
-| Force Field | Type | Water Model | Constraints | Cutoffs |
-|-------------|------|-------------|-------------|---------|
-| **CHARMM36** (default) | All-atom | TIP3P | all-bonds | 1.2 nm |
-| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm |
-| **AMBER19SB** | All-atom | OPC | all-bonds | 1.0 nm |
+| Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
+|-------------|------|-------------|-------------|---------|------------------|
+| **CHARMM36** (default) | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/NME (explicit residues) |
+| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | NH2/COOH (patches) |
+| **AMBER19SB** | All-atom | OPC | all-bonds | 1.0 nm | ACE/NME (explicit residues) |
 
-All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps. CHARMM36 and GROMOS 54A7 use uncharged termini, while AMBER19SB uses charged termini.
+All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps.
+
+**Terminal Capping Details:**
+- **CHARMM36/AMBER19SB**: Use ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
+- **GROMOS 54A7**: Uses traditional NH2/COOH terminal patches applied during pdb2gmx processing.
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
@@ -183,8 +187,9 @@ groscore/
 │   └── charmm36/        # CHARMM36 parameter files
 │       └── (same files)
 └── utils/
+    ├── renumber_pdb.py          # Assign sequential residue numbers
     ├── fix_pdb.py               # Fix missing atoms with PDBFixer
-    ├── extract_chains.py        # Chain-to-residue mapping from PDB
+    ├── cap_termini.py           # Add ACE/NME caps (CHARMM36/AMBER19SB)
     ├── check_brokenloop.py      # Loop connectivity validation
     ├── check_entangledloops.py  # Topological knot detection
     ├── make_cutout.py           # Interface region extraction
@@ -210,7 +215,9 @@ GroScore automatically handles complex protein structures with multiple chains a
 - **Chain Break Detection** - Gaps in residue numbering within a chain are detected and marked with TER records
 - **Minimum Fragment Size** - Fragments smaller than 3 residues are automatically extended by adding neighboring residues
 - **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
-- **Uncharged Termini** - All fragment termini use uncharged patches (NH2/COOH) rather than charged termini
+- **Terminal Capping** - Fragment termini are capped to provide neutral ends:
+  - **CHARMM36/AMBER19SB**: ACE/NME residues added explicitly via `cap_termini.py` before pdb2gmx
+  - **GROMOS 54A7**: NH2/COOH patches applied during pdb2gmx processing
 
 This ensures proper topology generation even for structures with missing loops or multi-chain complexes.
 
