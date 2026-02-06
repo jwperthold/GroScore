@@ -98,6 +98,67 @@ def countlines(filepath):
 
 #------------------------------------------------------
 
+def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
+  """Calculate bootstrap standard error for a score.
+
+  Args:
+    pulls: List of pull free energy values
+    pushes: List of push free energy values
+    n_bootstrap: Number of bootstrap iterations (default: 1000)
+    method: Scoring method ('avg' or 'cgi')
+
+  Returns:
+    Standard error of the score
+  """
+  if len(pulls) == 0 or len(pushes) == 0:
+    return float('nan')
+
+  pulls_arr = np.array(pulls)
+  pushes_arr = np.array(pushes)
+  n_pulls = len(pulls)
+  n_pushes = len(pushes)
+  bootstrap_scores = []
+
+  for _ in range(n_bootstrap):
+    # Resample with replacement
+    boot_pulls = np.random.choice(pulls_arr, size=n_pulls, replace=True)
+    boot_pushes = np.random.choice(pushes_arr, size=n_pushes, replace=True)
+
+    if method == 'avg':
+      # Simple average method
+      boot_score = (np.mean(boot_pulls) + np.mean(boot_pushes)) / 2.0
+      bootstrap_scores.append(boot_score)
+
+    elif method == 'cgi' and len(pulls) > 2 and len(pushes) > 2:
+      # Crooks Gaussian Intersection
+      try:
+        avgpulls = np.mean(boot_pulls)
+        varpulls = np.var(boot_pulls)
+        avgpushes = np.mean(boot_pushes)
+        varpushes = np.var(boot_pushes)
+
+        if varpulls > 0 and varpushes > 0 and varpulls != varpushes:
+          tmpcgi = (avgpulls/varpulls - avgpushes/varpushes + math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
+          tmpcgii = (avgpulls/varpulls - avgpushes/varpushes - math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
+          disti = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgi)
+          distii = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgii)
+
+          if disti > distii:
+            boot_score = tmpcgii
+          else:
+            boot_score = tmpcgi
+          bootstrap_scores.append(boot_score)
+      except (ValueError, ZeroDivisionError):
+        # Skip this bootstrap sample if calculation fails
+        pass
+
+  if len(bootstrap_scores) > 0:
+    return np.std(bootstrap_scores)
+  else:
+    return float('nan')
+
+#------------------------------------------------------
+
 def calculate_scores(frenstruct, structids, numstructs, num_cycles):
   """Calculate scores using data from the first num_cycles cycles.
 
@@ -108,8 +169,8 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles):
     num_cycles: Number of complete cycles to include (each cycle = pull + push)
 
   Returns:
-    fren: List of (struct_id, avg_score) tuples
-    frencgi: List of (struct_id, cgi_score) tuples
+    fren: List of (struct_id, avg_score, ci95) tuples
+    frencgi: List of (struct_id, cgi_score, ci95) tuples
   """
   fren = []
   frencgi = []
@@ -128,13 +189,20 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles):
         pushes.append(frenstruct[i,k])
 
     avg_score = float('nan')
+    avg_ci95 = float('nan')
     cgi_score = float('nan')
+    cgi_ci95 = float('nan')
 
     # Calculate average score if we have data
     if len(pulls) > 0 and len(pushes) > 0:
       avgpulls = np.average(pulls)
       avgpushes = np.average(pushes)
       avg_score = (avgpulls + avgpushes) / 2.0
+
+      # Bootstrap error estimation for average method
+      avg_stderr = bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg')
+      if not np.isnan(avg_stderr):
+        avg_ci95 = 1.96 * avg_stderr
 
     # Calculate CGI score if we have enough data
     if len(pulls) > 2 and len(pushes) > 2:
@@ -154,8 +222,13 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles):
       else:
         cgi_score = tmpcgi
 
-    fren.append((structids[i], avg_score))
-    frencgi.append((structids[i], cgi_score))
+      # Bootstrap error estimation for CGI method
+      cgi_stderr = bootstrap_score(pulls, pushes, n_bootstrap=1000, method='cgi')
+      if not np.isnan(cgi_stderr):
+        cgi_ci95 = 1.96 * cgi_stderr
+
+    fren.append((structids[i], avg_score, avg_ci95))
+    frencgi.append((structids[i], cgi_score, cgi_ci95))
 
   return fren, frencgi
 
@@ -298,24 +371,40 @@ while j <= args.numruns*2:
 
       with open("scores_avg_c%d.gs"%current_cycle, "w") as f:
         f.write("# Cumulative scores using %s\n"%cycle_label)
-        for struct_id, score in fren:
-          f.write("%s\t%s\n"%(struct_id, score))
+        f.write("# Structure_ID  Score  CI95\n")
+        for struct_id, score, ci95 in fren:
+          if not np.isnan(score):
+            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
+          else:
+            f.write("%s\tnan\tnan\n"%struct_id)
 
       with open("scores_cgi_c%d.gs"%current_cycle, "w") as f:
         f.write("# Cumulative scores using %s\n"%cycle_label)
-        for struct_id, score in frencgi:
-          f.write("%s\t%s\n"%(struct_id, score))
+        f.write("# Structure_ID  Score  CI95\n")
+        for struct_id, score, ci95 in frencgi:
+          if not np.isnan(score):
+            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
+          else:
+            f.write("%s\tnan\tnan\n"%struct_id)
 
       # Also update main score files (always reflect latest complete data)
       with open("scores_avg.gs", "w") as f:
         f.write("# Cumulative scores using %s\n"%cycle_label)
-        for struct_id, score in fren:
-          f.write("%s\t%s\n"%(struct_id, score))
+        f.write("# Structure_ID  Score  CI95\n")
+        for struct_id, score, ci95 in fren:
+          if not np.isnan(score):
+            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
+          else:
+            f.write("%s\tnan\tnan\n"%struct_id)
 
       with open("scores_cgi.gs", "w") as f:
         f.write("# Cumulative scores using %s\n"%cycle_label)
-        for struct_id, score in frencgi:
-          f.write("%s\t%s\n"%(struct_id, score))
+        f.write("# Structure_ID  Score  CI95\n")
+        for struct_id, score, ci95 in frencgi:
+          if not np.isnan(score):
+            f.write("%s\t%.1f\t%.1f\n"%(struct_id, score, ci95))
+          else:
+            f.write("%s\tnan\tnan\n"%struct_id)
 
       print("Done!")
 
