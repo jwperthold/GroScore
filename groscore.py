@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 #
 
-#################################
-#                               #
-#         GroScore 0.92         #
-#                               #
-#################################
-
 import string, math, array
 import os, sys, glob, re, time, argparse, shutil
 import numpy as np

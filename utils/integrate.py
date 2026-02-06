@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 #
-# PLEASE REPORT BUGS, QUESTIONS AND COMMENTS TO jan@ackergarten.at
-#
+
 import string
 import math
 import array
