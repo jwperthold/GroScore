@@ -49,8 +49,12 @@ def read_ter_positions(filepath):
               pass
   return ter_positions
 
-# Read TER positions from fixed.pdb to preserve chain breaks
-ter_positions = read_ter_positions("fixed.pdb")
+# Read TER positions from fixed_capped.pdb (or fixed.pdb if caps not used)
+# This ensures TER positions match the residue numbering in conf.gro
+if os.path.isfile("fixed_capped.pdb"):
+  ter_positions = read_ter_positions("fixed_capped.pdb")
+else:
+  ter_positions = read_ter_positions("fixed.pdb")
 
 #------------------------------------------------------
 
@@ -258,9 +262,134 @@ def extend_small_fragments(kept_resnames, all_resnames):
 
   return extended_resnames
 
+def fill_small_gaps(kept_resnames, all_resnames, max_gap=3):
+  """Fill gaps smaller than max_gap residues to avoid introducing artificial chain breaks."""
+  if len(kept_resnames) == 0:
+    return kept_resnames
+
+  # Get sorted residue numbers
+  kept_resnums = sorted(set(get_resnum(rn) for rn in kept_resnames))
+  all_resnums = sorted(set(get_resnum(rn) for rn in all_resnames))
+  all_resnums_set = set(all_resnums)
+
+  # Build mapping from resnum to resname
+  resnum_to_resname = {}
+  for rn in all_resnames:
+    resnum = get_resnum(rn)
+    if resnum not in resnum_to_resname:
+      resnum_to_resname[resnum] = rn
+
+  # Identify gaps and fill small ones
+  extended_resnums = set(kept_resnums)
+  for i in range(len(kept_resnums) - 1):
+    current_resnum = kept_resnums[i]
+    next_resnum = kept_resnums[i + 1]
+    gap = next_resnum - current_resnum - 1
+
+    if 0 < gap <= max_gap:
+      # Fill this gap by adding missing residues
+      print(f"Filling gap of {gap} residue(s) between {current_resnum} and {next_resnum}")
+      for missing_resnum in range(current_resnum + 1, next_resnum):
+        if missing_resnum in all_resnums_set:
+          extended_resnums.add(missing_resnum)
+
+  # Convert back to resnames
+  filled_resnames = set()
+  for rn in all_resnames:
+    if get_resnum(rn) in extended_resnums:
+      filled_resnames.add(rn)
+
+  return filled_resnames
+
+def remove_isolated_caps(kept_resnames, all_resnames):
+  """Remove ACE/NME caps that are isolated (missing their partner after filtering)."""
+  if len(kept_resnames) == 0:
+    return kept_resnames
+
+  # Get sorted residue numbers
+  kept_resnums = sorted(set(get_resnum(rn) for rn in kept_resnames))
+
+  # Build mapping from resnum to residue type (last 3 chars)
+  resnum_to_res3 = {}
+  for rn in all_resnames:
+    resnum = get_resnum(rn)
+    res3 = rn[-3:]
+    resnum_to_res3[resnum] = res3
+
+  # Identify ACE/NME residues to remove
+  resnums_to_remove = set()
+  for resnum in kept_resnums:
+    res3 = resnum_to_res3.get(resnum, "")
+    if res3 == "ACE":
+      # ACE caps N-terminus - check if previous residue (NME) is present
+      if (resnum - 1) not in kept_resnums:
+        # Isolated ACE - remove it
+        resnums_to_remove.add(resnum)
+        print(f"Removing isolated ACE cap at residue {resnum}")
+    elif res3 == "NME":
+      # NME caps C-terminus - check if next residue (ACE or regular) is present
+      if (resnum + 1) not in kept_resnums:
+        # Isolated NME - remove it
+        resnums_to_remove.add(resnum)
+        print(f"Removing isolated NME cap at residue {resnum}")
+
+  # Remove isolated caps from kept residues
+  cleaned_resnames = set()
+  for rn in kept_resnames:
+    if get_resnum(rn) not in resnums_to_remove:
+      cleaned_resnames.add(rn)
+
+  return cleaned_resnames
+
+# Fill small gaps (< 4 residues) to avoid introducing artificial chain breaks
+laterkeep1_resnames = fill_small_gaps(laterkeep1_resnames, prot1_resname, max_gap=3)
+laterkeep2_resnames = fill_small_gaps(laterkeep2_resnames, prot2_resname, max_gap=3)
+
 # Extend small fragments by adding neighboring residues
 laterkeep1_resnames = extend_small_fragments(laterkeep1_resnames, prot1_resname)
 laterkeep2_resnames = extend_small_fragments(laterkeep2_resnames, prot2_resname)
+
+# Remove isolated ACE/NME caps that lost their partners during filtering
+laterkeep1_resnames = remove_isolated_caps(laterkeep1_resnames, prot1_resname)
+laterkeep2_resnames = remove_isolated_caps(laterkeep2_resnames, prot2_resname)
+
+def clean_ter_positions(kept_resnames, ter_pos):
+  """Remove TER positions that now fall between contiguous residues after extension."""
+  if len(kept_resnames) == 0:
+    return ter_pos
+
+  # Get sorted residue numbers and build resnum -> resname mapping
+  resnum_to_res3 = {}
+  for rn in kept_resnames:
+    resnum = get_resnum(rn)
+    res3 = rn[-3:]
+    resnum_to_res3[resnum] = res3
+
+  resnums = sorted(resnum_to_res3.keys())
+
+  # Check each TER position - remove if residues are now contiguous
+  cleaned_ter_pos = set()
+  removed_ters = []
+  for ter_resnum, ter_res3 in ter_pos:
+    # Check if this TER position is followed by a contiguous residue
+    if ter_resnum in resnums and (ter_resnum + 1) in resnums:
+      # Verify the residue name matches
+      if resnum_to_res3[ter_resnum] == ter_res3:
+        # Gap was closed - don't keep this TER
+        removed_ters.append((ter_resnum, ter_res3))
+        continue
+    cleaned_ter_pos.add((ter_resnum, ter_res3))
+
+  if removed_ters:
+    print(f"Removed {len(removed_ters)} TER position(s) where gaps were closed:")
+    for ter_resnum, ter_res3 in sorted(removed_ters):
+      print(f"  TER after {ter_resnum} {ter_res3}")
+
+  return cleaned_ter_pos
+
+# Clean up TER positions that may have been closed by extension
+ter_positions = clean_ter_positions(laterkeep1_resnames, ter_positions)
+ter_positions = clean_ter_positions(laterkeep2_resnames, ter_positions)
 
 # Collect final atoms to keep
 protlaterkeep1 = [(prot1_resname[i], prot1_atomname[i], prot1_coords[i])
