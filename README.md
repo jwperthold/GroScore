@@ -22,7 +22,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Structure Validation** - Built-in checks for broken loops and topological knots
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Optional Cutout Mode** - Choose between interface-only (faster) or full-protein simulations
-- **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom) and CHARMM36 (all-atom)
+- **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom), CHARMM36 (all-atom), and AMBER19SB (all-atom)
 - **Automatic Fragment Handling** - Chain break detection, minimum fragment size enforcement, and same-chain fragment merging
 
 ## Requirements
@@ -44,8 +44,8 @@ GroScore supports three force fields, selectable via the `-ff` option:
 | Force Field | Type | Water Model | Constraints | Cutoffs |
 |-------------|------|-------------|-------------|---------|
 | **GROMOS 54A7** (default) | United-atom | SPC | all-bonds | 1.4 nm |
-| **CHARMM36** (experimental) | All-atom | TIP3P | all-bonds | 1.2 nm |
-| **AMBER19SB** (experimental) | All-atom | OPC | all-bonds | 1.0 nm |
+| **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm |
+| **AMBER19SB** | All-atom | OPC | all-bonds | 1.0 nm |
 
 All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps.
 
