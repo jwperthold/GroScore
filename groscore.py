@@ -256,7 +256,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
 print("")
 print("#################################")
 print("#                               #")
-print("#         GroScore 0.94         #")
+print("#         GroScore 0.96         #")
 print("#                               #")
 print("#################################")
 print("")

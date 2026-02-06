@@ -6,6 +6,7 @@
 
 import os
 import sys
+import math
 import argparse
 
 parser = argparse.ArgumentParser(description="Renumber PDB residues sequentially and output chain mapping.")
@@ -20,7 +21,8 @@ if not os.path.isfile(args.pdbfile):
     print(f"Error: PDB file '{args.pdbfile}' not found.", file=sys.stderr)
     sys.exit(1)
 
-# First pass: collect all unique (chain, resnum) pairs and assign sequential numbers
+# First pass: collect all unique (chain, resnum) pairs, atom coordinates,
+# and assign sequential numbers
 seen_residues = {}  # (chain, resnum) -> new_resnum
 current_resnum = 0
 last_key = None
@@ -30,8 +32,12 @@ prev_orig_resnum = None
 # Also track which new residue numbers belong to protein B
 residues_b = set()
 
-# Track where chain breaks occur (gaps in original residue numbering)
-chain_breaks = set()  # Set of (chain, orig_resnum) keys that follow a gap
+# Track gaps in residue numbering (potential chain breaks)
+numbering_gaps = set()  # Set of (chain, orig_resnum) keys that follow a gap
+
+# Collect C and N atom coordinates for peptide bond distance checking
+c_atoms = {}   # (chain, resnum) -> (x, y, z) for backbone C atom
+n_atoms = {}   # (chain, resnum) -> (x, y, z) for backbone N atom
 
 with open(args.pdbfile, "r") as f:
     for line in f:
@@ -40,12 +46,26 @@ with open(args.pdbfile, "r") as f:
             chain_id = line[21]
             try:
                 orig_resnum = int(line[22:26].strip())
+                atomname = line[12:16].strip()
                 key = (chain_id, orig_resnum)
+
+                # Collect backbone C and N coordinates
+                if atomname == 'C':
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                    c_atoms[(chain_id, orig_resnum)] = (x, y, z)
+                elif atomname == 'N':
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                    n_atoms[(chain_id, orig_resnum)] = (x, y, z)
+
                 if key != last_key:
                     # Detect gaps in original residue numbering within same chain
                     if prev_chain == chain_id and prev_orig_resnum is not None:
                         if orig_resnum > prev_orig_resnum + 1:
-                            chain_breaks.add(key)
+                            numbering_gaps.add(key)
                     current_resnum += 1
                     seen_residues[key] = current_resnum
                     if chain_id in chains_b:
@@ -55,6 +75,43 @@ with open(args.pdbfile, "r") as f:
                     last_key = key
             except (ValueError, IndexError):
                 pass
+
+# Determine real chain breaks by checking C-N peptide bond distance
+# A peptide bond is ~1.33 Å; use 2.0 Å cutoff to be safe
+PEPTIDE_BOND_CUTOFF = 2.0
+chain_breaks = set()
+
+# Build per-chain sorted residue lists for efficient lookup
+chain_resnums = {}
+for (c, r) in seen_residues.keys():
+    chain_resnums.setdefault(c, []).append(r)
+for c in chain_resnums:
+    chain_resnums[c].sort()
+
+for key in numbering_gaps:
+    chain_id, orig_resnum = key
+    # Find the previous residue in the same chain
+    resnums = chain_resnums.get(chain_id, [])
+    idx = resnums.index(orig_resnum) if orig_resnum in resnums else -1
+    if idx <= 0:
+        chain_breaks.add(key)
+        continue
+    prev_resnum = resnums[idx - 1]
+
+    # Check C-N distance
+    c_coord = c_atoms.get((chain_id, prev_resnum))
+    n_coord = n_atoms.get((chain_id, orig_resnum))
+
+    if c_coord and n_coord:
+        dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(c_coord, n_coord)))
+        if dist > PEPTIDE_BOND_CUTOFF:
+            chain_breaks.add(key)
+            print(f"Chain break: {chain_id} {prev_resnum} -> {orig_resnum} (C-N distance: {dist:.1f} A)")
+        else:
+            print(f"Connected (non-sequential numbering): {chain_id} {prev_resnum} -> {orig_resnum} (C-N distance: {dist:.1f} A)")
+    else:
+        # Cannot determine - assume chain break
+        chain_breaks.add(key)
 
 # Second pass: write renumbered PDB (only ATOM records, skip HETATM)
 # Add TER records at chain breaks (gaps in original residue numbering)
@@ -90,5 +147,5 @@ with open("chain_map.gs", "w") as f:
         f.write(f"{resnum}\n")
 
 print(f"Renumbered {current_resnum} residues, wrote {args.output}")
-print(f"Detected {len(chain_breaks)} chain breaks (gaps in residue numbering)")
+print(f"Detected {len(numbering_gaps)} numbering gap(s), {len(chain_breaks)} real chain break(s) (C-N > {PEPTIDE_BOND_CUTOFF} A)")
 print(f"Generated chain_map.gs with {len(residues_b)} residues for chain(s) {args.chains}")
