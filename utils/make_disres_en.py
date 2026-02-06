@@ -109,12 +109,57 @@ def build_elastic_network(prot_data, prot_coords, max_len):
   """
   prot_len = len(prot_data)
 
-  # Find anchor residues (those with OT or H2 atoms)
+  # Find anchor residues (fragment termini)
+  # Method 1: GROMOS-style with OT or H2 atoms
+  # Method 2: ACE/NME-capped (CHARMM36/AMBER19SB) - find neighbors of caps
   anchor_resnames = set()
+
+  # Collect all unique resnames and their types
+  resname_to_type = {}
+  for i in range(min(prot_len, max_len)):
+    resname = prot_data[i][0]
+    res3 = resname[-3:]
+    resname_to_type[resname] = res3
+
+  # Method 1: Find residues with OT or H2 atoms (GROMOS)
   for i in range(min(prot_len, max_len)):
     atomname = prot_data[i][1]
     if atomname == "OT" or atomname == "H2":
       anchor_resnames.add(prot_data[i][0])
+
+  # Method 2: Find residues neighboring ACE or NME (CHARMM36/AMBER19SB)
+  # Build a map of resnum -> resname
+  resnum_to_resname = {}
+  for resname in resname_to_type:
+    s = re.search(r"\d+", resname)
+    if s:
+      resnum = int(s.group(0))
+      resnum_to_resname[resnum] = resname
+
+  # Find ACE and NME residues and their neighbors
+  for resname, res3 in resname_to_type.items():
+    if res3 == "ACE":
+      # ACE caps the N-terminus, so the next residue is the anchor
+      s = re.search(r"\d+", resname)
+      if s:
+        ace_num = int(s.group(0))
+        next_num = ace_num + 1
+        if next_num in resnum_to_resname:
+          next_resname = resnum_to_resname[next_num]
+          # Don't add if the next residue is also a cap
+          if resname_to_type.get(next_resname) not in ("ACE", "NME"):
+            anchor_resnames.add(next_resname)
+    elif res3 == "NME":
+      # NME caps the C-terminus, so the previous residue is the anchor
+      s = re.search(r"\d+", resname)
+      if s:
+        nme_num = int(s.group(0))
+        prev_num = nme_num - 1
+        if prev_num in resnum_to_resname:
+          prev_resname = resnum_to_resname[prev_num]
+          # Don't add if the previous residue is also a cap
+          if resname_to_type.get(prev_resname) not in ("ACE", "NME"):
+            anchor_resnames.add(prev_resname)
 
   # Find CA atoms for anchor residues
   anchor_indices = []
