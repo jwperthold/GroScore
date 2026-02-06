@@ -335,42 +335,16 @@ def fill_small_gaps(kept_resnames, all_resnames, ter_pos, max_gap=3):
 
   return filled_resnames
 
-def remove_isolated_caps(kept_resnames, all_resnames):
-  """Remove ACE/NME caps that are isolated (missing their partner after filtering)."""
-  if len(kept_resnames) == 0:
-    return kept_resnames
+def remove_caps(kept_resnames):
+  """Remove all ACE/NME cap residues from the cutout.
 
-  # Get sorted residue numbers
-  kept_resnums = sorted(set(get_resnum(rn) for rn in kept_resnames))
-
-  # Build mapping from resnum to residue type (last 3 chars)
-  resnum_to_res3 = {}
-  for rn in all_resnames:
-    resnum = get_resnum(rn)
-    res3 = rn[-3:]
-    resnum_to_res3[resnum] = res3
-
-  # Identify ACE/NME residues to remove
-  resnums_to_remove = set()
-  for resnum in kept_resnums:
-    res3 = resnum_to_res3.get(resnum, "")
-    if res3 == "ACE":
-      # ACE caps N-terminus - check if previous residue (NME) is present
-      if (resnum - 1) not in kept_resnums:
-        # Isolated ACE - remove it
-        resnums_to_remove.add(resnum)
-        print(f"Removing isolated ACE cap at residue {resnum}")
-    elif res3 == "NME":
-      # NME caps C-terminus - check if next residue (ACE or regular) is present
-      if (resnum + 1) not in kept_resnums:
-        # Isolated NME - remove it
-        resnums_to_remove.add(resnum)
-        print(f"Removing isolated NME cap at residue {resnum}")
-
-  # Remove isolated caps from kept residues
+  The cutout should only contain real protein residues.
+  cap_termini.py will add fresh caps where needed after the cutout is written.
+  """
   cleaned_resnames = set()
   for rn in kept_resnames:
-    if get_resnum(rn) not in resnums_to_remove:
+    res3 = rn[-3:]
+    if res3 not in ("ACE", "NME"):
       cleaned_resnames.add(rn)
 
   return cleaned_resnames
@@ -384,9 +358,9 @@ laterkeep2_resnames = fill_small_gaps(laterkeep2_resnames, prot2_resname, ter_po
 laterkeep1_resnames = extend_small_fragments(laterkeep1_resnames, prot1_resname)
 laterkeep2_resnames = extend_small_fragments(laterkeep2_resnames, prot2_resname)
 
-# Remove isolated ACE/NME caps that lost their partners during filtering
-laterkeep1_resnames = remove_isolated_caps(laterkeep1_resnames, prot1_resname)
-laterkeep2_resnames = remove_isolated_caps(laterkeep2_resnames, prot2_resname)
+# Remove all ACE/NME caps - cap_termini.py will add fresh ones to the cutout
+laterkeep1_resnames = remove_caps(laterkeep1_resnames)
+laterkeep2_resnames = remove_caps(laterkeep2_resnames)
 
 def clean_ter_positions(kept_resnames, ter_pos):
   """Remove TER positions that now fall between contiguous residues after extension."""
