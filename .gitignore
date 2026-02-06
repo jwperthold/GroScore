@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 .claude/
+test/
 test_gromos/
 test_charmm/
 test_amber/

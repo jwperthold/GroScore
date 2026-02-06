@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 GroScore is a computational chemistry toolkit for protein-protein affinity scoring using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
 
-**Version:** 0.94
+**Version:** 0.95
 **Contact:** jan@ackergarten.at
 
 ## Tech Stack
@@ -152,8 +152,9 @@ For CHARMM36/AMBER19SB, `chain_map.gs` is updated after capping since residue nu
 - Interface cutoff: 0.6 nm
 - Elastic network range: 0.4-0.9 nm
 - Keep cutoff for interface extraction: 2.0 nm
-- Minimum fragment size: 3 residues
+- Minimum fragment size: 5 residues
 - Ion concentration: 0.15 M NaCl
+- LINCS order: 6 (for improved constraint stability)
 
 ## Structure Parameter File (sp.gs)
 
