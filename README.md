@@ -47,7 +47,7 @@ GroScore supports three force fields, selectable via the `-ff` option:
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm |
 | **AMBER19SB** | All-atom | OPC | all-bonds | 1.0 nm |
 
-All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps.
+All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps. CHARMM36 and GROMOS 54A7 use uncharged termini, while AMBER19SB uses charged termini.
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
