@@ -15,6 +15,7 @@ parser = argparse.ArgumentParser(description="Add ACE/NME caps to fragment termi
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file")
 parser.add_argument('-o', '--output', type=str, required=True, help="Output PDB file")
 parser.add_argument('-m', '--chainmap', type=str, default=None, help="Chain map file to update (chain_map.gs)")
+parser.add_argument('--rename-nme-carbon', action='store_true', help="Rename NME carbon from C to CH3 (for CHARMM36)")
 args = parser.parse_args()
 
 if not os.path.isfile(args.file):
@@ -141,7 +142,8 @@ with open(args.output, "w") as out:
                 x = positions[idx].value_in_unit(unit.angstroms)
                 atomname = atom.name
                 # PDBFixer names NME's methyl carbon "C", but CHARMM36 expects "CH3"
-                if resname == 'NME' and atomname == 'C':
+                # AMBER19SB expects "C", so only rename if --rename-nme-carbon flag is set
+                if args.rename_nme_carbon and resname == 'NME' and atomname == 'C':
                     atomname = 'CH3'
                 element = atom.element.symbol if atom.element else atomname[0]
 

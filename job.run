@@ -55,7 +55,10 @@ if [[ ! -f conf.gro ]]; then
   # Fix missing atoms and non-standard residues
   python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
   # Add ACE/NME caps for CHARMM36 and AMBER19SB (explicit capping residues instead of terminal patches)
-  if [[ "$FORCEFIELD" == "charmm36" ]] || [[ "$FORCEFIELD" == "amber19sb" ]]; then
+  if [[ "$FORCEFIELD" == "charmm36" ]]; then
+    python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --rename-nme-carbon
+    PDB2GMX_INPUT="fixed_capped.pdb"
+  elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
     PDB2GMX_INPUT="fixed_capped.pdb"
   else
@@ -100,7 +103,10 @@ if [[ $bl -eq 0 ]]; then
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
       # Add ACE/NME caps for CHARMM36 and AMBER19SB cutout
-      if [[ "$FORCEFIELD" == "charmm36" ]] || [[ "$FORCEFIELD" == "amber19sb" ]]; then
+      if [[ "$FORCEFIELD" == "charmm36" ]]; then
+        python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs --rename-nme-carbon
+        CUTOUT_PDB="cutout_capped.pdb"
+      elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
         CUTOUT_PDB="cutout_capped.pdb"
       else
