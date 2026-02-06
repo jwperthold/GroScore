@@ -37,13 +37,14 @@ def read_ter_positions(filepath):
     with open(filepath, "r") as f:
       for line in f:
         if line.startswith("TER"):
-          # Extract residue number from TER line
+          # Extract residue number and name from TER line
           # Format: TER   1942      CYS A 254
           parts = line.split()
           if len(parts) >= 5:
             try:
-              resnum = int(parts[4])
-              ter_positions.add(resnum)
+              resname = parts[2]  # e.g., "CYS"
+              resnum = int(parts[4])  # e.g., 254
+              ter_positions.add((resnum, resname))
             except (ValueError, IndexError):
               pass
   return ter_positions
@@ -274,6 +275,7 @@ lenlk2 = len(protlaterkeep2)
 with open("cutout.pdb", "w") as pdbfile:
   atom_num = 0
   prev_resnum = None
+  prev_res3 = None
 
   # Write protein A atoms
   for i in range(lenlk1):
@@ -285,7 +287,7 @@ with open("cutout.pdb", "w") as pdbfile:
     # OR if residues are consecutive but TER existed in fixed.pdb (real chain break)
     if prev_resnum is not None:
       has_gap = resnum > prev_resnum + 1
-      has_ter_in_fixed = prev_resnum in ter_positions and resnum == prev_resnum + 1
+      has_ter_in_fixed = (prev_resnum, prev_res3) in ter_positions and resnum == prev_resnum + 1
       if has_gap or has_ter_in_fixed:
         atom_num += 1
         pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
@@ -295,6 +297,7 @@ with open("cutout.pdb", "w") as pdbfile:
                   f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
                   f"  1.00  0.00          {atomname[0]:>2}\n")
     prev_resnum = resnum
+    prev_res3 = res3
 
   # Write TER between protein A and protein B
   if lenlk1 > 0 and lenlk2 > 0:
@@ -302,6 +305,7 @@ with open("cutout.pdb", "w") as pdbfile:
     pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
 
   prev_resnum = None
+  prev_res3 = None
 
   # Write protein B atoms
   for i in range(lenlk2):
@@ -313,7 +317,7 @@ with open("cutout.pdb", "w") as pdbfile:
     # OR if residues are consecutive but TER existed in fixed.pdb (real chain break)
     if prev_resnum is not None:
       has_gap = resnum > prev_resnum + 1
-      has_ter_in_fixed = prev_resnum in ter_positions and resnum == prev_resnum + 1
+      has_ter_in_fixed = (prev_resnum, prev_res3) in ter_positions and resnum == prev_resnum + 1
       if has_gap or has_ter_in_fixed:
         atom_num += 1
         pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
@@ -323,3 +327,4 @@ with open("cutout.pdb", "w") as pdbfile:
                   f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
                   f"  1.00  0.00          {atomname[0]:>2}\n")
     prev_resnum = resnum
+    prev_res3 = res3
