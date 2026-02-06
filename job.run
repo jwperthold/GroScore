@@ -54,8 +54,8 @@ fi
 if [[ ! -f conf.gro ]]; then
   # Fix missing atoms and non-standard residues
   python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
-  # Add ACE/NME caps for CHARMM36 (explicit capping residues instead of terminal patches)
-  if [[ "$FORCEFIELD" == "charmm36" ]]; then
+  # Add ACE/NME caps for CHARMM36 and AMBER19SB (explicit capping residues instead of terminal patches)
+  if [[ "$FORCEFIELD" == "charmm36" ]] || [[ "$FORCEFIELD" == "amber19sb" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
     PDB2GMX_INPUT="fixed_capped.pdb"
   else
@@ -80,9 +80,12 @@ if [[ ! -f conf.gro ]]; then
   NSEGS=$(($(grep -c "^TER" $PDB2GMX_INPUT) + 1))
   # Terminal selections per segment: N-terminus then C-terminus
   # CHARMM36: None (8 for N-term, 7 for C-term) since ACE/NME are explicit residues
-  # Others: uncharged termini (1 for both)
+  # AMBER19SB: No terminal selections needed (no termini defined in FF)
+  # GROMOS: uncharged termini (1 for both)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     TER_INPUT=$(printf '8\n7\n%.0s' $(seq 1 $NSEGS))
+  elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
+    TER_INPUT=""
   else
     TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
   fi
@@ -96,8 +99,8 @@ if [[ $bl -eq 0 ]]; then
     echo "emin_solv.gro not found, preparing system."
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
-      # Add ACE/NME caps for CHARMM36 cutout
-      if [[ "$FORCEFIELD" == "charmm36" ]]; then
+      # Add ACE/NME caps for CHARMM36 and AMBER19SB cutout
+      if [[ "$FORCEFIELD" == "charmm36" ]] || [[ "$FORCEFIELD" == "amber19sb" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
         CUTOUT_PDB="cutout_capped.pdb"
       else
@@ -123,9 +126,12 @@ if [[ $bl -eq 0 ]]; then
       NSEGS=$(($(grep -c "^TER" $CUTOUT_PDB) + 1))
       # Terminal selections per segment: N-terminus then C-terminus
       # CHARMM36: None (8 for N-term, 7 for C-term) since ACE/NME are explicit residues
-      # Others: uncharged termini (1 for both)
+      # AMBER19SB: No terminal selections needed (no termini defined in FF)
+      # GROMOS: uncharged termini (1 for both)
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         TER_INPUT=$(printf '8\n7\n%.0s' $(seq 1 $NSEGS))
+      elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
+        TER_INPUT=""
       else
         TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
       fi
