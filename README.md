@@ -257,7 +257,7 @@ J.W.P. has been a recipient of a DOC Fellowship of the Austrian Academy of Scien
 
 ## License
 
-[License information to be added]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Contact
 
