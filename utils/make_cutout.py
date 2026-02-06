@@ -32,6 +32,29 @@ residues_b = read_chain_map(args.chainmap)
 
 #------------------------------------------------------
 
+def read_ter_positions(filepath):
+  """Read TER record positions from fixed.pdb to preserve chain breaks."""
+  ter_positions = set()
+  if os.path.isfile(filepath):
+    with open(filepath, "r") as f:
+      for line in f:
+        if line.startswith("TER"):
+          # Extract residue number from TER line
+          # Format: TER   1942      CYS A 254
+          parts = line.split()
+          if len(parts) >= 5:
+            try:
+              resnum = int(parts[4])
+              ter_positions.add(resnum)
+            except (ValueError, IndexError):
+              pass
+  return ter_positions
+
+# Read TER positions from fixed.pdb to preserve chain breaks
+ter_positions = read_ter_positions("fixed.pdb")
+
+#------------------------------------------------------
+
 # cutoff parameters
 interfacecutoff = 0.6
 keepcutoff = 2.0
@@ -260,8 +283,8 @@ with open("cutout.pdb", "w") as pdbfile:
     resnum = get_resnum(resname)
     res3 = resname[-3:]
 
-    # Write TER record if there's a gap in residue numbering
-    if prev_resnum is not None and resnum > prev_resnum + 1:
+    # Write TER record if there's a gap in residue numbering OR if TER exists in fixed.pdb
+    if prev_resnum is not None and (resnum > prev_resnum + 1 or prev_resnum in ter_positions):
       atom_num += 1
       pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
 
@@ -284,8 +307,8 @@ with open("cutout.pdb", "w") as pdbfile:
     resnum = get_resnum(resname)
     res3 = resname[-3:]
 
-    # Write TER record if there's a gap in residue numbering
-    if prev_resnum is not None and resnum > prev_resnum + 1:
+    # Write TER record if there's a gap in residue numbering OR if TER exists in fixed.pdb
+    if prev_resnum is not None and (resnum > prev_resnum + 1 or prev_resnum in ter_positions):
       atom_num += 1
       pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
 

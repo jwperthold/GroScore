@@ -34,7 +34,9 @@ with open('sp.gs', 'w') as sp:
 
         if os.path.exists(input_pdb):
             print(f"{pdb_id}: input.pdb already exists, skipping download")
-            sp.write(f"{pdb_id}\t{chain_id_2}\n")
+            # Convert "AB" to "A,B" for multi-character chain specifications
+            chain_id_2_formatted = ','.join(chain_id_2)
+            sp.write(f"{pdb_id}\t{chain_id_2_formatted}\n")
             continue
 
         # Download PDB from RCSB
@@ -82,8 +84,10 @@ with open('sp.gs', 'w') as sp:
 
         print(f"OK ({len(extracted_lines)} lines, chains: {','.join(sorted(chains_to_keep))})")
 
-        # Add to sp.gs
-        sp.write(f"{pdb_id}\t{chain_id_2}\n")
+        # Add to sp.gs with comma-separated chain IDs
+        # Convert "AB" to "A,B" for multi-character chain specifications
+        chain_id_2_formatted = ','.join(chain_id_2)
+        sp.write(f"{pdb_id}\t{chain_id_2_formatted}\n")
 
 print(f"\nCreated sp.gs with {len(structures)} entries")
 print("Run: python ../groscore.py")
