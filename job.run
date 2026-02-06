@@ -54,8 +54,15 @@ fi
 if [[ ! -f conf.gro ]]; then
   # Fix missing atoms and non-standard residues
   python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
+  # Add ACE/NME caps for CHARMM36 (explicit capping residues instead of terminal patches)
+  if [[ "$FORCEFIELD" == "charmm36" ]]; then
+    python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
+    PDB2GMX_INPUT="fixed_capped.pdb"
+  else
+    PDB2GMX_INPUT="fixed.pdb"
+  fi
   # Get chain ID of first atom in each segment
-  CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' fixed.pdb)
+  CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' $PDB2GMX_INPUT)
   # Merge selections: y if same chain ID as previous, n if different
   MERGE_INPUT=""
   prev_chain=""
@@ -70,11 +77,17 @@ if [[ ! -f conf.gro ]]; then
     prev_chain=$chain
   done
   # Count chain segments by counting TER records + 1
-  NSEGS=$(($(grep -c "^TER" fixed.pdb) + 1))
-  # Terminal selections: 1 = uncharged termini for each N/C terminus of all fragments
-  TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
+  NSEGS=$(($(grep -c "^TER" $PDB2GMX_INPUT) + 1))
+  # Terminal selections per segment: N-terminus then C-terminus
+  # CHARMM36: None (8 for N-term, 7 for C-term) since ACE/NME are explicit residues
+  # Others: uncharged termini (1 for both)
+  if [[ "$FORCEFIELD" == "charmm36" ]]; then
+    TER_INPUT=$(printf '8\n7\n%.0s' $(seq 1 $NSEGS))
+  else
+    TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
+  fi
   # Merge questions come first, then terminal selections
-  echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f fixed.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
+  echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
 fi
 bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
 if [[ $bl -eq 0 ]]; then
@@ -83,9 +96,16 @@ if [[ $bl -eq 0 ]]; then
     echo "emin_solv.gro not found, preparing system."
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
+      # Add ACE/NME caps for CHARMM36 cutout
+      if [[ "$FORCEFIELD" == "charmm36" ]]; then
+        python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
+        CUTOUT_PDB="cutout_capped.pdb"
+      else
+        CUTOUT_PDB="cutout.pdb"
+      fi
       # re-solvate cutout
       # Get chain ID of first atom in each segment
-      CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' cutout.pdb)
+      CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' $CUTOUT_PDB)
       # Merge selections: y if same chain ID as previous, n if different
       MERGE_INPUT=""
       prev_chain=""
@@ -100,11 +120,17 @@ if [[ $bl -eq 0 ]]; then
         prev_chain=$chain
       done
       # Count segments for terminal selections (all fragments need termini)
-      NSEGS=$(($(grep -c "^TER" cutout.pdb) + 1))
-      # Terminal selections: 1 = uncharged termini for each N/C terminus of all fragments
-      TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
+      NSEGS=$(($(grep -c "^TER" $CUTOUT_PDB) + 1))
+      # Terminal selections per segment: N-terminus then C-terminus
+      # CHARMM36: None (8 for N-term, 7 for C-term) since ACE/NME are explicit residues
+      # Others: uncharged termini (1 for both)
+      if [[ "$FORCEFIELD" == "charmm36" ]]; then
+        TER_INPUT=$(printf '8\n7\n%.0s' $(seq 1 $NSEGS))
+      else
+        TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
+      fi
       # Merge questions come first, then terminal selections
-      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f cutout.pdb -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
+      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
