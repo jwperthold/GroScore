@@ -14,7 +14,7 @@ GroScore is a computational chemistry toolkit for protein-protein affinity scori
 - Python 3.13 with NumPy 2.3, SciPy 1.16, OpenMM, and PDBFixer
 - GROMACS 2026.0 (external MD engine)
 - SLURM 23.11 job scheduler for HPC execution
-- Force fields: GROMOS 54A7 (united-atom) or CHARMM36 (all-atom)
+- Force fields: CHARMM36 (all-atom, default), GROMOS 54A7 (united-atom), or AMBER19SB (all-atom)
 - Water models: SPC (GROMOS) or TIP3P (CHARMM)
 
 ## Running GroScore
@@ -36,7 +36,7 @@ python groscore.py --no-cutout
 **Command-line options:**
 - `-n, --numruns` - Number of pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `gromos54a7` (default), `charmm36`, or `amber19sb`
+- `-ff, --forcefield` - Force field: `charmm36` (default), `gromos54a7`, or `amber19sb`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 
