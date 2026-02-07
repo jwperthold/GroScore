@@ -3,6 +3,16 @@
 
 nt=4
 
+# Safety check: Exit if any files were modified within the last 60 minutes
+# This prevents running simulations while setup is still in progress
+# 60 minutes matches the timeout duration for individual simulation steps
+RECENT_FILES=$(find . -maxdepth 1 -type f -mmin -60 2>/dev/null | wc -l)
+if [[ $RECENT_FILES -gt 0 ]]; then
+  echo "Safety check: Files in this directory were modified within the last 60 minutes."
+  echo "Exiting to avoid conflicts with ongoing setup. Wait 60 minutes and resubmit."
+  exit 0
+fi
+
 export GMX_MAXBACKUP=-1
 # Get structure ID from current directory name
 STRUCT_ID=$(basename $(pwd))

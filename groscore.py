@@ -13,6 +13,7 @@ parser.add_argument('-n','--numruns', type=int, default=5, required=False, help=
 parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable interface cutout (default)")
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('-ff','--forcefield', type=str, default="charmm36", choices=["gromos54a7", "charmm36", "amber19sb"], help="Force field to use (default: charmm36)")
+parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
 parser.set_defaults(cutout=True)
 args=parser.parse_args()
 
@@ -290,12 +291,14 @@ frenstruct[:,:] = "NaN"
 print("Reading input parameters finished.")
 print("GroScore will calculate a binding free energy estimate for " + str(numstructs) + " structures.")
 print("Each structure will undergo " + str(args.numruns) + " independent equilibration cycles (each cycle = 1 pull + 1 push).")
+if args.restart:
+  print("RESTART MODE: Will resubmit jobs even if run.gs exists.")
 print("")
 
 j = 0
 while j <= args.numruns*2:
   # setup simulations
-  if j == 0 and not os.path.isfile("results_%.0f.gs"%j):
+  if j == 0 and (args.restart or not os.path.isfile("results_%.0f.gs"%j)):
     f = open("results_%.0f.gs"%j, "a")
     f.write("# Results for simulation fitness:\n")
     f.close()
