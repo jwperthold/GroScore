@@ -41,11 +41,11 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 GroScore supports three force fields, selectable via the `-ff` option:
 
-| Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
-|-------------|------|-------------|-------------|---------|------------------|
-| **CHARMM36** (default) | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/NME (explicit residues) |
-| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | NH2/COOH (patches) |
-| **AMBER19SB** | All-atom | OPC | h-bonds | 1.0 nm | ACE/NME (explicit residues) |
+| Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping | Status |
+|-------------|------|-------------|-------------|---------|------------------|--------|
+| **AMBER19SB** (default) | All-atom | OPC | h-bonds | 1.0 nm | ACE/NME (explicit residues) | Stable |
+| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | NH2/COOH (patches) | Stable |
+| **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/NME (explicit residues) | Unstable |
 
 All use bond constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
 
@@ -119,7 +119,7 @@ python ../groscore.py
 **Options:**
 - `-n, --numruns` - Number of pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `charmm36` (default), `gromos54a7`, or `amber19sb`
+- `-ff, --forcefield` - Force field: `amber19sb` (default), `gromos54a7`, or `charmm36` (unstable)
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 - `--restart` - Resubmit jobs even if `run.gs` exists (useful for continuing interrupted runs)
