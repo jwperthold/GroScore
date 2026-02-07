@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*.gs
 .claude/
 test/
 test_gromos/
