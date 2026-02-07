@@ -43,7 +43,7 @@ GroScore supports three force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
-| **CHARMM36** (default) | All-atom | TIP3P | h-bonds | 1.2 nm | ACE/NME (explicit residues) |
+| **CHARMM36** (default) | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/NME (explicit residues) |
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | NH2/COOH (patches) |
 | **AMBER19SB** | All-atom | OPC | h-bonds | 1.0 nm | ACE/NME (explicit residues) |
 
