@@ -114,6 +114,7 @@ python ../groscore.py
 - `-ff, --forcefield` - Force field: `charmm36` (default), `gromos54a7`, or `amber19sb`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
+- `--restart` - Resubmit jobs even if `run.gs` exists (useful for continuing interrupted runs)
 
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
