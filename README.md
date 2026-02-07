@@ -20,8 +20,8 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **SLURM Integration** - Efficient HPC execution via job arrays
 - **Multiple Scoring Methods** - Two different ranking approaches for robust results
 - **Structure Validation** - Built-in checks for broken loops and topological knots
+- **Optional Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
-- **Optional Cutout Mode** - Choose between interface-only (faster) or full-protein simulations
 - **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom), CHARMM36 (all-atom), and AMBER19SB (all-atom)
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
 
