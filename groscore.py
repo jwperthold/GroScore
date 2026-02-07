@@ -93,7 +93,7 @@ def countlines(filepath):
 #------------------------------------------------------
 
 def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
-  """Calculate bootstrap standard error for a score.
+  """Calculate bootstrap standard error for a score (vectorized).
 
   Args:
     pulls: List of pull free energy values
@@ -111,45 +111,62 @@ def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
   pushes_arr = np.array(pushes)
   n_pulls = len(pulls)
   n_pushes = len(pushes)
-  bootstrap_scores = []
 
-  for _ in range(n_bootstrap):
-    # Resample with replacement
-    boot_pulls = np.random.choice(pulls_arr, size=n_pulls, replace=True)
-    boot_pushes = np.random.choice(pushes_arr, size=n_pushes, replace=True)
+  # Generate all bootstrap samples at once (n_bootstrap x n_samples)
+  boot_pulls_idx = np.random.randint(0, n_pulls, size=(n_bootstrap, n_pulls))
+  boot_pushes_idx = np.random.randint(0, n_pushes, size=(n_bootstrap, n_pushes))
+  boot_pulls_all = pulls_arr[boot_pulls_idx]
+  boot_pushes_all = pushes_arr[boot_pushes_idx]
 
-    if method == 'avg':
-      # Simple average method
-      boot_score = (np.mean(boot_pulls) + np.mean(boot_pushes)) / 2.0
-      bootstrap_scores.append(boot_score)
-
-    elif method == 'cgi' and len(pulls) > 2 and len(pushes) > 2:
-      # Crooks Gaussian Intersection
-      try:
-        avgpulls = np.mean(boot_pulls)
-        varpulls = np.var(boot_pulls)
-        avgpushes = np.mean(boot_pushes)
-        varpushes = np.var(boot_pushes)
-
-        if varpulls > 0 and varpushes > 0 and varpulls != varpushes:
-          tmpcgi = (avgpulls/varpulls - avgpushes/varpushes + math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
-          tmpcgii = (avgpulls/varpulls - avgpushes/varpushes - math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
-          disti = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgi)
-          distii = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgii)
-
-          if disti > distii:
-            boot_score = tmpcgii
-          else:
-            boot_score = tmpcgi
-          bootstrap_scores.append(boot_score)
-      except (ValueError, ZeroDivisionError):
-        # Skip this bootstrap sample if calculation fails
-        pass
-
-  if len(bootstrap_scores) > 0:
+  if method == 'avg':
+    # Vectorized average method - compute all bootstrap scores at once
+    avgpulls_all = np.mean(boot_pulls_all, axis=1)
+    avgpushes_all = np.mean(boot_pushes_all, axis=1)
+    bootstrap_scores = (avgpulls_all + avgpushes_all) / 2.0
     return np.std(bootstrap_scores)
-  else:
-    return float('nan')
+
+  elif method == 'cgi' and len(pulls) > 2 and len(pushes) > 2:
+    # Vectorized CGI method - compute statistics for all bootstrap samples
+    avgpulls_all = np.mean(boot_pulls_all, axis=1)
+    varpulls_all = np.var(boot_pulls_all, axis=1)
+    avgpushes_all = np.mean(boot_pushes_all, axis=1)
+    varpushes_all = np.var(boot_pushes_all, axis=1)
+
+    # Filter valid samples (positive variances, different variances)
+    valid_mask = (varpulls_all > 0) & (varpushes_all > 0) & (varpulls_all != varpushes_all)
+
+    if not np.any(valid_mask):
+      return float('nan')
+
+    # Extract valid samples
+    avgpulls = avgpulls_all[valid_mask]
+    varpulls = varpulls_all[valid_mask]
+    avgpushes = avgpushes_all[valid_mask]
+    varpushes = varpushes_all[valid_mask]
+
+    # Vectorized CGI calculation
+    inv_varpulls = 1.0 / varpulls
+    inv_varpushes = 1.0 / varpushes
+    diff_inv_var = inv_varpulls - inv_varpushes
+
+    term1 = avgpulls * inv_varpulls - avgpushes * inv_varpushes
+    term2_sqrt = np.sqrt(
+      (avgpulls - avgpushes)**2 / (varpulls * varpushes) +
+      2.0 * diff_inv_var * np.log(varpushes / varpulls)
+    )
+
+    tmpcgi = (term1 + term2_sqrt) / diff_inv_var
+    tmpcgii = (term1 - term2_sqrt) / diff_inv_var
+
+    # Choose solution closest to average
+    avg_mid = (avgpulls + avgpushes) / 2.0
+    disti = np.abs(avg_mid - tmpcgi)
+    distii = np.abs(avg_mid - tmpcgii)
+
+    bootstrap_scores = np.where(disti > distii, tmpcgii, tmpcgi)
+    return np.std(bootstrap_scores)
+
+  return float('nan')
 
 #------------------------------------------------------
 
@@ -219,7 +236,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
       avg_score = (avgpulls + avgpushes) / 2.0
 
       # Bootstrap error estimation for average method
-      avg_stderr = bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg')
+      avg_stderr = bootstrap_score(pulls, pushes, n_bootstrap=50000, method='avg')
       if not np.isnan(avg_stderr):
         avg_ci95 = 1.96 * avg_stderr
 
@@ -242,7 +259,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
         cgi_score = tmpcgi
 
       # Bootstrap error estimation for CGI method
-      cgi_stderr = bootstrap_score(pulls, pushes, n_bootstrap=1000, method='cgi')
+      cgi_stderr = bootstrap_score(pulls, pushes, n_bootstrap=50000, method='cgi')
       if not np.isnan(cgi_stderr):
         cgi_ci95 = 1.96 * cgi_stderr
 
