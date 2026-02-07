@@ -59,7 +59,7 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 
 | Force Field | Correlation | Convergence |
 |-------------|-------------|-------------|
-| **CHARMM36** <img src="correlation_plot_charmm.png" alt="Correlation Plot CHARMM36" height="300"> | <img src="convergence_plot_charmm.png" alt="Convergence Plot CHARMM36" height="300"> |
+| **CHARMM36** | <img src="correlation_plot_charmm.png" alt="Correlation Plot CHARMM36" height="300"> | <img src="convergence_plot_charmm.png" alt="Convergence Plot CHARMM36" height="300"> |
 | **GROMOS 54A7** | <img src="correlation_plot_gromos.png" alt="Correlation Plot GROMOS 54A7" height="300"> | <img src="convergence_plot_gromos.png" alt="Convergence Plot GROMOS 54A7" height="300"> |
 | **AMBER19SB** | <img src="correlation_plot_amber.png" alt="Correlation Plot AMBER19SB" height="300"> | <img src="convergence_plot_amber.png" alt="Convergence Plot AMBER19SB" height="300"> |
 
