@@ -7,3 +7,5 @@ test_gromos/
 test_charmm/
 test_amber/
 benchmark/*/
+benchmark_amber/
+benchmark_gromos/
