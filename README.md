@@ -61,7 +61,7 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 |-------------|-------------|-------------|
 | **CHARMM36** (default) | (none) | (none) |
 | **GROMOS 54A7** | (none) | (none) |
-| **AMBER19SB** | <img src="correlation_plot_amber.png" alt="Correlation Plot AMBER19SB"> | <img src="convergence_plot_amber.png" alt="Convergence Plot AMBER19SB"> |
+| **AMBER19SB** | <img src="correlation_plot_amber.png" alt="Correlation Plot AMBER19SB" height="150"> | <img src="convergence_plot_amber.png" alt="Convergence Plot AMBER19SB" height="150"> |
 
 ## Installation
 
