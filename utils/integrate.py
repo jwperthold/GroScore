@@ -16,6 +16,22 @@ args=parser.parse_args()
 
 #------------------------------------------------------
 
+# Extract base name from input file for output naming
+# E.g., "bindfwd_1_pullf.xvg" -> "bindfwd_1"
+input_basename = os.path.basename(args.file)
+if input_basename.endswith("_pullf.xvg"):
+  base_name = input_basename[:-10]  # Remove "_pullf.xvg"
+elif input_basename.endswith(".xvg"):
+  base_name = input_basename[:-4]   # Remove ".xvg"
+else:
+  base_name = input_basename
+
+# Output file names based on input file
+dg_file = base_name + "_DG.dat"
+dgdt_file = base_name + "_dGdt.dat"
+
+#------------------------------------------------------
+
 # read fren file
 temp = []
 forces = []
@@ -39,15 +55,13 @@ if os.path.isfile(args.file):
 
 DG = 0.0
 i = 0
-f = open("DG.dat", "a")
-fb = open("dGdt.dat", "a")
+f = open(dg_file, "w")
+fb = open(dgdt_file, "w")
 while i < len(temp) - 1:
   DG += (temp[i+1] - temp[i]) * (forces[i] + forces[i+1]) / 2
   f.write(str(temp[i] + (temp[i+1] - temp[i])/2.0)+"\t"+str(DG*0.0002)+"\n")
   fb.write(str(temp[i] + (temp[i+1] - temp[i])/2.0)+"\t"+str((forces[i] + forces[i+1]) / 2)+"\n")
   i += 1
-f.write("\n")
-fb.write("\n")
 f.close()
 fb.close()
 

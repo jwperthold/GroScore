@@ -98,8 +98,7 @@ fi
 bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
 if [[ $bl -eq 0 ]]; then
   # Stage 0: Prepare system up to emin_solv.gro
-  if [[ ! -f emin_solv.gro ]]; then
-    echo "emin_solv.gro not found, preparing system."
+  if [[ ! -f conf_vacbox.gro ]]; then
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
       # Add ACE/NME caps for CHARMM36 and AMBER19SB cutout
@@ -147,19 +146,39 @@ if [[ $bl -eq 0 ]]; then
     else
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     fi
-    gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 2
-    gmx mdrun -nt $nt -deffnm emin_vac
+  fi
+  if [[ ! -f emin_solv.gro ]]; then
+    if [[ ! -f emin_vac.tpr ]]; then
+      gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 2
+    fi
+    if [[ ! -f emin_vac.gro ]]; then
+      gmx mdrun -nt $nt -deffnm emin_vac
+    fi
     et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
     if [[ $et -eq 0 ]]; then
       echo "after equilibration no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
-      gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d 1.5
-      gmx solvate -cp box.gro -cs $WATER_BOX -o box_solv.gro -p topol.top
-      gmx grompp -r box_solv.gro -f $MDP_DIR/emin_vac.mdp -c box_solv.gro -o ions.tpr -maxwarn 2
-      echo -e "SOL\n" | gmx genion -s ions.tpr -o solv_ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
-      gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 2
-      gmx mdrun -nt $nt -deffnm emin_solv
-      echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
+      if [[ ! -f box.gro ]]; then
+        gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d 1.5
+      fi
+      if [[ ! -f box_solv.gro ]]; then
+        gmx solvate -cp box.gro -cs $WATER_BOX -o box_solv.gro -p topol.top
+      fi
+      if [[ ! -f ions.tpr ]]; then
+        gmx grompp -r box_solv.gro -f $MDP_DIR/emin_vac.mdp -c box_solv.gro -o ions.tpr -maxwarn 2
+      fi
+      if [[ ! -f solv_ions.gro ]]; then
+        echo -e "SOL\n" | gmx genion -s ions.tpr -o solv_ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
+      fi
+      if [[ ! -f emin_solv.tpr ]]; then
+        gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 2
+      fi
+      if [[ ! -f emin_solv.gro ]]; then
+        gmx mdrun -nt $nt -deffnm emin_solv
+      fi
+      if [[ ! -f index.ndx ]]; then
+        echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
+      fi
       cp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
     else
       echo "after equilibration entangled loops were found."
@@ -179,23 +198,54 @@ if [[ $bl -eq 0 ]]; then
   fi
 
   # Run one equilibration to generate disres (needs equilibrated structure for distances)
+  
+  if [[ ! -f nvt_1_init.tpr ]]; then
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_init -maxwarn 10
+  fi
+  if [[ ! -f nvt_1_init.gro ]]; then
+    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_1_init
+  fi
+  if [[ ! -f nvt_2_init.tpr ]]; then
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_init.tpr -t nvt_1_init.cpt -p topol.top -o nvt_2_init -maxwarn 10
+  fi
+  if [[ ! -f nvt_2_init.gro ]]; then
+    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_2_init
+  fi
+  if [[ ! -f nvt_3_init.tpr ]]; then
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_init.tpr -t nvt_2_init.cpt -p topol.top -o nvt_3_init -maxwarn 10
+  fi
+  if [[ ! -f nvt_3_init.gro ]]; then
+    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_3_init
+  fi
+  if [[ ! -f nvt_4_init.tpr ]]; then
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_init.tpr -t nvt_3_init.cpt -p topol.top -o nvt_4_init -maxwarn 10
+  fi
+  if [[ ! -f nvt_4_init.gro ]]; then
+    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_4_init
+  fi
+  if [[ ! -f nvt_5_init.tpr ]]; then
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_init.tpr -t nvt_4_init.cpt -p topol.top -o nvt_5_init -n index.ndx -maxwarn 10
+  fi
+  if [[ ! -f nvt_5_init.gro ]]; then
+    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_5_init
+  fi
+  if [[ ! -f npt_init.tpr ]]; then
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
+  fi
+  if [[ ! -f npt_init.gro ]]; then
+    timeout -s 9 60m gmx mdrun -nt $nt -deffnm npt_init
+  fi
+  if [[ ! -f npt_init_whole.gro ]]; then
+    echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
+  fi
+  if [[ ! -f npt_init_cluster.gro ]]; then
+    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster
+  fi
+  if [[ ! -f npt_init_cluster.pdb ]]; then
+    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster
+  fi
   if [[ ! -f numpertres.gs ]]; then
     echo "Generating distance restraints from initial equilibration."
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_init -maxwarn 10
-    timeout -k 1s 10m gmx mdrun -nt $nt -deffnm nvt_1_init
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_init.tpr -t nvt_1_init.cpt -p topol.top -o nvt_2_init -maxwarn 10
-    gmx mdrun -nt $nt -deffnm nvt_2_init
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_init.tpr -t nvt_2_init.cpt -p topol.top -o nvt_3_init -maxwarn 10
-    gmx mdrun -nt $nt -deffnm nvt_3_init
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_init.tpr -t nvt_3_init.cpt -p topol.top -o nvt_4_init -maxwarn 10
-    gmx mdrun -nt $nt -deffnm nvt_4_init
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_init.tpr -t nvt_4_init.cpt -p topol.top -o nvt_5_init -n index.ndx -maxwarn 10
-    gmx mdrun -nt $nt -deffnm nvt_5_init
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
-    gmx mdrun -nt $nt -deffnm npt_init
-    echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
-    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster
-    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster
     python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
   fi
 
@@ -218,23 +268,49 @@ if [[ $bl -eq 0 ]]; then
     # Full equilibration for this cycle (NVT 1-5 + NPT)
     if [[ ! -f npt_c${cycle}.gro ]]; then
       echo "Running full equilibration for cycle $cycle"
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_c${cycle} -maxwarn 10
-      timeout -k 1s 10m gmx mdrun -nt $nt -deffnm nvt_1_c${cycle}
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_c${cycle}.tpr -t nvt_1_c${cycle}.cpt -p topol.top -o nvt_2_c${cycle} -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_2_c${cycle}
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_c${cycle}.tpr -t nvt_2_c${cycle}.cpt -p topol.top -o nvt_3_c${cycle} -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_3_c${cycle}
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_c${cycle}.tpr -t nvt_3_c${cycle}.cpt -p topol.top -o nvt_4_c${cycle} -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_4_c${cycle}
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_c${cycle}.tpr -t nvt_4_c${cycle}.cpt -p topol.top -o nvt_5_c${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt -deffnm nvt_5_c${cycle}
-      gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt -deffnm npt_c${cycle}
+      if [[ ! -f nvt_1_c${cycle}.tpr ]]; then
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_c${cycle} -maxwarn 10
+      fi
+      if [[ ! -f nvt_1_c${cycle}.gro ]]; then
+        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_1_c${cycle}
+      fi
+      if [[ ! -f nvt_2_c${cycle}.tpr ]]; then
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_c${cycle}.tpr -t nvt_1_c${cycle}.cpt -p topol.top -o nvt_2_c${cycle} -maxwarn 10
+      fi
+      if [[ ! -f nvt_2_c${cycle}.gro ]]; then
+        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_2_c${cycle}
+      fi
+      if [[ ! -f nvt_3_c${cycle}.tpr ]]; then
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_c${cycle}.tpr -t nvt_2_c${cycle}.cpt -p topol.top -o nvt_3_c${cycle} -maxwarn 10
+      fi
+      if [[ ! -f nvt_3_c${cycle}.gro ]]; then
+        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_3_c${cycle}
+      fi
+      if [[ ! -f nvt_4_c${cycle}.tpr ]]; then
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_c${cycle}.tpr -t nvt_3_c${cycle}.cpt -p topol.top -o nvt_4_c${cycle} -maxwarn 10
+      fi
+      if [[ ! -f nvt_4_c${cycle}.gro ]]; then
+        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_4_c${cycle}
+      fi
+      if [[ ! -f nvt_5_c${cycle}.tpr ]]; then
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_c${cycle}.tpr -t nvt_4_c${cycle}.cpt -p topol.top -o nvt_5_c${cycle} -n index.ndx -maxwarn 10
+      fi
+      if [[ ! -f nvt_5_c${cycle}.gro ]]; then
+        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_5_c${cycle}
+      fi
+      if [[ ! -f npt_c${cycle}.tpr ]]; then
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
+      fi
+      if [[ ! -f npt_c${cycle}.gro ]]; then
+        timeout -s 9 60m gmx mdrun -nt $nt -deffnm npt_c${cycle}
+      fi
     fi
 
     # Pull simulation (from equilibrated state)
-    if [[ ! -f bindfwd_${PULL_IDX}.gro ]]; then
+    if [[ ! -f bindfwd_${PULL_IDX}.tpr ]]; then
       gmx grompp -r emin_solv.gro -f bind.mdp -c npt_c${cycle}.tpr -t npt_c${cycle}.cpt -p topol.top -o bindfwd_${PULL_IDX} -n index.ndx -maxwarn 10
+    fi
+    if [[ ! -f bindfwd_${PULL_IDX}.gro ]]; then
       gmx mdrun -nt $nt -deffnm bindfwd_${PULL_IDX}
     fi
     if [[ -f bindfwd_${PULL_IDX}_pullf.xvg ]]; then
@@ -245,10 +321,16 @@ if [[ $bl -eq 0 ]]; then
     fi
 
     # Short re-equilibration + Push simulation
-    if [[ ! -f bindrev_${PUSH_IDX}.gro ]]; then
+    if [[ ! -f nptrev_${PUSH_IDX}.tpr ]]; then
       gmx grompp -r emin_solv.gro -f nptrev.mdp -c bindfwd_${PULL_IDX}.tpr -t bindfwd_${PULL_IDX}.cpt -p topol.top -o nptrev_${PUSH_IDX} -n index.ndx -maxwarn 10
+    fi
+    if [[ ! -f nptrev_${PUSH_IDX}.gro ]]; then
       gmx mdrun -nt $nt -deffnm nptrev_${PUSH_IDX}
+    fi
+    if [[ ! -f bindrev_${PUSH_IDX}.tpr ]]; then
       gmx grompp -r emin_solv.gro -f bindrev.mdp -c nptrev_${PUSH_IDX}.tpr -t nptrev_${PUSH_IDX}.cpt -p topol.top -o bindrev_${PUSH_IDX} -n index.ndx -maxwarn 10
+    fi
+    if [[ ! -f bindrev_${PUSH_IDX}.gro ]]; then
       gmx mdrun -nt $nt -deffnm bindrev_${PUSH_IDX}
     fi
     if [[ -f bindrev_${PUSH_IDX}_pullf.xvg ]]; then
