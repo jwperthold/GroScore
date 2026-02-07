@@ -3,13 +3,16 @@
 
 nt=4
 
-# Safety check: Exit if any files were modified within the last 60 minutes
+# Safety check: Exit if any files were modified within the last 70 minutes
 # This prevents running simulations while setup is still in progress
 # 60 minutes matches the timeout duration for individual simulation steps
+NUMBER_FILES=$(ls -1 2>/dev/null | wc -l)
 RECENT_FILES=$(find . -maxdepth 1 -type f -mmin -70 2>/dev/null | wc -l)
-if [[ $RECENT_FILES -gt 0 ]]; then
-  echo "Safety check: Files in this directory were modified within the last 60 minutes."
-  echo "Exiting to avoid conflicts with ongoing setup. Wait 60 minutes and resubmit."
+if [[ $NUMBER_FILES -lt 4 ]]; then
+  echo "Safety check: Starting simulation from scratch."
+elif [[ $RECENT_FILES -gt 0 ]]; then
+  echo "Safety check: Files in this directory were modified within the last 70 minutes."
+  echo "Exiting to avoid conflicts with ongoing setup. Wait 70 minutes and resubmit."
   exit 0
 fi
 
@@ -103,7 +106,7 @@ if [[ ! -f conf.gro ]]; then
     TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
   fi
   # Merge questions come first, then terminal selections
-  echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
+  echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
 fi
 bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
 if [[ $bl -eq 0 ]]; then
@@ -151,7 +154,7 @@ if [[ $bl -eq 0 ]]; then
         TER_INPUT=$(printf '1\n%.0s' $(seq 1 $((NSEGS * 2))))
       fi
       # Merge questions come first, then terminal selections
-      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -heavyh -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
+      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro

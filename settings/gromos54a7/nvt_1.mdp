@@ -3,6 +3,7 @@ define                   = -DPOSRES
 integrator               = md
 nsteps                   = 5000
 dt                       = 0.004
+mass-repartition-factor  = 3
 
 nstxout                  = 4000
 nstxout-compressed       = 4000

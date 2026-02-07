@@ -47,7 +47,7 @@ GroScore supports three force fields, selectable via the `-ff` option:
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | NH2/COOH (patches) |
 | **AMBER19SB** | All-atom | OPC | all-bonds | 1.0 nm | ACE/NME (explicit residues) |
 
-All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for stable 4 fs timesteps.
+All use all-bonds constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
 
 **Terminal Capping Details:**
 - **CHARMM36/AMBER19SB**: Use ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
@@ -155,7 +155,7 @@ Results are written to two output files ranked by binding affinity:
 Stage 0: Preparation
 ├── PDB fixing (missing atoms, non-standard residues)
 ├── Structure validation
-├── PDB conversion (heavy hydrogen)
+├── PDB conversion
 ├── Solvation (SPC water, 0.15 M NaCl)
 └── Energy minimization → emin_solv.gro
 
@@ -210,7 +210,7 @@ groscore/
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Timestep | 4 fs | Integration timestep (heavy hydrogen) |
+| Timestep | 4 fs | Integration timestep (`mass-repartition-factor = 3`) |
 | Interface cutoff | 0.6 nm | Defines protein-protein interface |
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |

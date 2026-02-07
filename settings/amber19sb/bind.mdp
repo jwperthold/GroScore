@@ -1,6 +1,7 @@
 integrator               = md
 nsteps                   = 1250000
 dt                       = 0.004
+mass-repartition-factor  = 3
 
 nstxout                  = 200000
 nstxout-compressed       = 100000
@@ -16,7 +17,7 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = all-bonds
+constraints              = h-bonds
 lincs_iter               = 1
 lincs_order              = 6
 

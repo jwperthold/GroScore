@@ -3,6 +3,7 @@ define                   = -DPOSRES
 integrator               = md
 nsteps                   = 5000
 dt                       = 0.004
+mass-repartition-factor  = 3
 
 nstxout                  = 4000
 nstxout-compressed       = 4000
@@ -18,7 +19,7 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = all-bonds
+constraints              = h-bonds
 lincs_iter               = 1
 lincs_order              = 6
 
