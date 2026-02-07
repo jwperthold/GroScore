@@ -103,7 +103,7 @@ for i, struct in enumerate(matched_structures):
 
 plt.xlabel('Experimental pKd', fontsize=12, fontweight='bold')
 plt.ylabel('Predicted pKd (from GroScore)', fontsize=12, fontweight='bold')
-plt.title(f'GroScore Predictions vs Experimental Binding Affinity (AMBER19SB)\n' +
+plt.title(f'GroScore Predictions vs Experimental Binding Affinity\n' +
           f'Pearson r = {pearson_r:.3f}, Spearman ρ = {spearman_r:.3f}, R² = {r_squared:.3f}, RMSE = {rmse:.2f}',
           fontsize=13, fontweight='bold')
 plt.legend(fontsize=11)
