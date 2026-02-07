@@ -55,6 +55,14 @@ All use all-bonds constraints and heavy hydrogen masses (`-heavyh` flag) for sta
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
+## Benchmark Data (HADDOCKING protein-protein affinity benchmark)
+
+| Force Field | Correlation | Convergence |
+|-------------|-------------|-------------|
+| **CHARMM36** (default) | (none) | (none) |
+| **GROMOS 54A7** | (none) | (none) |
+| **AMBER19SB** | <img src="correlation_plot_amber.png" alt="Correlation Plot AMBER19SB" width="200"> | <img src="convergence_plot_amber.png" alt="Convergence Plot AMBER19SB" width="200"> |
+
 ## Installation
 
 ```bash
