@@ -41,11 +41,11 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 GroScore supports three force fields, selectable via the `-ff` option:
 
-| Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping | Status |
-|-------------|------|-------------|-------------|---------|------------------|--------|
-| **AMBER19SB** (default) | All-atom | OPC | all-bonds | 1.0 nm | ACE/NME (explicit residues) | Stable |
-| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE + COOH patches | Stable |
-| **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE + COOH patches | Stable |
+| Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
+|-------------|------|-------------|-------------|---------|------------------|
+| **AMBER19SB** (default) | All-atom | OPC | all-bonds | 1.0 nm | ACE/NME (explicit residues) |
+| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE + COOH patches |
+| **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE + COOH patches |
 
 All use all-bond constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
 
