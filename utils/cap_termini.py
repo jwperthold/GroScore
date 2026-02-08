@@ -16,6 +16,7 @@ parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB fil
 parser.add_argument('-o', '--output', type=str, required=True, help="Output PDB file")
 parser.add_argument('-m', '--chainmap', type=str, default=None, help="Chain map file to update (chain_map.gs)")
 parser.add_argument('--rename-nme-carbon', action='store_true', help="Rename NME carbon from C to CH3 (for CHARMM36)")
+parser.add_argument('--ace-only', action='store_true', help="Only add ACE caps (skip NME), for use with GROMOS COOH patches")
 args = parser.parse_args()
 
 if not os.path.isfile(args.file):
@@ -60,8 +61,9 @@ for chain in fixer.topology.chains():
     # Skip if already capped (e.g. from a previous capping step)
     if residues[0].name != 'ACE':
         fixer.missingResidues[(chain.index, 0)] = ['ACE']
-    if residues[-1].name != 'NME':
-        fixer.missingResidues[(chain.index, len(residues))] = ['NME']
+    if not args.ace_only:
+        if residues[-1].name != 'NME':
+            fixer.missingResidues[(chain.index, len(residues))] = ['NME']
 
 fixer.findMissingAtoms()
 fixer.addMissingAtoms()
@@ -172,10 +174,12 @@ with open(args.output, "w") as out:
 if args.chainmap:
     with open(args.chainmap, "w") as f:
         f.write("# Sequential residue numbers belonging to protein B\n")
-        f.write(f"# Updated by cap_termini.py with ACE/NME caps\n")
+        cap_label = "ACE caps" if args.ace_only else "ACE/NME caps"
+        f.write(f"# Updated by cap_termini.py with {cap_label}\n")
         for resnum in sorted(new_b_resnums):
             f.write(f"{resnum}\n")
 
-print(f"Added ACE/NME caps, wrote {args.output} ({resnum_counter} residues, {atom_num} atoms)")
+cap_type = "ACE caps (no NME)" if args.ace_only else "ACE/NME caps"
+print(f"Added {cap_type}, wrote {args.output} ({resnum_counter} residues, {atom_num} atoms)")
 if args.chainmap:
     print(f"Updated {args.chainmap} with {len(new_b_resnums)} residues for protein B")
