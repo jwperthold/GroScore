@@ -4,7 +4,7 @@
   <img src="logo.png" alt="GroScore Logo" width="200">
 </p>
 
-**Computational Chemistry Toolkit for Protein-Protein Affinity Scoring**
+**Computational Chemistry Toolkit for Protein-Protein Affinity Scoring with MD**
 
 [![Version](https://img.shields.io/badge/version-0.96-blue.svg)](https://github.com/jwperthold/GroScore)
 [![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org/)
