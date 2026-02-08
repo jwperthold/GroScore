@@ -43,11 +43,11 @@ GroScore supports three force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping | Status |
 |-------------|------|-------------|-------------|---------|------------------|--------|
-| **AMBER19SB** (default) | All-atom | OPC | h-bonds | 1.0 nm | ACE/NME (explicit residues) | Stable |
+| **AMBER19SB** (default) | All-atom | OPC | all-bonds | 1.0 nm | ACE/NME (explicit residues) | Stable |
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | NH2/COOH (patches) | Stable |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/NME (explicit residues) | Unstable |
 
-All use bond constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
+All use all-bond constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
 
 **Terminal Capping Details:**
 - **CHARMM36/AMBER19SB**: Use ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.

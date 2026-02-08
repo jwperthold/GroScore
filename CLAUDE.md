@@ -108,7 +108,7 @@ Settings are organized by force field in `settings/<forcefield>/`:
 | Setting | AMBER19SB (default) | GROMOS 54A7 | CHARMM36 (unstable) |
 |---------|---------------------|-------------|---------------------|
 | Water model | OPC | SPC | TIP3P |
-| Constraints | h-bonds | all-bonds | all-bonds |
+| Constraints | all-bonds | all-bonds | all-bonds |
 | Coulomb | PME | P3M-AD | PME |
 | VdW modifier | none | none | force-switch |
 | Cutoffs | 1.0 nm | 1.4 nm | 1.2 nm |
