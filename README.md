@@ -22,7 +22,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Structure Validation** - Built-in checks for broken loops and topological knots
 - **Optional Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
-- **Multiple Force Fields** - Support for GROMOS 54A7 (united-atom), CHARMM36 (all-atom), and AMBER19SB (all-atom)
+- **Multiple Force Fields** - Support for AMBER19SB with OPC or OPC3 water (all-atom), GROMOS 54A7 (united-atom), and CHARMM36 (all-atom)
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
 
 ## Requirements
@@ -43,16 +43,22 @@ GroScore supports three force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
-| **AMBER19SB** (default) | All-atom | OPC | all-bonds | 1.0 nm | ACE/NME (explicit residues) |
+| **AMBER19SB** (default) | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME (explicit residues) |
+| **AMBER19SB OPC3** | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME (explicit residues) |
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE + COOH patches |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE + COOH patches |
 
 All use all-bond constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
 
 **Terminal Capping Details:**
-- **AMBER19SB**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
+- **AMBER19SB / AMBER19SB OPC3**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
 - **CHARMM36**: Uses ACE (N-acetyl) caps at N-termini (explicit residues) and COOH patches at C-termini for improved stability.
 - **GROMOS 54A7**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
+
+**Water Model Details:**
+- **OPC** (Optimal Point Charge, 4-point): Default for AMBER19SB, uses `tip4p.gro` for solvation (4-point water coordinates)
+- **OPC3** (3-point variant): Alternative for AMBER19SB, uses `spc216.gro` for solvation (3-point water coordinates)
+- **SPC** and **TIP3P**: Traditional 3-point models for GROMOS and CHARMM36 respectively
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
@@ -120,7 +126,7 @@ python ../groscore.py
 **Options:**
 - `-n, --numruns` - Number of pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `amber19sb` (default), `gromos54a7`, or `charmm36`
+- `-ff, --forcefield` - Force field: `amber19sb` (default), `amber19sb_opc3`, `gromos54a7`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower, more accurate)
 - `--restart` - Resubmit jobs even if `run.gs` exists (useful for continuing interrupted runs)

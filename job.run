@@ -49,10 +49,15 @@ if [[ "$FORCEFIELD" == "charmm36" ]]; then
   WATER_MODEL="tip3p"
   WATER_BOX="spc216.gro"
 elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
-  # AMBER ff19SB included in standard GROMACS installation
+  # AMBER ff19SB with OPC water (4-point) included in standard GROMACS installation
   FF_FLAG="-ff amber19sb"
   WATER_MODEL="opc"
   WATER_BOX="tip4p.gro"
+elif [[ "$FORCEFIELD" == "amber19sb_opc3" ]]; then
+  # AMBER ff19SB with OPC3 water (3-point) included in standard GROMACS installation
+  FF_FLAG="-ff amber19sb"
+  WATER_MODEL="opc3"
+  WATER_BOX="spc216.gro"
 else
   # gromos54a7
   FF_FLAG="-ff gromos54a7"
@@ -67,11 +72,11 @@ fi
 if [[ ! -f conf.gro ]]; then
   # Fix missing atoms and non-standard residues
   python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
-  # Add terminal caps: ACE/NME for AMBER19SB, ACE-only for CHARMM36 and GROMOS (uses COOH C-term patches)
+  # Add terminal caps: ACE/NME for AMBER19SB variants, ACE-only for CHARMM36 and GROMOS (uses COOH C-term patches)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only
     PDB2GMX_INPUT="fixed_capped.pdb"
-  elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
+  elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
     PDB2GMX_INPUT="fixed_capped.pdb"
   elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
@@ -97,11 +102,11 @@ if [[ ! -f conf.gro ]]; then
   NSEGS=$(($(grep -c "^TER" $PDB2GMX_INPUT) + 1))
   # Terminal selections per segment: N-terminus then C-terminus
   # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
-  # AMBER19SB: No terminal selections needed (no termini defined in FF)
+  # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
   # GROMOS: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
-  elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
+  elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     TER_INPUT=""
   elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
     TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
@@ -115,11 +120,11 @@ if [[ $bl -eq 0 ]]; then
   if [[ ! -f conf_vacbox.gro ]]; then
     if [[ $CUTOUT -eq 1 ]]; then
       python3 ../../utils/make_cutout.py -m chain_map.gs
-      # Add terminal caps: ACE/NME for AMBER19SB, ACE-only for CHARMM36 and GROMOS
+      # Add terminal caps: ACE/NME for AMBER19SB variants, ACE-only for CHARMM36 and GROMOS
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs --ace-only
         CUTOUT_PDB="cutout_capped.pdb"
-      elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
+      elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
         CUTOUT_PDB="cutout_capped.pdb"
       elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
@@ -146,11 +151,11 @@ if [[ $bl -eq 0 ]]; then
       NSEGS=$(($(grep -c "^TER" $CUTOUT_PDB) + 1))
       # Terminal selections per segment: N-terminus then C-terminus
       # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
-      # AMBER19SB: No terminal selections needed (no termini defined in FF)
+      # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
       # GROMOS: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
-      elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
+      elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         TER_INPUT=""
       elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
         TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
