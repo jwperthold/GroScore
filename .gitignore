@@ -10,3 +10,4 @@ test_amber/
 benchmark/*/
 benchmark_amber/
 benchmark_gromos/
+benchmark_charmm/
