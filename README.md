@@ -22,8 +22,8 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Structure Validation** - Built-in checks for broken loops and topological knots
 - **Optional Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
-- **Multiple Force Fields** - Support for AMBER19SB with OPC or OPC3 water (all-atom), GROMOS 54A7 (united-atom), and CHARMM36 (all-atom)
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
+- **Multiple Force Fields** - Support for AMBER19SB, GROMOS 54A7 (united-atom), and CHARMM36 (all-atom)
 
 ## Requirements
 
