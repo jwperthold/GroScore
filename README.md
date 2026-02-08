@@ -56,8 +56,8 @@ All use all-bond constraints and heavy hydrogen masses (`mass-repartition-factor
 - **GROMOS 54A7**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
 
 **Water Model Details:**
-- **OPC** (Optimal Point Charge, 4-point): Default for AMBER19SB, uses `tip4p.gro` for solvation (4-point water coordinates)
-- **OPC3** (3-point variant): Alternative for AMBER19SB, uses `spc216.gro` for solvation (3-point water coordinates)
+- **OPC** (Optimal Point Charge, 4-point): Default for AMBER19SB
+- **OPC3** (3-point variant): Alternative for AMBER19SB
 - **SPC** and **TIP3P**: Traditional 3-point models for GROMOS and CHARMM36 respectively
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
