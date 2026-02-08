@@ -147,6 +147,10 @@ with open(args.output, "w") as out:
                 # AMBER19SB expects "C", so only rename if --rename-nme-carbon flag is set
                 if args.rename_nme_carbon and resname == 'NME' and atomname == 'C':
                     atomname = 'CH3'
+                # PDBFixer names ACE's methyl carbon "CH3", but GROMOS expects "CA"
+                # (GROMOS RTP defines atom NAME "CA" with atom TYPE "CH3")
+                if args.ace_only and resname == 'ACE' and atomname == 'CH3':
+                    atomname = 'CA'
                 element = atom.element.symbol if atom.element else atomname[0]
 
                 # PDB fixed-width format
