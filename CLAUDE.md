@@ -133,12 +133,12 @@ All force fields use:
 - COOH patches for C-termini via pdb2gmx
 - Terminal selection "2" (none) for N-term (ACE is explicit), "1" (COOH) for C-term
 
-**CHARMM36** (unstable):
-- ACE/NME caps via `cap_termini.py --rename-nme-carbon`
-- Renames NME's methyl carbon from "C" to "CH3" (CHARMM36 naming convention)
-- Terminal selection "None" in pdb2gmx (index 8 for N-term, 7 for C-term)
+**CHARMM36**:
+- ACE caps via `cap_termini.py --ace-only` (explicit N-terminal ACE residues)
+- ACE's methyl carbon keeps PDBFixer name "CH3" (CHARMM36 naming convention)
+- COOH patches for C-termini via pdb2gmx
+- Terminal selection "8" (none) for N-term (ACE is explicit), "1" (COOH) for C-term
 - Parameters bundled in `forcefield/charmm36-jul2022.ff/` (MacKerell lab)
-- **Note:** Despite recent stability improvements, continues to produce unstable simulations for some structures
 
 For all force fields, `chain_map.gs` is updated after capping since residue numbers shift due to inserted ACE (or ACE/NME) residues.
 

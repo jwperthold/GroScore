@@ -16,7 +16,8 @@ parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB fil
 parser.add_argument('-o', '--output', type=str, required=True, help="Output PDB file")
 parser.add_argument('-m', '--chainmap', type=str, default=None, help="Chain map file to update (chain_map.gs)")
 parser.add_argument('--rename-nme-carbon', action='store_true', help="Rename NME carbon from C to CH3 (for CHARMM36)")
-parser.add_argument('--ace-only', action='store_true', help="Only add ACE caps (skip NME), for use with GROMOS COOH patches")
+parser.add_argument('--ace-only', action='store_true', help="Only add ACE caps (skip NME), for use with COOH C-term patches")
+parser.add_argument('--rename-ace-carbon', action='store_true', help="Rename ACE methyl carbon from CH3 to CA (for GROMOS)")
 args = parser.parse_args()
 
 if not os.path.isfile(args.file):
@@ -149,7 +150,8 @@ with open(args.output, "w") as out:
                     atomname = 'CH3'
                 # PDBFixer names ACE's methyl carbon "CH3", but GROMOS expects "CA"
                 # (GROMOS RTP defines atom NAME "CA" with atom TYPE "CH3")
-                if args.ace_only and resname == 'ACE' and atomname == 'CH3':
+                # CHARMM36 expects "CH3" so this rename is GROMOS-specific
+                if args.rename_ace_carbon and resname == 'ACE' and atomname == 'CH3':
                     atomname = 'CA'
                 element = atom.element.symbol if atom.element else atomname[0]
 
