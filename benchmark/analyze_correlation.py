@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from scipy import stats
 import pandas as pd
 
-def bootstrap_correlation(x, y, n_bootstrap=1000, confidence_level=0.95):
+def bootstrap_correlation(x, y, n_bootstrap=50000, confidence_level=0.95):
     """
     Calculate bootstrap confidence intervals for correlation metrics.
 
@@ -19,7 +19,7 @@ def bootstrap_correlation(x, y, n_bootstrap=1000, confidence_level=0.95):
     y : array-like
         Dependent variable (experimental pKd values)
     n_bootstrap : int
-        Number of bootstrap resamples (default: 1000)
+        Number of bootstrap resamples (default: 50000)
     confidence_level : float
         Confidence level for intervals (default: 0.95 for CI95)
 
@@ -32,60 +32,85 @@ def bootstrap_correlation(x, y, n_bootstrap=1000, confidence_level=0.95):
     lower_percentile = (alpha / 2) * 100
     upper_percentile = (1 - alpha / 2) * 100
 
-    # Initialize arrays to store bootstrap statistics
-    pearson_bootstrap = np.zeros(n_bootstrap)
-    spearman_bootstrap = np.zeros(n_bootstrap)
-    r_squared_bootstrap = np.zeros(n_bootstrap)
-    rmse_bootstrap = np.zeros(n_bootstrap)
-    mae_bootstrap = np.zeros(n_bootstrap)
-
     # Set random seed for reproducibility
     np.random.seed(42)
 
-    # Perform bootstrap resampling
-    i = 0
-    attempts = 0
-    max_attempts = n_bootstrap * 10  # Prevent infinite loop
+    # Generate all bootstrap indices at once (vectorized)
+    indices = np.random.randint(0, n, size=(n_bootstrap, n))
 
-    while i < n_bootstrap and attempts < max_attempts:
-        attempts += 1
+    # Get all bootstrap samples at once
+    x_boot = x[indices]  # shape: (n_bootstrap, n)
+    y_boot = y[indices]  # shape: (n_bootstrap, n)
 
-        # Resample with replacement
-        indices = np.random.randint(0, n, size=n)
-        x_boot = x[indices]
-        y_boot = y[indices]
+    # Identify degenerate samples (all x or y values identical)
+    x_var = np.var(x_boot, axis=1)
+    y_var = np.var(y_boot, axis=1)
+    valid_mask = (x_var > 0) & (y_var > 0)
 
-        # Skip if all x values are identical or all y values are identical
-        if len(np.unique(x_boot)) < 2 or len(np.unique(y_boot)) < 2:
-            continue
+    if not np.any(valid_mask):
+        raise ValueError("No valid bootstrap samples generated - all samples are degenerate")
 
-        try:
-            # Fit linear regression on bootstrap sample
-            slope_boot, intercept_boot, r_value_boot, _, _ = stats.linregress(x_boot, y_boot)
-            y_pred_boot = slope_boot * x_boot + intercept_boot
+    # Filter to valid samples only
+    x_boot = x_boot[valid_mask]
+    y_boot = y_boot[valid_mask]
+    n_valid = x_boot.shape[0]
 
-            # Calculate metrics for this bootstrap sample
-            pearson_bootstrap[i], _ = stats.pearsonr(y_pred_boot, y_boot)
-            spearman_bootstrap[i], _ = stats.spearmanr(y_pred_boot, y_boot)
-            r_squared_bootstrap[i] = r_value_boot**2
-            rmse_bootstrap[i] = np.sqrt(np.mean((y_boot - y_pred_boot)**2))
-            mae_bootstrap[i] = np.mean(np.abs(y_boot - y_pred_boot))
+    if n_valid < n_bootstrap:
+        print(f"Warning: Only {n_valid} valid bootstrap samples obtained out of {n_bootstrap} requested")
 
-            i += 1  # Only increment if successful
+    # Vectorized linear regression calculations
+    x_mean = np.mean(x_boot, axis=1, keepdims=True)
+    y_mean = np.mean(y_boot, axis=1, keepdims=True)
+    x_centered = x_boot - x_mean
+    y_centered = y_boot - y_mean
 
-        except (ValueError, RuntimeWarning):
-            # Skip degenerate bootstrap samples
-            continue
+    # Calculate slope and intercept for all bootstrap samples at once
+    xy_cov = np.sum(x_centered * y_centered, axis=1)
+    x_var = np.sum(x_centered**2, axis=1)
+    slope_boot = xy_cov / x_var
+    intercept_boot = y_mean.squeeze() - slope_boot * x_mean.squeeze()
 
-    if i < n_bootstrap:
-        print(f"Warning: Only {i} valid bootstrap samples obtained out of {n_bootstrap} requested")
+    # Calculate predictions for all bootstrap samples
+    y_pred_boot = slope_boot[:, np.newaxis] * x_boot + intercept_boot[:, np.newaxis]
 
-    # Use only valid bootstrap samples for percentile calculation
-    pearson_bootstrap = pearson_bootstrap[:i]
-    spearman_bootstrap = spearman_bootstrap[:i]
-    r_squared_bootstrap = r_squared_bootstrap[:i]
-    rmse_bootstrap = rmse_bootstrap[:i]
-    mae_bootstrap = mae_bootstrap[:i]
+    # Calculate R² (vectorized)
+    ss_res = np.sum((y_boot - y_pred_boot)**2, axis=1)
+    ss_tot = np.sum(y_centered**2, axis=1)
+    r_squared_bootstrap = 1 - (ss_res / ss_tot)
+
+    # Calculate RMSE and MAE (vectorized)
+    residuals = y_boot - y_pred_boot
+    rmse_bootstrap = np.sqrt(np.mean(residuals**2, axis=1))
+    mae_bootstrap = np.mean(np.abs(residuals), axis=1)
+
+    # Calculate Pearson correlation (vectorized)
+    y_pred_centered = y_pred_boot - np.mean(y_pred_boot, axis=1, keepdims=True)
+    numerator = np.sum(y_pred_centered * y_centered, axis=1)
+    denominator = np.sqrt(np.sum(y_pred_centered**2, axis=1) * np.sum(y_centered**2, axis=1))
+    pearson_bootstrap = numerator / denominator
+
+    # Calculate Spearman correlation using vectorized ranking
+    # Rank each bootstrap sample independently
+    from scipy.stats import rankdata
+
+    # Rank predictions and actual values for all bootstrap samples
+    # Using 'average' method to handle ties
+    ranked_pred = np.array([rankdata(y_pred_boot[i], method='average') for i in range(n_valid)])
+    ranked_actual = np.array([rankdata(y_boot[i], method='average') for i in range(n_valid)])
+
+    # Calculate Pearson correlation on ranks (which is Spearman correlation)
+    pred_mean = np.mean(ranked_pred, axis=1, keepdims=True)
+    actual_mean = np.mean(ranked_actual, axis=1, keepdims=True)
+    pred_centered = ranked_pred - pred_mean
+    actual_centered = ranked_actual - actual_mean
+
+    numerator = np.sum(pred_centered * actual_centered, axis=1)
+    denominator = np.sqrt(np.sum(pred_centered**2, axis=1) * np.sum(actual_centered**2, axis=1))
+
+    # Handle potential division by zero (constant ranks)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        spearman_bootstrap = numerator / denominator
+        spearman_bootstrap = np.nan_to_num(spearman_bootstrap, nan=0.0)
 
     # Calculate confidence intervals using percentile method
     results = {
@@ -167,8 +192,8 @@ mae = np.mean(np.abs(experimental_pkd - predicted_pkd))
 # Calculate bootstrap confidence intervals only if we have enough samples
 min_samples_for_bootstrap = 3
 if len(groscore_values) >= min_samples_for_bootstrap:
-    print(f"\nCalculating bootstrap confidence intervals (n=1000)...")
-    bootstrap_results = bootstrap_correlation(groscore_values, experimental_pkd, n_bootstrap=1000)
+    print(f"\nCalculating bootstrap confidence intervals (n=50000)...")
+    bootstrap_results = bootstrap_correlation(groscore_values, experimental_pkd, n_bootstrap=50000)
 
     print(f"\n{'Correlation Metrics (with 95% Bootstrap Confidence Intervals)'}")
     print("-" * 70)
