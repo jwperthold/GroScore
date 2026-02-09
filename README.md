@@ -67,16 +67,22 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 
 ## Benchmark Data (HADDOCKING protein-protein affinity benchmark)
 
-| **Force Field** | **Convergence** |
-|-----------------|-----------------|
 | **AMBER19SB/OPC** | Convergence |
+|-------------------|-------------|
 | <img src="/benchmark/results/correlation_plot_amber.png" alt="Correlation Plot AMBER19SB" height="500"> | <img src="/benchmark/results/convergence_plot_amber.png" alt="Convergence Plot AMBER19SB" height="500"> |
+
 | **AMBER19SB/OPC3** | Convergence |
+|--------------------|-------------|
 | <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB" height="500"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB" height="500"> |
+
 | **CHARMM36/TIP3P** | Convergence |
+|--------------------|-------------|
 | <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36" height="500"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36" height="500"> |
+
 | **GROMOS 54A7/SPC** | Convergence |
+|---------------------|-------------|
 | <img src="/benchmark/results/correlation_plot_gromos.png" alt="Correlation Plot GROMOS 54A7" height="500"> | <img src="/benchmark/results/convergence_plot_gromos.png" alt="Convergence Plot GROMOS 54A7" height="500"> |
+
 
 ## Installation
 
