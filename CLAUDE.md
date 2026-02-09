@@ -109,7 +109,7 @@ Settings are organized by force field in `settings/<forcefield>/`:
 |---------|---------------------|----------------|-------------|----------|
 | Water model | OPC (4-point) | OPC3 (3-point) | SPC | TIP3P |
 | Constraints | all-bonds | all-bonds | all-bonds | all-bonds |
-| Coulomb | PME | PME | P3M-AD | PME |
+| Coulomb | PME | PME | PME | PME |
 | VdW modifier | none | none | none | force-switch |
 | Cutoffs | 1.0 nm | 1.0 nm | 1.4 nm | 1.2 nm |
 

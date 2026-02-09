@@ -32,7 +32,7 @@ rvdw                     = 1.4
 vdwtype                  = cut-off
 vdw-modifier             = none
 
-coulombtype              = P3M-AD
+coulombtype              = PME
 coulomb-modifier         = none
 
 tcoupl                   = V-rescale
