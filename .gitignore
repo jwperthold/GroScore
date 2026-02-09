@@ -8,6 +8,7 @@ test_gromos/
 test_charmm/
 test_amber/
 benchmark/*/
-benchmark_amber/
-benchmark_gromos/
+!benchmark/results/
+benchmark_amber_opc3p/
 benchmark_charmm/
+benchmark_gromos/
