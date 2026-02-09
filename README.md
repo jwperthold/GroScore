@@ -48,7 +48,10 @@ GroScore supports three force fields, selectable via the `-ff` option:
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 
-All use all-bond constraints and heavy hydrogen masses (`mass-repartition-factor = 3`) for stable 4 fs timesteps.
+All force fields use:
+- **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
+- **Constraints**: all-bonds for maximum stability
+- **Heavy hydrogens**: `mass-repartition-factor = 3` for stable 4 fs timesteps
 
 **Terminal Capping Details:**
 - **AMBER19SB / AMBER19SB OPC3**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
