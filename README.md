@@ -19,7 +19,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Automated MD Pipeline** - Complete workflow from structure preparation to final scoring
 - **SLURM Integration** - Efficient HPC execution via job arrays
 - **Structure Validation** - Built-in checks for broken loops and topological knots
-- **Optional Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
+- **Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
 - **Multiple Force Fields** - Support for AMBER19SB (all-atom), GROMOS 54A7 (united-atom), and CHARMM36 (all-atom)
@@ -141,7 +141,7 @@ python ../groscore.py
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb` (default), `amber19sb_opc3`, `gromos54a7`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
-- `--no-cutout` - Use full protein structure (slower, more accurate)
+- `--no-cutout` - Use full protein structure (slower)
 - `--restart` - Resubmit jobs even if `run.gs` exists (useful for continuing interrupted runs)
 
 This will:
