@@ -137,7 +137,7 @@ python ../groscore.py
 ```
 
 **Options:**
-- `-n, --numruns` - Number of pull/push cycles (default: 5)
+- `-n, --numruns` - Number of independent pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb` (default), `amber19sb_opc3`, `gromos54a7`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
