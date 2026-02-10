@@ -69,19 +69,19 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 
 | **AMBER19SB/OPC** | Convergence |
 |-------------------|-------------|
-| <img src="/benchmark/results/correlation_plot_amber.png" alt="Correlation Plot AMBER19SB/OPC" height="300"> | <img src="/benchmark/results/convergence_plot_amber.png" alt="Convergence Plot AMBER19SB/OPC" height="300"> |
+| <img src="/benchmark/results/correlation_plot_amber.png" alt="Correlation Plot AMBER19SB/OPC" height="290"> | <img src="/benchmark/results/convergence_plot_amber.png" alt="Convergence Plot AMBER19SB/OPC" height="290"> |
 
 | **AMBER19SB/OPC3** | Convergence |
 |--------------------|-------------|
-| <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB/OPC3" height="300"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB/OPC3" height="300"> |
+| <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB/OPC3" height="290"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB/OPC3" height="290"> |
 
 | **CHARMM36/TIP3P** | Convergence |
 |--------------------|-------------|
-| <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36/TIP3P" height="300"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36/TIP3P" height="300"> |
+| <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36/TIP3P" height="290"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36/TIP3P" height="290"> |
 
 | **GROMOS 54A7/SPC** | Convergence |
 |---------------------|-------------|
-| <img src="/benchmark/results/correlation_plot_gromos.png" alt="Correlation Plot GROMOS 54A7/SPC" height="300"> | <img src="/benchmark/results/convergence_plot_gromos.png" alt="Convergence Plot GROMOS 54A7/SPC" height="300"> |
+| <img src="/benchmark/results/correlation_plot_gromos.png" alt="Correlation Plot GROMOS 54A7/SPC" height="290"> | <img src="/benchmark/results/convergence_plot_gromos.png" alt="Convergence Plot GROMOS 54A7/SPC" height="290"> |
 
 
 ## Installation
