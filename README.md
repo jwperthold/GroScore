@@ -167,7 +167,7 @@ Results are written to two output files ranked by binding affinity:
 | Output File | Method |
 |-------------|--------|
 | `scores_avg.gs` | Simple average of pulls/pushes |
-| `scores_cgi.gs` | Crooks Gaussian Intersection (for >= 20 cycles) |
+| `scores_cgi.gs` | Crooks Gaussian Intersection (for $\ge$ 20 cycles) |
 
 ## Simulation Pipeline
 
