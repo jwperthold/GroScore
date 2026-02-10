@@ -233,13 +233,17 @@ for i, struct in enumerate(matched_structures):
 
 # Create scatter plot - Predicted vs Experimental pKd
 plt.figure(figsize=(10, 8))
-plt.scatter(experimental_pkd, predicted_pkd, s=100, alpha=0.7, edgecolors='black', linewidth=1.5)
+plt.scatter(experimental_pkd, predicted_pkd, s=50, alpha=0.7, edgecolors='black', linewidth=1.0)
 
 # Add perfect prediction line (diagonal)
 min_pkd = min(predicted_pkd.min(), experimental_pkd.min()) - 0.5
 max_pkd = max(predicted_pkd.max(), experimental_pkd.max()) + 0.5
-plt.plot([min_pkd, max_pkd], [min_pkd, max_pkd], 'r--', linewidth=2,
-         label='Perfect prediction', alpha=0.7)
+plt.plot([min_pkd, max_pkd], [min_pkd, max_pkd], 'k--', linewidth=1,
+         label='Identity', alpha=0.7)
+plt.plot([min_pkd-1.0, max_pkd-1.0], [min_pkd, max_pkd], 'k:', linewidth=1,
+         label='Identity + 1.0', alpha=0.2)
+plt.plot([min_pkd+1.0, max_pkd+1.0], [min_pkd, max_pkd], 'k:', linewidth=1,
+         label='Identity - 1.0', alpha=0.2)
 
 # Add labels for each point
 for i, struct in enumerate(matched_structures):
