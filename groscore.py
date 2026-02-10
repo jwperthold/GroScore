@@ -319,11 +319,13 @@ while j <= args.numruns*2:
     i = 0
     while i < numstructs:
       if os.path.exists("./%s"%structids[i]):
-        f = open("./%s/run.gs"%structids[i], "w")
-        cutout_flag = 1 if args.cutout else 0
-        # MAXRUNS = numruns * 2 because each cycle has one pull (odd) and one push (even)
-        f.write("%s %d %d %s\n"%(structchains[i],args.numruns*2,cutout_flag,args.forcefield))
-        f.close()
+        # Only write run.gs if NOT in restart mode
+        if not args.restart:
+          f = open("./%s/run.gs"%structids[i], "w")
+          cutout_flag = 1 if args.cutout else 0
+          # MAXRUNS = numruns * 2 because each cycle has one pull (odd) and one push (even)
+          f.write("%s %d %d %s\n"%(structchains[i],args.numruns*2,cutout_flag,args.forcefield))
+          f.close()
         # Copy job.run to structure directory and make executable
         job_run_dst = "./%s/job.run"%structids[i]
         shutil.copy(job_run_src, job_run_dst)
