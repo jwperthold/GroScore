@@ -242,7 +242,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
         avg_ci95 = 1.96 * avg_stderr
 
     # Calculate CGI score if we have enough data
-    if len(pulls) > 2 and len(pushes) > 2:
+    if len(pulls) > 19 and len(pushes) > 19:
       avgpulls = np.average(pulls)
       varpulls = np.var(pulls)
       avgpushes = np.average(pushes)

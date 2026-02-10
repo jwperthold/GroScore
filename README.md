@@ -18,7 +18,6 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 - **Automated MD Pipeline** - Complete workflow from structure preparation to final scoring
 - **SLURM Integration** - Efficient HPC execution via job arrays
-- **Multiple Scoring Methods** - Two different ranking approaches for robust results
 - **Structure Validation** - Built-in checks for broken loops and topological knots
 - **Optional Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
@@ -168,7 +167,7 @@ Results are written to two output files ranked by binding affinity:
 | Output File | Method |
 |-------------|--------|
 | `scores_avg.gs` | Simple average of pulls/pushes |
-| `scores_cgi.gs` | Crooks Gaussian Intersection |
+| `scores_cgi.gs` | Crooks Gaussian Intersection (for >= 20 cycles) |
 
 ## Simulation Pipeline
 
