@@ -64,7 +64,7 @@ All force fields use:
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
 
-## Benchmark Data (HADDOCKING protein-protein affinity benchmark)
+## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
 | **AMBER19SB/OPC** | Convergence |
 |-------------------|-------------|
