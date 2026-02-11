@@ -44,8 +44,8 @@ GroScore supports three force fields, selectable via the `-ff` option:
 |-------------|------|-------------|-------------|---------|------------------|
 | **AMBER19SB** (default) | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
 | **AMBER19SB OPC3** | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
-| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
+| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
 All force fields use:
 - **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
