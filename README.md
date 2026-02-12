@@ -226,21 +226,18 @@ groscore/
     └── integrate.py             # Force curve integration
 ```
 
-## Key Parameters
+## Key SMD Pulling Parameters
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | Pull distance| 1 nm | Max protein-protein separation |
 | Pull speed | 0.0002 nm·ps<sup>–1</sup> | Rate of distance increase, 5 ns per leg |
 | Sum of pull force constants | 25000 kJ·mol<sup>–1</sup>·nm<sup>–2</sup> | Sum of pull force constants is the same for all complexes |
-| Timestep | 4 fs | Integration timestep (`mass-repartition-factor = 3`) |
 | Interface cutoff | 0.6 nm | Defines protein-protein interface |
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
 | Keep cutoff | 2.0 nm | Interface extraction radius |
-| Ion concentration | 0.15 M | NaCl for physiological conditions |
 | Minimum fragment size | 5 residues | Ensures stable fragments in cutout mode |
 | Gap filling threshold | < 4 residues | Fills small gaps to avoid artificial chain breaks |
-| LINCS order | 6 | Enhanced constraint stability |
 
 ## Fragment Handling
 
