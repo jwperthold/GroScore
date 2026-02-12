@@ -230,6 +230,9 @@ groscore/
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
+| Pull distance| 1 nm | Max protein-protein separation |
+| Pull speed | 0.0002 nm·ps^–1 | Rate of distance increase, 5 ns per leg |
+| Sum of pull force constants | 25000 kJ·mol^–1·nm^–2 | Sum of pull force constants is the same for all complexes |
 | Timestep | 4 fs | Integration timestep (`mass-repartition-factor = 3`) |
 | Interface cutoff | 0.6 nm | Defines protein-protein interface |
 | Elastic network range | 0.4-0.9 nm | Restraint distance bounds |
