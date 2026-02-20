@@ -66,14 +66,14 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
-| **AMBER19SB/OPC** | Convergence |
+| **AMBER19SB/OPC** | |
 |-------------------|-------------|
-| pKd = -0.0139 × GroScore + 4.5175 | |
+| **Fit:** pKd = -0.0139 × GroScore + 4.5175 | Convergence |
 | <img src="/benchmark/results/correlation_plot_amber.png" alt="Correlation Plot AMBER19SB/OPC" height="290"> | <img src="/benchmark/results/convergence_plot_amber.png" alt="Convergence Plot AMBER19SB/OPC" height="290"> |
 
-| **AMBER19SB/OPC3** | Convergence |
+| **AMBER19SB/OPC3** | |
 |--------------------|-------------|
-| pKd = -0.0168 × GroScore + 3.5896 | |
+| **Fit:** pKd = -0.0168 × GroScore + 3.5896 | Convergence |
 | <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB/OPC3" height="290"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB/OPC3" height="290"> |
 
 | **CHARMM36/TIP3P** | Convergence |
