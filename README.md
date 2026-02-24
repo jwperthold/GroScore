@@ -76,8 +76,9 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 | **Fit:** pKd = -0.0168 × GroScore + 3.5896 | Convergence |
 | <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB/OPC3" height="290"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB/OPC3" height="290"> |
 
-| **CHARMM36/TIP3P** | Convergence |
+| **CHARMM36/TIP3P** | |
 |--------------------|-------------|
+| **Fit:** pKd = -0.0178 × GroScore + 3.3992 | Convergence |
 | <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36/TIP3P" height="290"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36/TIP3P" height="290"> |
 
 | **GROMOS 54A7/SPC** | Convergence |
