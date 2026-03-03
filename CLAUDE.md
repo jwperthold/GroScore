@@ -143,7 +143,7 @@ All force fields use:
 - ACE caps via `cap_termini.py --ace-only` (explicit N-terminal ACE residues)
 - Renames ACE's methyl carbon from "CH3" to "CA" (GROMOS RTP naming convention)
 - COOH patches for C-termini via pdb2gmx
-- Terminal selection "0" (none) for N-term (ACE is explicit), "2" (COOH) for C-term
+- Terminal selection "8" (none) for N-term (ACE is explicit), "1" (COOH) for C-term
 - Parameters bundled in `forcefield/gromos54a8.ff/`
 
 **CHARMM36**:

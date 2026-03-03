@@ -93,6 +93,10 @@ if [[ ! -f conf.gro ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only --rename-ace-carbon
     PDB2GMX_INPUT="fixed_capped.pdb"
   fi
+  # GROMOS 54A8: Remove OXT atoms added by PDBFixer - RTP doesn't define OXT, COOH patch handles C-termini
+  if [[ "$FORCEFIELD" == "gromos54a8" ]]; then
+    sed -i '/ OXT /d' $PDB2GMX_INPUT
+  fi
   # Get chain ID of first atom in each segment
   CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' $PDB2GMX_INPUT)
   # Merge selections: y if same chain ID as previous, n if different
@@ -113,7 +117,8 @@ if [[ ! -f conf.gro ]]; then
   # Terminal selections per segment: N-terminus then C-terminus
   # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
-  # GROMOS: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
+  # GROMOS 54A7: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
+  # GROMOS 54A8: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
   elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
@@ -121,7 +126,7 @@ if [[ ! -f conf.gro ]]; then
   elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
     TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
   elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
-    TER_INPUT=$(printf '0\n2\n%.0s' $(seq 1 $NSEGS))
+    TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
   fi
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
@@ -147,6 +152,10 @@ if [[ $bl -eq 0 ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs --ace-only --rename-ace-carbon
         CUTOUT_PDB="cutout_capped.pdb"
       fi
+      # GROMOS 54A8: Remove OXT atoms - RTP doesn't define OXT, COOH patch handles C-termini
+      if [[ "$FORCEFIELD" == "gromos54a8" ]]; then
+        sed -i '/ OXT /d' $CUTOUT_PDB
+      fi
       # re-solvate cutout
       # Get chain ID of first atom in each segment
       CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' $CUTOUT_PDB)
@@ -168,7 +177,8 @@ if [[ $bl -eq 0 ]]; then
       # Terminal selections per segment: N-terminus then C-terminus
       # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
       # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
-      # GROMOS: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
+      # GROMOS 54A7: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
+      # GROMOS 54A8: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
       elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
@@ -176,7 +186,7 @@ if [[ $bl -eq 0 ]]; then
       elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
         TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
       elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
-        TER_INPUT=$(printf '0\n2\n%.0s' $(seq 1 $NSEGS))
+        TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
       fi
       # Merge questions come first, then terminal selections
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro

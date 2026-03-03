@@ -9,6 +9,8 @@ test_charmm/
 test_amber/
 benchmark/*/
 !benchmark/results/
+benchmark_amber/
 benchmark_amber_opc3p/
 benchmark_charmm/
 benchmark_gromos/
+benchmark_gromos_54a8/
