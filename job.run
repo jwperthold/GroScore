@@ -58,6 +58,16 @@ elif [[ "$FORCEFIELD" == "amber19sb_opc3" ]]; then
   FF_FLAG="-ff amber19sb"
   WATER_MODEL="opc3"
   WATER_BOX="spc216.gro"
+elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
+  # GROMOS 54A8 with SPC water - custom force field in forcefield/ directory
+  if [[ -n "${GMXLIB:-}" ]]; then
+    export GMXLIB="${GROSCORE_ROOT}/forcefield:${GMXLIB}"
+  else
+    export GMXLIB="${GROSCORE_ROOT}/forcefield"
+  fi
+  FF_FLAG="-ff gromos54a8"
+  WATER_MODEL="spc"
+  WATER_BOX="spc216.gro"
 else
   # gromos54a7
   FF_FLAG="-ff gromos54a7"
@@ -79,7 +89,7 @@ if [[ ! -f conf.gro ]]; then
   elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
     PDB2GMX_INPUT="fixed_capped.pdb"
-  elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
+  elif [[ "$FORCEFIELD" == "gromos54a7" || "$FORCEFIELD" == "gromos54a8" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only --rename-ace-carbon
     PDB2GMX_INPUT="fixed_capped.pdb"
   fi
@@ -110,6 +120,8 @@ if [[ ! -f conf.gro ]]; then
     TER_INPUT=""
   elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
     TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
+  elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
+    TER_INPUT=$(printf '0\n2\n%.0s' $(seq 1 $NSEGS))
   fi
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
@@ -131,7 +143,7 @@ if [[ $bl -eq 0 ]]; then
       elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
         CUTOUT_PDB="cutout_capped.pdb"
-      elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
+      elif [[ "$FORCEFIELD" == "gromos54a7" || "$FORCEFIELD" == "gromos54a8" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs --ace-only --rename-ace-carbon
         CUTOUT_PDB="cutout_capped.pdb"
       fi
@@ -163,6 +175,8 @@ if [[ $bl -eq 0 ]]; then
         TER_INPUT=""
       elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
         TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
+      elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
+        TER_INPUT=$(printf '0\n2\n%.0s' $(seq 1 $NSEGS))
       fi
       # Merge questions come first, then terminal selections
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro

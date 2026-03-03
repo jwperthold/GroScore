@@ -1,0 +1,47 @@
+define                   = -DPOSRES
+
+integrator               = md
+nsteps                   = 5000
+dt                       = 0.004
+mass-repartition-factor  = 3
+
+nstxout                  = 4000
+nstxout-compressed       = 4000
+compressed-x-precision   = 1000
+nstvout                  = 4000
+nstfout                  = 4000
+nstenergy                = 1000
+nstlog                   = 1000
+nstcalcenergy            = 1000
+
+comm-mode                = linear
+nstcomm                  = 1000
+
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = all-bonds
+lincs_iter               = 1
+lincs_order              = 6
+
+cutoff-scheme            = verlet
+ns_type                  = grid
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
+
+vdwtype                  = cut-off
+vdw-modifier             = none
+
+coulombtype              = PME
+coulomb-modifier         = none
+
+tcoupl                   = V-rescale
+tc-grps                  = Protein Non-Protein
+tau_t                    = 0.1  0.1
+ref_t                    = 186  186
+
+pcoupl                   = no
+
+pbc                      = xyz
+
+gen_vel                  = no

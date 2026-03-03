@@ -22,7 +22,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
-- **Multiple Force Fields** - Support for AMBER19SB (all-atom), GROMOS 54A7 (united-atom), and CHARMM36 (all-atom)
+- **Multiple Force Fields** - Support for AMBER19SB (all-atom), GROMOS 54A7/54A8 (united-atom), and CHARMM36 (all-atom)
 
 ## Requirements
 
@@ -38,7 +38,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 ## Force Fields
 
-GroScore supports three force fields, selectable via the `-ff` option:
+GroScore supports multiple force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
@@ -46,6 +46,7 @@ GroScore supports three force fields, selectable via the `-ff` option:
 | **AMBER19SB OPC3** | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
+| **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
 All force fields use:
 - **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
@@ -55,14 +56,14 @@ All force fields use:
 **Terminal Capping Details:**
 - **AMBER19SB / AMBER19SB OPC3**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
 - **CHARMM36**: Uses ACE (N-acetyl) caps at N-termini (explicit residues) and COOH patches at C-termini for improved stability.
-- **GROMOS 54A7**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
+- **GROMOS 54A7 / GROMOS 54A8**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
 
 **Water Model Details:**
 - **OPC** (Optimal Point Charge, 4-point): Default for AMBER19SB
 - **OPC3** (3-point variant): Alternative for AMBER19SB
 - **SPC** and **TIP3P**: Traditional 3-point models for GROMOS and CHARMM36 respectively
 
-The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`.
+The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`. The GROMOS 54A8 force field parameters are included in `forcefield/gromos54a8.ff/`.
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
@@ -143,7 +144,7 @@ python ../groscore.py
 **Options:**
 - `-n, --numruns` - Number of independent pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `amber19sb` (default), `amber19sb_opc3`, `gromos54a7`, or `charmm36`
+- `-ff, --forcefield` - Force field: `amber19sb` (default), `amber19sb_opc3`, `gromos54a7`, `gromos54a8`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
@@ -210,9 +211,11 @@ groscore/
 ├── groscore.py          # Main orchestrator
 ├── job.run              # SLURM job template
 ├── forcefield/
-│   └── charmm36-jul2022.ff/  # CHARMM36 force field parameters
+│   ├── charmm36-jul2022.ff/  # CHARMM36 force field parameters
+│   └── gromos54a8.ff/        # GROMOS 54A8 force field parameters
 ├── settings/
 │   ├── gromos54a7/      # GROMOS 54A7 parameter files
+│   ├── gromos54a8/      # GROMOS 54A8 parameter files
 │   │   ├── emin_*.mdp   # Energy minimization
 │   │   ├── nvt_*.mdp    # NVT equilibration phases
 │   │   ├── npt*.mdp     # NPT equilibration
@@ -254,7 +257,7 @@ GroScore automatically handles complex protein structures with multiple chains a
 - **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
 - **Terminal Capping** - Fragment termini are capped to provide neutral ends:
   - **AMBER19SB**: ACE/NME residues added explicitly via `cap_termini.py` before pdb2gmx
-  - **CHARMM36/GROMOS 54A7**: ACE residues (N-termini) added via `cap_termini.py`, COOH patches (C-termini) applied during pdb2gmx
+  - **CHARMM36/GROMOS 54A7/GROMOS 54A8**: ACE residues (N-termini) added via `cap_termini.py`, COOH patches (C-termini) applied during pdb2gmx
 
 This ensures proper topology generation even for structures with missing loops or multi-chain complexes, while maintaining chain boundaries and avoiding artificial chain breaks.
 
