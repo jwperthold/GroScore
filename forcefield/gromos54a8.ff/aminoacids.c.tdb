@@ -1,0 +1,103 @@
+[ None ]
+
+[ COO- ]
+[ replace ]
+CA		C	13.019  0.16
+C		C	12.011	0.27
+[ add ]
+2	8	O	C	CA	N
+	OM	15.9994	-0.715
+[ delete ]
+O
+[ bonds ]
+C	O1	gb_6
+C	O2	gb_6
+[ angles ]
+O1	C	O2	ga_38
+CA	C	O1	ga_22
+CA	C	O2	ga_22
+[ dihedrals ]
+N	CA	C	O2	gd_45
+N	CA	C	O2	gd_42
+[ impropers ]
+C	CA	O2	O1	gi_1
+
+[ COOH ]
+[ replace ]
+C		C	12.011	0.33
+O		OA	15.9994	-0.288
+[ add ]
+1	2	OT	C	CA	N
+	O	15.9994	-0.45
+1	2	HO	O	C	CA
+	H	1.008	0.408
+[ bonds ]
+C	O	gb_13
+C	OT	gb_5
+O	HO	gb_1
+[ angles ]
+O	C	OT	ga_33
+C	O	HO	ga_12
+CA	C	O	ga_19
+CA	C	OT	ga_30
+[ dihedrals ]
+N	CA	C	O	gd_45
+N	CA	C	O	gd_42
+CA	C	O	HO	gd_12
+[ impropers ]
+C	CA	OT	O	gi_1
+
+; AA-amide
+[ AMD ]
+[ replace ]
+C		C	12.011	0.29		
+[ add ]
+1	1	NC1	C	N	O
+	NT	14.00670	-0.7200		
+1	1	HC11	C	CA	N
+	H	1.008	0.4400			
+1	2	HC12	C	CA	N
+	H	1.008	0.4400			
+[ bonds ]
+C	NC1	gb_9
+NC1	HC11	gb_2
+NC1	HC12	gb_2
+[ angles ]
+O	C	NC1	ga_33
+CA	C	O	ga_30
+CA	C	NC1	ga_19
+C	NC1	HC11	ga_23
+C	NC1	HC12	ga_23
+HC11	NC1	HC12	ga_24
+[ impropers ]
+C	CA	O	NC1	gi_1
+NC1	C	HC11	HC12	gi_1
+[ dihedrals ]
+N	CA	C	NC1	gd_40
+CA	C	NC1	HC11	gd_14
+
+; AA-methyl ester
+[ CME ]
+[ replace ]
+C		C	12.011	0.253		
+O		OE	15.9994	-0.069		
+[ add ]
+1	2	OC1	C	CA	N
+	O	15.9994	-0.45			
+1	2	CC2	O	C	CA
+	CH3	15.035	0.266			
+[ bonds ]
+C	O	gb_13
+C	OC1	gb_5
+O	CC2	gb_18
+[ angles ]
+O	C	OC1	ga_33
+C	O	CC2	ga_22
+CA	C	O	ga_19
+CA	C	OC1	ga_30
+[ impropers ]
+C	CA	OC1	O	gi_1
+[ dihedrals ]
+N	CA	C	O	gd_40
+CA	C	O	CC2	gd_12
+

@@ -1,0 +1,504 @@
+[ None ]
+
+[ NH3+ ]
+[ replace ]
+N		NL	14.0067	0.050
+CA		CH1	13.019	0.200	0
+[ add ]
+3	4	H	N	CA	C
+	H	1.008	0.250
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	H2	gb_2
+N	H3	gb_2
+[ angles ]
+H1	N	H2	ga_10
+H2	N	H3	ga_10
+H3	N	H1	ga_10
+CA	N	H1	ga_11
+CA	N	H2	ga_11
+CA	N	H3	ga_11
+[ dihedrals ]
+H1	N	CA	C	gd_29
+
+[ NH2 ]
+[ replace ]
+N		NL	14.0067	-0.66
+CA		CH1	13.019	-0.22   0
+[ add ]
+2	4	H	N	CA	C
+	H	1.008	0.44
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	H2	gb_2
+[ angles ]
+H1	N	H2	ga_10
+CA	N	H1	ga_11
+CA	N	H2	ga_11
+[ dihedrals ]
+H1	N	CA	C	gd_29
+
+[ PRO-NH2+ ]
+[ replace ]
+N		NT	14.0067	0.100
+CA		CH1	13.019	0.200
+CD		CH2r	14.027	0.200
+[ add ]
+2	4	H	N	CA	C
+	H	1.008	0.250
+[ bonds ]
+N	H1	gb_2
+N	H2	gb_2
+[ angles ]
+H1	N	H2	ga_10
+CA	N	H1	ga_11
+CA	N	H2	ga_11
+CD	N	H1	ga_11
+CD	N	H2	ga_11
+[ dihedrals ]
+H1	N	CA	C	gd_29
+
+[ PRO-NH ]
+[ replace ]
+N		N	14.0067	-0.31
+[ add ]
+1	4	H	N	CA	C
+	H	1.008	0.31
+[ bonds ]
+N	H	gb_2
+[ angles ]
+CA	N	H	ga_11
+CD	N	H	ga_11
+
+[ GLY-NH3+ ]
+[ replace ]
+N		NL	14.0067	0.050
+CA		CH2	14.027	0.200	0
+[ add ]
+3	4	H	N	CA	C
+	H	1.008	0.250
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	H2	gb_2
+N	H3	gb_2
+[ angles ]
+H1	N	H2	ga_10
+H2	N	H3	ga_10
+H3	N	H1	ga_10
+CA	N	H1	ga_11
+CA	N	H2	ga_11
+CA	N	H3	ga_11
+[ dihedrals ]
+H1	N	CA	C	gd_29
+
+; N-methyl-AA (0)
+[ 1NM ]
+[ replace ]
+N		NT	14.0067	-0.88		
+CA		CH1	13.019	0.220	0	
+[ add ]
+1	1	H1	N	CA	C
+	H	1.008	0.440			
+1	4	CN1	N	CA	C
+	CH3	15.035	0.220			
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	CN1	gb_21
+[ angles ]
+CN1	N	H1	ga_11
+CA	N	H1	ga_11
+CA	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N-methyl-glycine (0)
+[ GLY-1NM ]
+[ replace ]
+N		NT	14.0067	-0.88		
+CA		CH2	14.027	0.220	0	
+[ add ]
+1	1	H1	N	CA	C
+	H	1.008	0.440			
+1	4	CN1	N	CA	C
+	CH3	15.035	0.220			
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	CN1	gb_21
+[ angles ]
+CN1	N	H1	ga_11
+CA	N	H1	ga_11
+CA	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N-methyl-proline (0)
+[ PRO-1NM ]
+[ replace ]
+N		NT	14.0067	-0.63		
+CA		CH1	13.019	0.210	0	
+CD		CH2	14.027	0.210	0	
+[ add ]
+1	4	CN1	N	CA	C
+	CH3	15.035	0.210			
+[ bonds ]
+N	CN1	gb_21
+[ angles ]
+CA	N	CN1	ga_13
+CD	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N-methyl-AA (+1)
+[ 1NM+ ]
+[ replace ]
+N		NL	14.0067	0.100		
+CA		CH1	13.019	0.200	0	
+[ add ]
+2	4	H	N	CA	C
+	H	1.008	0.250
+1	1	CN1	N	CA	C
+	CH3	15.035	0.200			
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	H2	gb_2
+N	CN1	gb_21
+[ angles ]
+H1	N	H2	ga_10
+H2	N	CN1	ga_11
+CN1	N	H1	ga_11
+CA	N	H1	ga_11
+CA	N	H2	ga_11
+CA	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N-methyl-glycine (+1)
+[ GLY-1NM+ ]
+[ replace ]
+N               NL      14.0067 0.100		
+CA              CH2     14.027  0.200	0	
+[ add ]
+2       4       H       N       CA      C
+        H       1.008   0.250
+1       1       CN1     N       CA      C
+        CH3     15.035  0.200			
+[ delete ]
+H
+[ bonds ]
+N       H1      gb_2
+N       H2      gb_2
+N       CN1     gb_21
+[ angles ]
+H1      N       H2      ga_10
+H2      N       CN1     ga_11
+CN1     N       H1      ga_11
+CA      N       H1      ga_11
+CA      N       H2      ga_11
+CA      N       CN1     ga_13
+[ dihedrals ]
+CN1     N       CA      C       gd_29
+
+; N-methyl-proline (+1)
+[ PRO-1NM+ ]
+[ replace ]
+N               NL      14.0067 0.150		
+CA              CH1     13.019  0.200	0	
+CD              CH2     14.027  0.200	0	
+[ add ]
+1       4       H       N       CA      C
+        H       1.008   0.250
+1       1       CN1     N       CA      C
+        CH3     15.035  0.200			
+[ bonds ]
+N       H       gb_2
+N       CN1     gb_21
+[ angles ]
+H       N       CD      ga_11
+CD      N       CN1     ga_13
+CN1     N       H       ga_11
+CA      N       H       ga_11
+CA      N       CD      ga_13
+CA      N       CN1     ga_13
+[ dihedrals ]
+CN1     N       CA      C       gd_29
+
+; N,N-dimethyl-AA (0)
+[ 2NM ]
+[ replace ]
+N		NT	14.0067	-0.63		
+CA		CH1	13.019	0.210	0	
+[ add ]
+2	4	CN	N	CA	C
+	CH3	15.035	0.210			
+[ delete ]
+H
+[ bonds ]
+N	CN1	gb_21
+N	CN2	gb_21
+[ angles ]
+CN1	N	CN2	ga_13
+CA	N	CN2	ga_13
+CA	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N,N-dimethyl-glycine (0)
+[ GLY-2NM ]
+[ replace ]
+N               NT      14.0067 -0.63		
+CA              CH2     14.027  0.210	0	
+[ add ]
+2       4       CN      N       CA      C
+        CH3     15.035  0.210			
+[ delete ]
+H
+[ bonds ]
+N       CN1     gb_21
+N       CN2     gb_21
+[ angles ]
+CN1     N       CN2     ga_13
+CA      N       CN2     ga_13
+CA      N       CN1     ga_13
+[ dihedrals ]
+CN1     N       CA      C       gd_29
+
+; N,N-dimethyl-AA (+1)
+[ 2NM+ ]
+[ replace ]
+N		NL	14.0067	0.150		
+CA		CH1	13.019	0.200	0	
+[ add ]
+1	1	H1	N	CA	C
+	H	1.008	0.250
+2	4	CN	N	CA	C
+	CH3	15.035	0.200			
+[ delete ]
+H
+[ bonds ]
+N	H1	gb_2
+N	CN1	gb_21
+N	CN2	gb_21
+[ angles ]
+CN1	N	H1	ga_11
+CN1	N	CN2	ga_13
+CN2	N	H1	ga_11
+CA	N	H1	ga_11
+CA	N	CN2	ga_13
+CA	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N,N-dimethyl-glycine (+1)
+[ GLY-2NM+ ]
+[ replace ]
+N               NL      14.0067 0.150		
+CA              CH2     14.027  0.200	0	
+[ add ]
+1       1       H1      N       CA      C
+        H       1.008   0.250
+2       4       CN      N       CA      C
+        CH3     15.035  0.200			
+[ delete ]
+H
+[ bonds ]
+N       H1      gb_2
+N       CN1     gb_21
+N       CN2     gb_21
+[ angles ]
+CN1     N       H1      ga_11
+CN1     N       CN2     ga_13
+CN2     N       H1      ga_11
+CA      N       H1      ga_11
+CA      N       CN2     ga_13
+CA      N       CN1     ga_13
+[ dihedrals ]
+CN1     N       CA      C       gd_29
+
+; N,N-dimethyl-proline (+1)
+[ PRO-2NM+ ]
+[ replace ]
+N               NL      14.0067 0.200		
+CA              CH1     13.019  0.200	0	
+CD              CH2     14.027  0.200	0	
+[ add ]
+2       4       CN      N       CA      C
+        CH3     15.035  0.200			
+[ bonds ]
+N       CN1     gb_21
+N       CN2     gb_21
+[ angles ]
+CN1     N       CD      ga_13
+CN1     N       CN2     ga_13
+CN2     N       CD      ga_13
+CA      N       CN2     ga_13
+CA      N       CN1     ga_13
+[ dihedrals ]
+CN1     N       CA      C       gd_29
+
+; N,N,N-trimethyl-AA (+1)
+[ 3NM+ ]
+[ replace ]
+N		NL	14.0067	0.200		
+CA		CH1	13.019	0.200	0	
+[ add ]
+3	4	CN	N	CA	C
+	CH3	15.035	0.200			
+[ delete ]
+H
+[ bonds ]
+N	CN1	gb_21
+N	CN2	gb_21
+N	CN3	gb_21
+[ angles ]
+CN1	N	CN3	ga_13
+CN1	N	CN2	ga_13
+CN2	N	CN3	ga_13
+CA	N	CN3	ga_13
+CA	N	CN2	ga_13
+CA	N	CN1	ga_13
+[ dihedrals ]
+CN1	N	CA	C	gd_29
+
+; N,N,N-trimethyl-glycine (+1)
+[ GLY-3NM+ ]
+[ replace ]
+N               NL      14.0067 0.200		
+CA              CH2     14.027  0.200	0	
+[ add ]
+3       4       CN      N       CA      C
+        CH3     15.035  0.200			
+[ delete ]
+H
+[ bonds ]
+N       CN1     gb_21
+N       CN2     gb_21
+N       CN3     gb_21
+[ angles ]
+CN1     N       CN3     ga_13
+CN1     N       CN2     ga_13
+CN2     N       CN3     ga_13
+CA      N       CN3     ga_13
+CA      N       CN2     ga_13
+CA      N       CN1     ga_13
+[ dihedrals ]
+CN1     N       CA      C       gd_29
+
+; N-acetyl-AA
+[ NAC ]
+[ replace ]
+N		N	14.0067	-0.15		
+[ add ]
+1	2	H	N	C	CA
+	H	1.008	0.3100			
+1	1	CN1	N	C	CA
+	C	12.011	0.1900			
+1	2	ON2	N	CA	C
+	O	15.9994	-0.4500			
+1	2	CN2	N	C	CA
+	CH3	15.035	0.1000			
+[ bonds ]
+N	H	gb_2
+N	CN1	gb_10
+CN1	ON2	gb_5
+CN1	CN2	gb_27
+[ angles ]
+CA	N	H	ga_18
+CN1	N	H	ga_32
+CN1	N	CA	ga_31
+N	CN1	ON2	ga_33
+N	CN1	CN2	ga_19
+CN2	CN1	ON2	ga_30
+[ impropers ]
+N	CN1	CA	H	gi_1
+CN1	CN2	N	ON2	gi_1
+[ dihedrals ]
+CN2	CN1	N	CA	gd_14
+CN1	N	CA	C	gd_39
+
+; N-acetyl-proline
+[ PRO-NAC ]
+[ add ]
+1	1	CN1	N	C	CA
+	C	12.011	0.3500			
+1	2	ON2	N	CA	C
+	O	15.9994	-0.4500			
+1	2	CN2	N	C	CA
+	CH3	15.035	0.1000			
+[ bonds ]
+N	CN1	gb_10
+CN1	ON2	gb_5
+CN1	CN2	gb_27
+[ angles ]
+CN1	N	CD	ga_31
+CN1	N	CA	ga_31
+N	CN1	ON2	ga_33
+N	CN1	CN2	ga_19
+CN2	CN1	ON2	ga_30
+[ impropers ]
+N	CN1	CA	CD	gi_1
+CN1	CN2	N	ON2	gi_1
+[ dihedrals ]
+CN2	CN1	N	CA	gd_14
+CN1	N	CA	C	gd_39
+
+; pyroglutamic acid
+[ PGA-NH ]
+[ replace ]
+N		N	14.0067	-0.31
+[ add ]
+1	1	H	N	CA	CD
+	H	1.008	0.31
+[ bonds ]
+N	H	gb_2
+[ angles ]
+CA	N	H	ga_31
+CD	N	H	ga_31
+[ impropers ]
+N	CA	CD	H	gi_1
+[ dihedrals ]
+CD	N	CA	C	gd_39
+
+; N-formylmethionine
+[ MET-FOR ]
+[ replace ]
+N		N	14.0067	-0.15		
+[ add ]
+1	2	H	N	C	CA
+	H	1.008	0.31			
+1	1	CN1	N	C	CA
+	C	12.011	0.1900			
+1	2	ON2	N	CA	C
+	O	15.9994	-0.4500			
+1	2	HN1	N	C	CA
+	H	1.008	0.1			
+[ bonds ]
+N	H	gb_2
+N	CN1	gb_10
+CN1	ON2	gb_5
+CN1	HN1	gb_3
+[ angles ]
+CA	N	H	ga_18
+CA	N	CN1	ga_31
+H	N	CN1	ga_32
+N	CN1	ON2	ga_33
+N	CN1	HN1	ga_19
+ON2	CN1	HN1	ga_30
+[ impropers ]
+N	CN1	CA	H	gi_1
+CN1	N	ON2	HN1	gi_1
+[ dihedrals ]
+ON2	CN1	N	CA	gd_14
+CN1	N	CA	C	gd_39
+
