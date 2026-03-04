@@ -42,8 +42,8 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
-| **AMBER19SB** (default) | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
-| **AMBER19SB OPC3** | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
+| **AMBER19SB** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
+| **AMBER19SB OPC3** (default) | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 | **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
@@ -142,9 +142,9 @@ python ../groscore.py
 ```
 
 **Options:**
-- `-n, --numruns` - Number of independent pull/push cycles (default: 5)
+- `-n, --numruns` - Number of independent pull/push cycles (default: 3)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `amber19sb` (default), `amber19sb_opc3`, `gromos54a7`, `gromos54a8`, or `charmm36`
+- `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb`, `gromos54a7`, `gromos54a8`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
@@ -187,7 +187,7 @@ Stage 0: Preparation
 Initial Equilibration (for distance restraints)
 └── 5-phase NVT + NPT → npt_init_cluster.gro
 
-Independent Cycles (N cycles, default 5)
+Independent Cycles (N cycles, default 3)
 ├── Cycle 1:
 │   ├── Fresh full equilibration (NVT 1-5 + NPT)
 │   ├── Pull (unbinding SMD)
