@@ -14,6 +14,7 @@ parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", choices=["gromos54a7", "gromos54a8", "charmm36", "amber19sb", "amber19sb_opc3"], help="Force field to use (default: amber19sb_opc3)")
 parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
+parser.add_argument('--slurm', type=str, default=None, help="SLURM template file with #SBATCH directives (default: slurm/workstation.sh)")
 parser.set_defaults(cutout=True)
 args=parser.parse_args()
 
@@ -337,11 +338,16 @@ while j <= args.numruns*2:
         f.close()
       i += 1
     #SBATCH array
+    slurm_template = args.slurm
+    if slurm_template is None:
+      slurm_template = os.path.join(script_dir, "slurm", "workstation.sh")
+    if not os.path.isfile(slurm_template):
+      print("Error: SLURM template not found: %s"%slurm_template)
+      exit(1)
+    with open(slurm_template, "r") as tmpl:
+      template_lines = tmpl.read()
     f = open("array_submit.run", "w")
-    f.write("#!/bin/bash\n")
-    f.write("#SBATCH -J gs_0.97\n")
-    f.write("#SBATCH -n 4\n")
-    f.write("#SBATCH --mem=4G\n")
+    f.write(template_lines.rstrip("\n") + "\n")
     f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
     f.write("\n")
     f.write("# Read structure ID from mapping file\n")
