@@ -56,5 +56,5 @@ pull-print-com1          = no
 pull-print-com2          = no
 pull-print-ref-value     = no
 pull-print-components    = no
-pull-nstxout             = 500
-pull-nstfout             = 500
+pull-nstxout             = 0
+pull-nstfout             = 0
