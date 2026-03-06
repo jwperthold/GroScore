@@ -362,13 +362,13 @@ if [[ $bl -eq 0 ]]; then
       gmx mdrun -nt $nt -deffnm bindfwd_${PULL_IDX}
     fi
     # Decompress if gzipped from a previous run
-    if [[ ! -f bindfwd_${PULL_IDX}_pullf.xvg && -f bindfwd_${PULL_IDX}_pullf.xvg.gz ]]; then
-      gunzip bindfwd_${PULL_IDX}_pullf.xvg.gz
+    if [[ ! -f bindfwd_${PULL_IDX}.xvg && -f bindfwd_${PULL_IDX}.xvg.gz ]]; then
+      gunzip bindfwd_${PULL_IDX}.xvg.gz
     fi
-    if [[ -f bindfwd_${PULL_IDX}_pullf.xvg ]]; then
-      dG=$(python3 ../../utils/integrate.py -f bindfwd_${PULL_IDX}_pullf.xvg -nr $NUMPERTRES)
+    if [[ -f bindfwd_${PULL_IDX}.xvg ]]; then
+      dG=$(python3 ../../utils/integrate.py -f bindfwd_${PULL_IDX}.xvg -nr $NUMPERTRES)
       echo $STRUCT_ID $dG >> ../results_${PULL_IDX}.gs
-      gzip bindfwd_${PULL_IDX}_pullf.xvg
+      gzip bindfwd_${PULL_IDX}.xvg
     else
       echo $STRUCT_ID "NaN" >> ../results_${PULL_IDX}.gs
     fi
@@ -387,13 +387,13 @@ if [[ $bl -eq 0 ]]; then
       gmx mdrun -nt $nt -deffnm bindrev_${PUSH_IDX}
     fi
     # Decompress if gzipped from a previous run
-    if [[ ! -f bindrev_${PUSH_IDX}_pullf.xvg && -f bindrev_${PUSH_IDX}_pullf.xvg.gz ]]; then
-      gunzip bindrev_${PUSH_IDX}_pullf.xvg.gz
+    if [[ ! -f bindrev_${PUSH_IDX}.xvg && -f bindrev_${PUSH_IDX}.xvg.gz ]]; then
+      gunzip bindrev_${PUSH_IDX}.xvg.gz
     fi
-    if [[ -f bindrev_${PUSH_IDX}_pullf.xvg ]]; then
-      dG=$(python3 ../../utils/integrate.py -f bindrev_${PUSH_IDX}_pullf.xvg -nr $NUMPERTRES)
+    if [[ -f bindrev_${PUSH_IDX}.xvg ]]; then
+      dG=$(python3 ../../utils/integrate.py -f bindrev_${PUSH_IDX}.xvg -nr $NUMPERTRES)
       echo $STRUCT_ID $dG >> ../results_${PUSH_IDX}.gs
-      gzip bindrev_${PUSH_IDX}_pullf.xvg
+      gzip bindrev_${PUSH_IDX}.xvg
     else
       echo $STRUCT_ID "NaN" >> ../results_${PUSH_IDX}.gs
     fi
