@@ -388,8 +388,11 @@ while j <= args.numruns*2:
         l = 0
         while l < numstructs:
           if structids[l] == results1[k]:
-            if not np.isnan(results2[k]):
-              frenstruct[l,j-1] = results2[k]
+            try:
+              if not np.isnan(results2[k]):
+                frenstruct[l,j-1] = results2[k]
+            except (IndexError, AttributeError, ValueError, TypeError):
+              print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
           l += 1
       except (IndexError, AttributeError, ValueError):
         print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
