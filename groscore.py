@@ -68,14 +68,14 @@ def readtwocolumnsfloat(filepath):
       for line in f:
         if not line.strip().startswith("#"):
           tmp = line.split()
+          if len(tmp) < 2:
+            continue
           try:
             ids.append(tmp[0])
             vals.append(float(tmp[1]))
-          except (IndexError, AttributeError):
-            pass
           except (ValueError, TypeError):
             ids.append(tmp[0])
-            vals.append("NaN")
+            vals.append(float('nan'))
   if len(ids) == len(vals):
     return ids, vals
   else:
