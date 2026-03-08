@@ -384,18 +384,15 @@ while j <= args.numruns*2:
       print("Error reading file results_" + str(j) + ".gs!")
     k = 0
     while k < len(results1):
-      try:
-        l = 0
-        while l < numstructs:
-          if structids[l] == results1[k]:
-            try:
-              if not np.isnan(results2[k]):
-                frenstruct[l,j-1] = results2[k]
-            except (IndexError, AttributeError, ValueError, TypeError):
-              print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
-          l += 1
-      except (IndexError, AttributeError, ValueError, TypeError):
-        print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
+      l = 0
+      while l < numstructs:
+        if structids[l] == results1[k]:
+          try:
+            if not np.isnan(results2[k]):
+              frenstruct[l,j-1] = results2[k]
+          except (IndexError, AttributeError, ValueError, TypeError):
+            print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
+        l += 1
       k += 1
     np.savetxt("frenstruct.gs",frenstruct,delimiter="\t")
 
