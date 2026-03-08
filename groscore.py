@@ -394,7 +394,7 @@ while j <= args.numruns*2:
             except (IndexError, AttributeError, ValueError, TypeError):
               print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
           l += 1
-      except (IndexError, AttributeError, ValueError):
+      except (IndexError, AttributeError, ValueError, TypeError):
         print("Error parsing file results_" + str(j) + ".gs at line " + str(k+1) + "!")
       k += 1
     np.savetxt("frenstruct.gs",frenstruct,delimiter="\t")
