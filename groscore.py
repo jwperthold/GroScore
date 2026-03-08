@@ -382,7 +382,6 @@ while j <= args.numruns*2:
       results1, results2 = readtwocolumnsfloat("results_%.0f.gs"%(j))
     except TypeError:
       print("Error reading file results_" + str(j) + ".gs!")
-      exit()
     k = 0
     while k < len(results1):
       try:
