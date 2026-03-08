@@ -31,7 +31,7 @@ def readstructparams(filepath):
           try:
             ids.append(tmp[0])
             chains.append(tmp[1])
-          except (IndexError, AttributeError, TypeError):
+          except (IndexError, AttributeError):
             pass
   if len(ids) == len(chains) and len(ids) > 0:
     return ids, chains
@@ -51,7 +51,7 @@ def readtwocolumns(filepath):
           try:
             ids.append(tmp[0])
             vals.append(tmp[1])
-          except (IndexError, AttributeError, TypeError):
+          except (IndexError, AttributeError):
             pass
   if len(ids) == len(vals):
     return ids, vals
@@ -71,9 +71,9 @@ def readtwocolumnsfloat(filepath):
           try:
             ids.append(tmp[0])
             vals.append(float(tmp[1]))
-          except (IndexError, AttributeError, TypeError):
+          except (IndexError, AttributeError):
             pass
-          except ValueError:
+          except (ValueError, TypeError):
             ids.append(tmp[0])
             vals.append("NaN")
   if len(ids) == len(vals):
