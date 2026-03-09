@@ -87,6 +87,11 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 | **Fit:** pKd = -0.0151 × GroScore + 4.3045 | Convergence |
 | <img src="/benchmark/results/correlation_plot_gromos.png" alt="Correlation Plot GROMOS 54A7/SPC" height="290"> | <img src="/benchmark/results/convergence_plot_gromos.png" alt="Convergence Plot GROMOS 54A7/SPC" height="290"> |
 
+| **GROMOS 54A8/SPC** | |
+|---------------------|-------------|
+| **Fit:** pKd = -0.0178 × GroScore + 3.7654 | Convergence |
+| <img src="/benchmark/results/correlation_plot_gromos_54a8.png" alt="Correlation Plot GROMOS 54A8/SPC" height="290"> | <img src="/benchmark/results/convergence_plot_gromos_54a8.png" alt="Convergence Plot GROMOS 54A8/SPC" height="290"> |
+
 
 ## Installation
 
