@@ -406,7 +406,7 @@ if [[ $bl -eq 0 ]]; then
   LAST_PUSH=$((NUMCYCLES*2))
   if [[ -f bindrev_${LAST_PUSH}.xvg.gz ]]; then
     cd ..
-    tar czf "${STRUCT_ID}.tar.gz" "${STRUCT_ID}/"
+    tar -czf "${STRUCT_ID}.tar.gz" "${STRUCT_ID}/"
     rm -rf "${STRUCT_ID}/"
   fi
 else

@@ -319,11 +319,6 @@ while j <= args.numruns*2:
       exit(1)
     i = 0
     while i < numstructs:
-      # Extract archived structure if needed (from previous completed run)
-      archive_path = "./%s.tar.gz"%structids[i]
-      if not os.path.exists("./%s"%structids[i]) and os.path.isfile(archive_path):
-        os.system("tar xzf %s"%archive_path)
-        os.remove(archive_path)
       if os.path.exists("./%s"%structids[i]):
         # Only write run.gs if NOT in restart mode
         if not args.restart:
@@ -336,6 +331,17 @@ while j <= args.numruns*2:
         job_run_dst = "./%s/job.run"%structids[i]
         shutil.copy(job_run_src, job_run_dst)
         os.chmod(job_run_dst, 0o755)
+      elif os.path.isfile("./%s.tar.gz"%structids[i]):
+        # Archived structure: inject fresh job.run into archive
+        # Extraction handled by SLURM job at runtime
+        tmpdir = "./%s"%structids[i]
+        os.makedirs(tmpdir, exist_ok=True)
+        shutil.copy(job_run_src, os.path.join(tmpdir, "job.run"))
+        os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
+        os.system("gunzip ./%s.tar.gz"%structids[i])
+        os.system("tar -rf ./%s.tar ./%s/job.run"%(structids[i], structids[i]))
+        os.system("gzip ./%s.tar"%structids[i])
+        shutil.rmtree(tmpdir)
       else:
         print("Structure %s: directory doesn't exist."%structids[i])
         f = open("results_0.gs", "a")
@@ -357,7 +363,7 @@ while j <= args.numruns*2:
     f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
     f.write("# Extract archived structure if needed (for restarts)\n")
     f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
-    f.write("  tar xzf \"${STRUCT_ID}.tar.gz\"\n")
+    f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n")
     f.write("  rm \"${STRUCT_ID}.tar.gz\"\n")
     f.write("fi\n")
     f.write("cd $STRUCT_ID\n")
