@@ -400,6 +400,15 @@ if [[ $bl -eq 0 ]]; then
 
     cycle=$((cycle+1))
   done
+
+  # Archive completed structure to reduce inode count
+  # Only if all cycles finished (last push force curve was integrated and gzipped)
+  LAST_PUSH=$((NUMCYCLES*2))
+  if [[ -f bindrev_${LAST_PUSH}.xvg.gz ]]; then
+    cd ..
+    tar czf "${STRUCT_ID}.tar.gz" "${STRUCT_ID}/"
+    rm -rf "${STRUCT_ID}/"
+  fi
 else
   echo $STRUCT_ID "BROKEN" >> ../results_0.gs
 fi

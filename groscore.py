@@ -319,6 +319,11 @@ while j <= args.numruns*2:
       exit(1)
     i = 0
     while i < numstructs:
+      # Extract archived structure if needed (from previous completed run)
+      archive_path = "./%s.tar.gz"%structids[i]
+      if not os.path.exists("./%s"%structids[i]) and os.path.isfile(archive_path):
+        os.system("tar xzf %s"%archive_path)
+        os.remove(archive_path)
       if os.path.exists("./%s"%structids[i]):
         # Only write run.gs if NOT in restart mode
         if not args.restart:
@@ -350,6 +355,11 @@ while j <= args.numruns*2:
     f.write("\n")
     f.write("# Read structure ID from mapping file\n")
     f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
+    f.write("# Extract archived structure if needed (for restarts)\n")
+    f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
+    f.write("  tar xzf \"${STRUCT_ID}.tar.gz\"\n")
+    f.write("  rm \"${STRUCT_ID}.tar.gz\"\n")
+    f.write("fi\n")
     f.write("cd $STRUCT_ID\n")
     f.write("./job.run\n")
     f.close()
