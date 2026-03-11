@@ -340,7 +340,7 @@ while j <= args.numruns*2:
         os.makedirs(tmpdir, exist_ok=True)
         shutil.copy(job_run_src, os.path.join(tmpdir, "job.run"))
         os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
-        os.system("gunzip ./%s.tar.gz"%structids[i])
+        os.system("gunzip -f ./%s.tar.gz"%structids[i])
         os.system("tar -rf ./%s.tar ./%s/job.run"%(structids[i], structids[i]))
         os.system("gzip -f ./%s.tar"%structids[i])
         shutil.rmtree(tmpdir)
