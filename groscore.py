@@ -333,6 +333,8 @@ while j <= args.numruns*2:
         shutil.copy(job_run_src, job_run_dst)
         os.chmod(job_run_dst, 0o755)
       elif os.path.isfile("./%s.tar.gz"%structids[i]):
+        sys.stdout.write("Setting up %s.tar.gz. "%structids[i])
+        sys.stdout.flush()
         print("Setting up %s.tar.gz."%structids[i])
         # Archived structure: inject fresh job.run into archive
         # Extraction handled by SLURM job at runtime
@@ -340,9 +342,16 @@ while j <= args.numruns*2:
         os.makedirs(tmpdir, exist_ok=True)
         shutil.copy(job_run_src, os.path.join(tmpdir, "job.run"))
         os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
+        sys.stdout.write("Gunzipping. ")
+        sys.stdout.flush()
         os.system("gunzip -f ./%s.tar.gz"%structids[i])
+        sys.stdout.write("Injecting. ")
+        sys.stdout.flush()
         os.system("tar -rf ./%s.tar ./%s/job.run"%(structids[i], structids[i]))
+        sys.stdout.write("Gzipping. ")
+        sys.stdout.flush()
         os.system("gzip -f ./%s.tar"%structids[i])
+        print("Done.")
         shutil.rmtree(tmpdir)
       else:
         print("Structure %s: directory doesn't exist."%structids[i])
