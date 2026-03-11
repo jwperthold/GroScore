@@ -333,7 +333,7 @@ while j <= args.numruns*2:
         shutil.copy(job_run_src, job_run_dst)
         os.chmod(job_run_dst, 0o755)
       elif os.path.isfile("./%s.tar.gz"%structids[i]):
-        print("Setting up %s."%structids[i])
+        print("Setting up %s.tar.gz."%structids[i])
         # Archived structure: inject fresh job.run into archive
         # Extraction handled by SLURM job at runtime
         tmpdir = "./%s"%structids[i]
