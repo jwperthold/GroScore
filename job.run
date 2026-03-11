@@ -224,9 +224,6 @@ if [[ $bl -eq 0 ]]; then
       if [[ ! -f emin_solv.gro ]]; then
         gmx mdrun -nt $nt -deffnm emin_solv
       fi
-      if [[ ! -f index.ndx ]]; then
-        echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
-      fi
     else
       echo "after equilibration entangled loops were found."
       echo $STRUCT_ID "ENTANGLED" >> ../results_0.gs
@@ -243,6 +240,9 @@ if [[ $bl -eq 0 ]]; then
       exit 0
     fi
   fi
+
+  # create index file for distance restraints
+  echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
 
   # Run one equilibration to generate disres (needs equilibrated structure for distances)
   
@@ -291,11 +291,11 @@ if [[ $bl -eq 0 ]]; then
   if [[ ! -f npt_init_cluster.pdb ]]; then
     echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster
   fi
-  if [[ ! -f numpertres.gs ]]; then
-    echo "Generating distance restraints from initial equilibration."
-    cp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
-    python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
-  fi
+
+  # Genrate distance restraints for pull simulations based on equilibrated structure
+  echo "Generating distance restraints from initial equilibration."
+  cp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
+  python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
 
   # Read NUMPERTRES for integration
   while read -r a b
