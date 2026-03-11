@@ -320,6 +320,7 @@ while j <= args.numruns*2:
     i = 0
     while i < numstructs:
       if os.path.exists("./%s"%structids[i]):
+        print("Setting up %s."%structids[i])
         # Only write run.gs if NOT in restart mode
         if not args.restart:
           f = open("./%s/run.gs"%structids[i], "w")
@@ -332,6 +333,7 @@ while j <= args.numruns*2:
         shutil.copy(job_run_src, job_run_dst)
         os.chmod(job_run_dst, 0o755)
       elif os.path.isfile("./%s.tar.gz"%structids[i]):
+        print("Setting up %s."%structids[i])
         # Archived structure: inject fresh job.run into archive
         # Extraction handled by SLURM job at runtime
         tmpdir = "./%s"%structids[i]
