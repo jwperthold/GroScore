@@ -342,7 +342,7 @@ while j <= args.numruns*2:
         os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
         os.system("gunzip ./%s.tar.gz"%structids[i])
         os.system("tar -rf ./%s.tar ./%s/job.run"%(structids[i], structids[i]))
-        os.system("gzip ./%s.tar"%structids[i])
+        os.system("gzip -f ./%s.tar"%structids[i])
         shutil.rmtree(tmpdir)
       else:
         print("Structure %s: directory doesn't exist."%structids[i])
