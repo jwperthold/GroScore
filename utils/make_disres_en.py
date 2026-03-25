@@ -95,13 +95,12 @@ if len(prot1_valid) > 0 and len(prot2_valid) > 0:
 numinterdis = len(interdis)
 
 # Function to find anchor residues and build elastic network
-def build_elastic_network(prot_data, prot_coords, max_len):
+def build_elastic_network(prot_data, prot_coords):
   """Build elastic network for a protein.
 
   Args:
     prot_data: list of (resname, atomname, atomnum, x, y, z)
     prot_coords: numpy array of coordinates
-    max_len: length to iterate (original used len1 for both - preserving behavior)
 
   Returns:
     en_pairs: list of (i, j, distance) tuples for elastic network
@@ -116,13 +115,13 @@ def build_elastic_network(prot_data, prot_coords, max_len):
 
   # Collect all unique resnames and their types
   resname_to_type = {}
-  for i in range(min(prot_len, max_len)):
+  for i in range(prot_len):
     resname = prot_data[i][0]
     res3 = resname[-3:]
     resname_to_type[resname] = res3
 
   # Method 1: Find residues with OT or H2 atoms (GROMOS)
-  for i in range(min(prot_len, max_len)):
+  for i in range(prot_len):
     atomname = prot_data[i][1]
     if atomname == "OT" or atomname == "H2":
       anchor_resnames.add(prot_data[i][0])
@@ -163,7 +162,7 @@ def build_elastic_network(prot_data, prot_coords, max_len):
 
   # Find CA atoms for anchor residues
   anchor_indices = []
-  for i in range(min(prot_len, max_len)):
+  for i in range(prot_len):
     if prot_data[i][1] == "CA" and prot_data[i][0] in anchor_resnames:
       anchor_indices.append(i)
 
@@ -179,7 +178,7 @@ def build_elastic_network(prot_data, prot_coords, max_len):
   anchor_coords = prot_coords[anchor_indices]
 
   # Find all CA atoms
-  ca_indices = [i for i in range(min(prot_len, max_len)) if prot_data[i][1] == "CA"]
+  ca_indices = [i for i in range(prot_len) if prot_data[i][1] == "CA"]
 
   if len(ca_indices) == 0:
     return [], []
@@ -210,9 +209,8 @@ def build_elastic_network(prot_data, prot_coords, max_len):
   return en_pairs, protkeep
 
 # Build elastic networks
-# Note: Original code uses len1 for both prot1 and prot2 iterations (bug preserved)
-en1dis, protkeep1 = build_elastic_network(prot1_data, prot1_coords, len1)
-en2dis, protkeep2 = build_elastic_network(prot2_data, prot2_coords, len1)
+en1dis, protkeep1 = build_elastic_network(prot1_data, prot1_coords)
+en2dis, protkeep2 = build_elastic_network(prot2_data, prot2_coords)
 
 numen1dis = len(en1dis)
 numen2dis = len(en2dis)
