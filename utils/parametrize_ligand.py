@@ -29,54 +29,66 @@ if not os.path.isfile(args.file):
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from openbabel import openbabel as ob
 import urllib.request
 
 with open(args.file) as f:
     pdb_content = f.read()
 
-# Read PDB coordinates with RDKit (for template matching and fallback)
-pdb_mol = Chem.MolFromPDBBlock(pdb_content, removeHs=True, sanitize=True)
-
 mol_rdkit = None
 
-# Strategy 1: RCSB Chemical Component Dictionary template
-# Downloads ideal SDF with correct bond orders, maps onto PDB coordinates
-try:
-    url = f"https://files.rcsb.org/ligands/download/{args.resname}_ideal.sdf"
-    print(f"Fetching RCSB template: {url}")
-    sdf_data = urllib.request.urlopen(url, timeout=15).read().decode()
-    template = Chem.MolFromMolBlock(sdf_data, removeHs=True)
-    if template is not None and pdb_mol is not None:
-        mol_assigned = AllChem.AssignBondOrdersFromTemplate(template, pdb_mol)
-        mol_rdkit = Chem.AddHs(mol_assigned, addCoords=True)
-        total_charge = Chem.GetFormalCharge(mol_rdkit)
-        print(f"RCSB template: {mol_rdkit.GetNumAtoms()} atoms, charge={total_charge}, "
-              f"SMILES: {Chem.MolToSmiles(mol_rdkit)}")
-except Exception as e:
-    print(f"RCSB template failed: {e}")
+# Strategy 1: OpenBabel bond perception from 3D coordinates
+# Works for any molecule (including user-designed, non-PDB ligands)
+# Especially reliable when input has hydrogen coordinates
+print("OpenBabel: perceiving bond orders from 3D coordinates...")
+conv = ob.OBConversion()
+conv.SetInFormat("pdb")
+mol_ob = ob.OBMol()
+conv.ReadString(mol_ob, pdb_content)
+mol_ob.PerceiveBondOrders()
+mol_ob.AddHydrogens(False, True, args.ph)  # polarOnly=False, correctForPH=True
 
-# Strategy 2: OpenBabel bond perception (fallback for non-PDB ligands)
-if mol_rdkit is None:
-    print("Falling back to OpenBabel bond perception...")
-    from openbabel import openbabel as ob
+total_charge = mol_ob.GetTotalCharge()
+print(f"OpenBabel: {mol_ob.NumAtoms()} atoms (with H), charge={total_charge}")
 
-    conv = ob.OBConversion()
-    conv.SetInFormat("pdb")
-    mol_ob = ob.OBMol()
-    conv.ReadString(mol_ob, pdb_content)
-    mol_ob.PerceiveBondOrders()
-    mol_ob.AddHydrogens(False, True, args.ph)  # polarOnly=False, correctForPH=True
+conv.SetOutFormat("sdf")
+sdf_block = conv.WriteString(mol_ob)
+mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
 
-    total_charge = mol_ob.GetTotalCharge()
-    print(f"OpenBabel: {mol_ob.NumAtoms()} atoms (with H), charge={total_charge}")
+# Check for kekulization failures: sp3 carbons in rings indicate wrong tautomer
+kekulization_ok = True
+if mol_rdkit is not None:
+    ring_info = mol_rdkit.GetRingInfo()
+    for atom in mol_rdkit.GetAtoms():
+        if (atom.GetAtomicNum() == 6  # carbon
+                and atom.GetHybridization() == Chem.HybridizationType.SP3
+                and ring_info.NumAtomRings(atom.GetIdx()) > 0):
+            kekulization_ok = False
+            print(f"Warning: sp3 carbon (idx {atom.GetIdx()}) in ring — possible kekulization failure")
+            break
 
-    conv.SetOutFormat("sdf")
-    sdf_block = conv.WriteString(mol_ob)
-
-    mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
-    if mol_rdkit is None:
-        print("Error: RDKit failed to read SDF from OpenBabel.", file=sys.stderr)
-        sys.exit(1)
+if mol_rdkit is None or not kekulization_ok:
+    # Strategy 2: RCSB Chemical Component Dictionary template (fallback)
+    # Fixes tautomer issues by using the deposited bond orders
+    print("Trying RCSB template for correct bond orders...")
+    pdb_mol = Chem.MolFromPDBBlock(pdb_content, removeHs=True, sanitize=True)
+    try:
+        url = f"https://files.rcsb.org/ligands/download/{args.resname}_ideal.sdf"
+        sdf_data = urllib.request.urlopen(url, timeout=15).read().decode()
+        template = Chem.MolFromMolBlock(sdf_data, removeHs=True)
+        if template is not None and pdb_mol is not None:
+            mol_assigned = AllChem.AssignBondOrdersFromTemplate(template, pdb_mol)
+            mol_rdkit = Chem.AddHs(mol_assigned, addCoords=True)
+            total_charge = Chem.GetFormalCharge(mol_rdkit)
+            print(f"RCSB template: {mol_rdkit.GetNumAtoms()} atoms, charge={total_charge}, "
+                  f"SMILES: {Chem.MolToSmiles(mol_rdkit)}")
+    except Exception as e:
+        print(f"RCSB template failed: {e}")
+        if mol_rdkit is None:
+            print("Error: could not determine bond orders.", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print("Warning: using OpenBabel result despite kekulization issue")
 
 # Strip PDB residue metadata (OpenFF requires all-or-none residue info)
 # Round-trip through SDF to get a clean mol without PDB annotations
