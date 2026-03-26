@@ -27,27 +27,61 @@ if not os.path.isfile(args.file):
     print(f"Error: Input file '{args.file}' not found.", file=sys.stderr)
     sys.exit(1)
 
-# Step 1: OpenBabel reads PDB and perceives bond orders + protonation
-from openbabel import openbabel as ob
-
-conv = ob.OBConversion()
-conv.SetInFormat("pdb")
-mol_ob = ob.OBMol()
+from rdkit import Chem
+from rdkit.Chem import AllChem
+import urllib.request
 
 with open(args.file) as f:
     pdb_content = f.read()
 
-conv.ReadString(mol_ob, pdb_content)
-mol_ob.PerceiveBondOrders()
-mol_ob.AddHydrogens(False, True, args.ph)  # polarOnly=False, correctForPH=True
+# Read PDB coordinates with RDKit (for template matching and fallback)
+pdb_mol = Chem.MolFromPDBBlock(pdb_content, removeHs=True, sanitize=True)
 
-total_charge = mol_ob.GetTotalCharge()
-n_atoms = mol_ob.NumAtoms()
-print(f"OpenBabel: {n_atoms} atoms (with H), charge={total_charge}")
+mol_rdkit = None
 
-# Write to SDF (preserves bond orders + 3D coordinates)
-conv.SetOutFormat("sdf")
-sdf_block = conv.WriteString(mol_ob)
+# Strategy 1: RCSB Chemical Component Dictionary template
+# Downloads ideal SDF with correct bond orders, maps onto PDB coordinates
+try:
+    url = f"https://files.rcsb.org/ligands/download/{args.resname}_ideal.sdf"
+    print(f"Fetching RCSB template: {url}")
+    sdf_data = urllib.request.urlopen(url, timeout=15).read().decode()
+    template = Chem.MolFromMolBlock(sdf_data, removeHs=True)
+    if template is not None and pdb_mol is not None:
+        mol_assigned = AllChem.AssignBondOrdersFromTemplate(template, pdb_mol)
+        mol_rdkit = Chem.AddHs(mol_assigned, addCoords=True)
+        total_charge = Chem.GetFormalCharge(mol_rdkit)
+        print(f"RCSB template: {mol_rdkit.GetNumAtoms()} atoms, charge={total_charge}, "
+              f"SMILES: {Chem.MolToSmiles(mol_rdkit)}")
+except Exception as e:
+    print(f"RCSB template failed: {e}")
+
+# Strategy 2: OpenBabel bond perception (fallback for non-PDB ligands)
+if mol_rdkit is None:
+    print("Falling back to OpenBabel bond perception...")
+    from openbabel import openbabel as ob
+
+    conv = ob.OBConversion()
+    conv.SetInFormat("pdb")
+    mol_ob = ob.OBMol()
+    conv.ReadString(mol_ob, pdb_content)
+    mol_ob.PerceiveBondOrders()
+    mol_ob.AddHydrogens(False, True, args.ph)  # polarOnly=False, correctForPH=True
+
+    total_charge = mol_ob.GetTotalCharge()
+    print(f"OpenBabel: {mol_ob.NumAtoms()} atoms (with H), charge={total_charge}")
+
+    conv.SetOutFormat("sdf")
+    sdf_block = conv.WriteString(mol_ob)
+
+    mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
+    if mol_rdkit is None:
+        print("Error: RDKit failed to read SDF from OpenBabel.", file=sys.stderr)
+        sys.exit(1)
+
+# Strip PDB residue metadata (OpenFF requires all-or-none residue info)
+# Round-trip through SDF to get a clean mol without PDB annotations
+sdf_block = Chem.MolToMolBlock(mol_rdkit)
+mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
 
 # Save SDF to disk for reference/debugging
 sdf_path = f"ligand_{args.resname}.sdf"
@@ -55,13 +89,7 @@ with open(sdf_path, "w") as f:
     f.write(sdf_block)
 print(f"Wrote {sdf_path}")
 
-# Step 2: RDKit reads SDF
-from rdkit import Chem
-
-mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
-if mol_rdkit is None:
-    print("Error: RDKit failed to read SDF from OpenBabel.", file=sys.stderr)
-    sys.exit(1)
+total_charge = Chem.GetFormalCharge(mol_rdkit)
 
 print(f"RDKit: {mol_rdkit.GetNumAtoms()} atoms, SMILES: {Chem.MolToSmiles(mol_rdkit)}")
 
