@@ -78,8 +78,8 @@ with open(args.input) as f:
                 if res3 == "SOL":
                     continue
 
-                # Collect ion atoms and coordinating protein atoms (S, N, O only)
-                if resnum in ion_residues:
+                # Collect ion atoms (by residue name) and coordinating protein atoms (S, N, O only)
+                if res3 in ION_RESIDUES:
                     ion_atoms.append((atomnum, tmp[0], atomname, x, y, z))
                 elif atomname[0] in ("S", "N", "O"):
                     prot_atoms.append((atomnum, tmp[0], atomname, x, y, z))

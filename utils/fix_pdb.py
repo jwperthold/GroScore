@@ -21,24 +21,28 @@ args = parser.parse_args()
 
 # Separate ion lines from protein lines before PDBFixer
 # PDBFixer may drop or corrupt single-atom ion residues
+# Also strip TER records adjacent to ions to avoid false chain breaks
+all_lines = open(args.file).readlines()
 ion_lines = []
-protein_lines = []
-with open(args.file) as f:
-    for line in f:
-        if line.startswith("ATOM"):
-            resname = line[17:20].strip()
-            if resname in ION_RESIDUES:
-                ion_lines.append(line)
-            else:
-                protein_lines.append(line)
-        else:
-            protein_lines.append(line)
+skip_lines = set()
+for i, line in enumerate(all_lines):
+    if line.startswith("ATOM"):
+        resname = line[17:20].strip()
+        if resname in ION_RESIDUES:
+            ion_lines.append(line)
+            skip_lines.add(i)
+            # Skip TER records immediately before and after the ion
+            if i > 0 and all_lines[i - 1].startswith("TER"):
+                skip_lines.add(i - 1)
+            if i + 1 < len(all_lines) and all_lines[i + 1].startswith("TER"):
+                skip_lines.add(i + 1)
 
 # Write protein-only PDB for PDBFixer
 with tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False) as tmp:
     tmp_path = tmp.name
-    for line in protein_lines:
-        tmp.write(line)
+    for i, line in enumerate(all_lines):
+        if i not in skip_lines:
+            tmp.write(line)
 
 try:
     # Run PDBFixer on protein-only PDB

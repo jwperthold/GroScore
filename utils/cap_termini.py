@@ -58,17 +58,27 @@ with open(args.file, "r") as f:
             except (ValueError, IndexError):
                 pass
 
-# Write protein-only PDB for PDBFixer (strip ions)
+# Write protein-only PDB for PDBFixer (strip ions and their surrounding TER records)
+# Removing TER records adjacent to ions prevents PDBFixer from seeing a false chain break
 protein_only_path = None
 if ion_lines:
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
     protein_only_path = tmp.name
-    with open(args.file) as f:
-        for line in f:
-            if line.startswith("ATOM"):
-                resname = line[17:20].strip()
-                if resname in ION_RESIDUES:
-                    continue
+    # Read all lines to identify which TER records are adjacent to ion ATOM lines
+    all_lines = open(args.file).readlines()
+    skip_lines = set()
+    for i, line in enumerate(all_lines):
+        if line.startswith("ATOM"):
+            resname = line[17:20].strip()
+            if resname in ION_RESIDUES:
+                skip_lines.add(i)
+                # Also skip TER records immediately before and after the ion
+                if i > 0 and all_lines[i - 1].startswith("TER"):
+                    skip_lines.add(i - 1)
+                if i + 1 < len(all_lines) and all_lines[i + 1].startswith("TER"):
+                    skip_lines.add(i + 1)
+    for i, line in enumerate(all_lines):
+        if i not in skip_lines:
             tmp.write(line)
     tmp.close()
     pdbfixer_input = protein_only_path

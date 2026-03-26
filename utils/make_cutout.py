@@ -209,6 +209,13 @@ def get_resnum(resname):
       break
   return int(digits)
 
+def get_res3(resname):
+  """Extract residue name from GRO resname field (e.g. '219ZN' -> 'ZN', '123ALA' -> 'ALA')."""
+  for i, c in enumerate(resname):
+    if not c.isdigit():
+      return resname[i:]
+  return resname
+
 # Minimum fragment length (residues)
 MIN_FRAGMENT_LEN = 5
 
@@ -307,7 +314,7 @@ def fill_small_gaps(kept_resnames, all_resnames, ter_pos, max_gap=3):
   resnum_to_res3 = {}
   for rn in all_resnames:
     resnum = get_resnum(rn)
-    res3 = rn[-3:]
+    res3 = get_res3(rn)
     if resnum not in resnum_to_resname:
       resnum_to_resname[resnum] = rn
       resnum_to_res3[resnum] = res3
@@ -362,7 +369,7 @@ def remove_caps(kept_resnames):
   """
   cleaned_resnames = set()
   for rn in kept_resnames:
-    res3 = rn[-3:]
+    res3 = get_res3(rn)
     if res3 not in ("ACE", "NME"):
       cleaned_resnames.add(rn)
 
@@ -432,7 +439,7 @@ def clean_ter_positions(kept_resnames, ter_pos, real_breaks):
   resnum_to_res3 = {}
   for rn in kept_resnames:
     resnum = get_resnum(rn)
-    res3 = rn[-3:]
+    res3 = get_res3(rn)
     resnum_to_res3[resnum] = res3
 
   resnums = sorted(resnum_to_res3.keys())
@@ -484,7 +491,7 @@ with open("cutout.pdb", "w") as pdbfile:
   for i in range(lenlk1):
     resname, atomname, coords = protlaterkeep1[i]
     resnum = get_resnum(resname)
-    res3 = resname[-3:]
+    res3 = get_res3(resname)
 
     # Write TER record if there's a gap in residue numbering
     # OR if residues are consecutive but TER existed in fixed.pdb (real chain break)
@@ -514,7 +521,7 @@ with open("cutout.pdb", "w") as pdbfile:
   for i in range(lenlk2):
     resname, atomname, coords = protlaterkeep2[i]
     resnum = get_resnum(resname)
-    res3 = resname[-3:]
+    res3 = get_res3(resname)
 
     # Write TER record if there's a gap in residue numbering
     # OR if residues are consecutive but TER existed in fixed.pdb (real chain break)
