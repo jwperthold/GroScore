@@ -28,11 +28,11 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 | Dependency | Version |
 |------------|---------|
-| Python | 3.13 |
-| NumPy | 2.3 |
-| SciPy | 1.16 |
-| OpenMM | 8.2 |
-| PDBFixer | 1.9 |
+| Python | 3.10 |
+| NumPy | 2.2.5 |
+| SciPy | 1.15 |
+| OpenMM | 8.5 |
+| PDBFixer | 1.12 |
 | GROMACS | 2026.0 |
 | SLURM | 23.11 |
 
