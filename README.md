@@ -149,7 +149,7 @@ python ../groscore.py
 **Options:**
 - `-n, --numruns` - Number of independent pull/push cycles (default: 3)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb`, `gromos54a8`, or `charmm36`
+- `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)

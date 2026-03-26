@@ -48,8 +48,8 @@ if [[ "$FORCEFIELD" == "charmm36" ]]; then
   FF_FLAG="-ff charmm36-jul2022"
   WATER_MODEL="tip3p"
   WATER_BOX="spc216.gro"
-elif [[ "$FORCEFIELD" == "amber19sb" ]]; then
-  # AMBER ff19SB with OPC water (4-point) included in standard GROMACS installation
+elif [[ "$FORCEFIELD" == "amber19sb_opc" ]]; then
+  # AMBER ff19SB with OPC water (4-point)
   FF_FLAG="-ff amber19sb"
   WATER_MODEL="opc"
   WATER_BOX="tip4p.gro"
@@ -81,7 +81,7 @@ if [[ ! -f conf.gro ]]; then
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only
     PDB2GMX_INPUT="fixed_capped.pdb"
-  elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
+  elif [[ "$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
     PDB2GMX_INPUT="fixed_capped.pdb"
   elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
@@ -123,7 +123,7 @@ if [[ ! -f conf.gro ]]; then
   # GROMOS 54A8: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
-  elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
+  elif [[ "$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     TER_INPUT=""
   elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
@@ -145,7 +145,7 @@ if [[ $bl -eq 0 ]]; then
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs --ace-only
         CUTOUT_PDB="cutout_capped.pdb"
-      elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
+      elif [[ "$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
         CUTOUT_PDB="cutout_capped.pdb"
       elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
@@ -181,7 +181,7 @@ if [[ $bl -eq 0 ]]; then
       # Terminal selections per protein segment
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
-      elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
+      elif [[ "$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         TER_INPUT=""
       elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
