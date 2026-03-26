@@ -30,6 +30,23 @@ def read_chain_map(filepath):
 
 residues_b = read_chain_map(args.chainmap)
 
+# Read ion residue numbers to determine max structural residue number
+ion_residues = set()
+ion_map_path = os.path.join(os.path.dirname(args.chainmap), "ion_residues.gs")
+if os.path.isfile(ion_map_path):
+  for line in open(ion_map_path):
+    if not line.strip().startswith("#"):
+      try:
+        ion_residues.add(int(line.strip()))
+      except (ValueError, IndexError):
+        pass
+
+# Max residue number for protein + structural ions (everything above is counterion/solvent)
+all_structural = residues_b | ion_residues
+# Protein A residues: 1 to max(residues_b) excluding residues_b gives the complement
+# Use the max of all known structural residue numbers as threshold
+max_structural_resnum = max(all_structural) if all_structural else 0
+
 #------------------------------------------------------
 
 # cutoff and elastic network parameters
@@ -56,9 +73,9 @@ if os.path.isfile(args.input):
           atomname = tmp[1]
           atomnum = tmp[2]
           x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-          # Skip solvent - extract residue name from GRO field
+          # Skip solvent and counterions - extract residue name from GRO field
           res3 = re.sub(r'\d+', '', tmp[0])
-          if res3 == "SOL":
+          if res3 == "SOL" or resnum > max_structural_resnum:
             continue
           if resnum not in residues_b:
             prot1_data.append((tmp[0], atomname, atomnum, x, y, z))
