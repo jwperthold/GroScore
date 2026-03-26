@@ -64,19 +64,31 @@ for line in existing_atoms:
         if r > max_resnum:
             max_resnum = r
 
-# Write water atoms in GRO format (OW only — GROMACS will add HW during solvation setup)
-# Actually, for crystal waters we write just OW and let the force field handle it
-# through position restraints or flexible water model
+# Write water atoms in GRO format: OW + HW1 + HW2 (3 atoms per SOL)
+# Generate H positions at ideal geometry from O position
+# OPC3: O-H = 0.08724 nm, H-O-H = 103.6 deg
+import math
+oh_dist = 0.08724  # nm
+hoh_angle = 103.6 * math.pi / 180.0
+# Place H1 and H2 relative to O (arbitrary orientation, will relax during emin)
+dz = oh_dist * math.cos(hoh_angle / 2.0)
+dy = oh_dist * math.sin(hoh_angle / 2.0)
+
 water_atom_lines = []
 next_resnum = max_resnum + 1
 next_atomnum = max_atomnum + 1
 
 for x, y, z in water_coords:
-    # GRO format: %5d%-5s%5s%5d%8.3f%8.3f%8.3f
-    line = f"{next_resnum:5d}{'SOL':>5s}{'  OW':5s}{next_atomnum:5d}{x:8.3f}{y:8.3f}{z:8.3f}\n"
-    water_atom_lines.append(line)
-    next_resnum += 1
+    # OW
+    water_atom_lines.append(f"{next_resnum:5d}{'SOL':>5s}{'  OW':5s}{next_atomnum:5d}{x:8.3f}{y:8.3f}{z:8.3f}\n")
     next_atomnum += 1
+    # HW1
+    water_atom_lines.append(f"{next_resnum:5d}{'SOL':>5s}{' HW1':5s}{next_atomnum:5d}{x:8.3f}{y + dy:8.3f}{z + dz:8.3f}\n")
+    next_atomnum += 1
+    # HW2
+    water_atom_lines.append(f"{next_resnum:5d}{'SOL':>5s}{' HW2':5s}{next_atomnum:5d}{x:8.3f}{y - dy:8.3f}{z + dz:8.3f}\n")
+    next_atomnum += 1
+    next_resnum += 1
 
 total_atoms = n_existing + len(water_atom_lines)
 with open(args.conf, "w") as f:

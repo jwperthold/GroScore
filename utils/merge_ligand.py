@@ -98,17 +98,38 @@ for i, line in enumerate(lines):
         molecules_idx = i
         break
 
+# Find where moleculetype sections start (for inserting moleculetype includes)
+first_moltype_idx = None
+for i, line in enumerate(lines):
+    if line.strip().startswith("#include") and "topol_" in line:
+        first_moltype_idx = i
+        break
+
+if first_moltype_idx is None:
+    first_moltype_idx = insert_include_idx + 1
+
 # Build the new topology
+# Atomtypes must come BEFORE any moleculetype (GROMACS requirement)
+# So: forcefield.itp → atomtypes includes → protein moleculetype includes → ligand moleculetype includes
 new_lines = []
 includes_added = set()
 for i, line in enumerate(lines):
-    new_lines.append(line)
-    # After forcefield include, add ligand ITP includes
-    if i == insert_include_idx:
+    # Before the first protein moleculetype include, insert ligand moleculetype includes
+    if i == first_moltype_idx:
         for resname, chain, natoms, itp, gro in available_ligands:
             if resname not in includes_added:
-                new_lines.append(f'#include "{itp}"')
+                new_lines.append(f'#include "ligand_{resname}.itp"')
                 includes_added.add(resname)
+    new_lines.append(line)
+    # After forcefield include, add ligand atomtype includes
+    if i == insert_include_idx:
+        atomtypes_added = set()
+        for resname, chain, natoms, itp, gro in available_ligands:
+            if resname not in atomtypes_added:
+                atomtypes_itp = f"ligand_{resname}_atomtypes.itp"
+                if os.path.isfile(atomtypes_itp):
+                    new_lines.append(f'#include "{atomtypes_itp}"')
+                    atomtypes_added.add(resname)
 
 # Add ligand molecules to [ molecules ] section
 # Find the last line of [ molecules ] (before any intermolecular_interactions or EOF)

@@ -127,15 +127,20 @@ with tempfile.TemporaryDirectory() as tmpdir:
     atomtypes_lines = [l.replace("MOL0", mol_name) for l in atomtypes_lines]
     moltype_lines = [l.replace("MOL0", mol_name) for l in moltype_lines]
 
-    # Write ligand.itp
-    itp_path = f"ligand_{args.resname}.itp"
-    with open(itp_path, "w") as f:
-        f.write(f"; Ligand topology for {args.resname}\n")
-        f.write(f"; Parametrized with OpenFF {args.ff}\n")
-        f.write(f"; Total charge: {total_charge}\n\n")
+    # Write atomtypes to separate file (must be included before any moleculetype)
+    atomtypes_path = f"ligand_{args.resname}_atomtypes.itp"
+    with open(atomtypes_path, "w") as f:
+        f.write(f"; Atom types for ligand {args.resname}\n")
+        f.write(f"; Parametrized with OpenFF {args.ff}\n\n")
         for line in atomtypes_lines:
             f.write(line)
-        f.write("\n")
+
+    # Write moleculetype to separate file
+    itp_path = f"ligand_{args.resname}.itp"
+    with open(itp_path, "w") as f:
+        f.write(f"; Molecule type for ligand {args.resname}\n")
+        f.write(f"; Parametrized with OpenFF {args.ff}\n")
+        f.write(f"; Total charge: {total_charge}\n\n")
         for line in moltype_lines:
             f.write(line)
 
