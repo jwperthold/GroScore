@@ -41,31 +41,34 @@ mol_rdkit = None
 # Works for any molecule (including user-designed, non-PDB ligands)
 # Especially reliable when input has hydrogen coordinates
 print("OpenBabel: perceiving bond orders from 3D coordinates...")
+
+# Capture OpenBabel warnings to detect kekulization failures
+ob_log = ob.OBMessageHandler()
+ob.obErrorLog.SetOutputLevel(ob.obWarning)
+ob.obErrorLog.StartLogging()
+
 conv = ob.OBConversion()
 conv.SetInFormat("pdb")
 mol_ob = ob.OBMol()
 conv.ReadString(mol_ob, pdb_content)
 mol_ob.PerceiveBondOrders()
+
+# Check for kekulization warning from OpenBabel
+ob_warnings = ob.obErrorLog.GetMessagesOfLevel(ob.obWarning)
+kekulization_ok = not any("kekulize" in w.lower() for w in ob_warnings)
+ob.obErrorLog.StopLogging()
+
 mol_ob.AddHydrogens(False, True, args.ph)  # polarOnly=False, correctForPH=True
 
 total_charge = mol_ob.GetTotalCharge()
 print(f"OpenBabel: {mol_ob.NumAtoms()} atoms (with H), charge={total_charge}")
 
+if not kekulization_ok:
+    print("Warning: OpenBabel failed to kekulize aromatic bonds")
+
 conv.SetOutFormat("sdf")
 sdf_block = conv.WriteString(mol_ob)
 mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
-
-# Check for kekulization failures: sp3 carbons in rings indicate wrong tautomer
-kekulization_ok = True
-if mol_rdkit is not None:
-    ring_info = mol_rdkit.GetRingInfo()
-    for atom in mol_rdkit.GetAtoms():
-        if (atom.GetAtomicNum() == 6  # carbon
-                and atom.GetHybridization() == Chem.HybridizationType.SP3
-                and ring_info.NumAtomRings(atom.GetIdx()) > 0):
-            kekulization_ok = False
-            print(f"Warning: sp3 carbon (idx {atom.GetIdx()}) in ring — possible kekulization failure")
-            break
 
 if mol_rdkit is None or not kekulization_ok:
     # Strategy 2: RCSB Chemical Component Dictionary template (fallback)
