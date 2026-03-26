@@ -8,8 +8,12 @@
 import os
 import sys
 import argparse
+import tempfile
 from pdbfixer import PDBFixer
 from openmm import unit
+
+# Ion residue names supported by all GroScore force fields
+ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
 
 parser = argparse.ArgumentParser(description="Add ACE/NME caps to fragment termini using PDBFixer")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file")
@@ -37,20 +41,42 @@ if args.chainmap and os.path.isfile(args.chainmap):
 
 # Read original PDB to map residue numbers to chain IDs
 # We need this to determine protein A/B membership for ACE/NME caps
+# Also separate ion lines (PDBFixer cannot handle single-atom ion residues)
 orig_resnum_to_chain = {}
+ion_lines = []
 with open(args.file, "r") as f:
     for line in f:
         if line.startswith("ATOM"):
             chain_id = line[21]
+            resname = line[17:20].strip()
             try:
                 resnum = int(line[22:26].strip())
                 if resnum not in orig_resnum_to_chain:
                     orig_resnum_to_chain[resnum] = chain_id
+                if resname in ION_RESIDUES:
+                    ion_lines.append(line)
             except (ValueError, IndexError):
                 pass
 
+# Write protein-only PDB for PDBFixer (strip ions)
+protein_only_path = None
+if ion_lines:
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False)
+    protein_only_path = tmp.name
+    with open(args.file) as f:
+        for line in f:
+            if line.startswith("ATOM"):
+                resname = line[17:20].strip()
+                if resname in ION_RESIDUES:
+                    continue
+            tmp.write(line)
+    tmp.close()
+    pdbfixer_input = protein_only_path
+else:
+    pdbfixer_input = args.file
+
 # Load PDB with PDBFixer
-fixer = PDBFixer(filename=args.file)
+fixer = PDBFixer(filename=pdbfixer_input)
 fixer.findMissingResidues()
 fixer.missingResidues = {}  # Clear auto-detected missing residues
 
@@ -174,7 +200,39 @@ with open(args.output, "w") as out:
 
         prev_chain_idx = chain.index
 
+    # Re-insert structural ion lines
+    if ion_lines:
+        for ion_line in ion_lines:
+            resname = ion_line[17:20].strip()
+            resnum = int(ion_line[22:26].strip())
+            chain_id = ion_line[21]
+            atomname = ion_line[12:16].strip()
+            x_coord = float(ion_line[30:38])
+            y_coord = float(ion_line[38:46])
+            z_coord = float(ion_line[46:54])
+
+            resnum_counter += 1
+            atom_num += 1
+
+            # Determine protein B membership
+            if resnum in original_b_resnums:
+                new_b_resnums.add(resnum_counter)
+
+            if len(atomname) < 4:
+                atomname_fmt = f" {atomname:<3s}"
+            else:
+                atomname_fmt = f"{atomname:<4s}"
+
+            out.write("TER\n")
+            out.write(f"ATOM  {atom_num:5d} {atomname_fmt} {resname:>3s} {chain_id}{resnum_counter:4d}    "
+                      f"{x_coord:8.3f}{y_coord:8.3f}{z_coord:8.3f}"
+                      f"  1.00  0.00          {atomname[0]:>2s}\n")
+
     out.write("END\n")
+
+# Clean up temp file
+if protein_only_path:
+    os.unlink(protein_only_path)
 
 # Update chain_map.gs if requested
 if args.chainmap:

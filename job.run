@@ -97,36 +97,43 @@ if [[ ! -f conf.gro ]]; then
   if [[ "$FORCEFIELD" == "gromos54a8" ]]; then
     sed -i '/ OXT /d' $PDB2GMX_INPUT
   fi
-  # Get chain ID of first atom in each segment
-  CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' $PDB2GMX_INPUT)
-  # Merge selections: y if same chain ID as previous, n if different
+  # Ion residue names for pdb2gmx chain handling
+  ION_RESIDUES="ZN|CA|MG|CU|CU1|NA|CL"
+  # Get chain ID and residue name of first atom in each segment
+  # Format: "chain_id resname" per line
+  CHAIN_DATA=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{chain=substr($0,22,1); res=substr($0,18,3); gsub(/ /,"",res); print chain, res; first=0}' $PDB2GMX_INPUT)
+  # Merge selections: y if same chain ID as previous (and neither is an ion), n otherwise
   MERGE_INPUT=""
   prev_chain=""
-  for chain in $CHAIN_IDS; do
+  prev_res=""
+  while read -r chain res; do
     if [[ -n "$prev_chain" ]]; then
-      if [[ "$chain" == "$prev_chain" ]]; then
+      if [[ "$res" =~ ^($ION_RESIDUES)$ ]] || [[ "$prev_res" =~ ^($ION_RESIDUES)$ ]]; then
+        MERGE_INPUT="${MERGE_INPUT}n\n"
+      elif [[ "$chain" == "$prev_chain" ]]; then
         MERGE_INPUT="${MERGE_INPUT}y\n"
       else
         MERGE_INPUT="${MERGE_INPUT}n\n"
       fi
     fi
     prev_chain=$chain
-  done
-  # Count chain segments by counting TER records + 1
-  NSEGS=$(($(grep -c "^TER" $PDB2GMX_INPUT) + 1))
-  # Terminal selections per segment: N-terminus then C-terminus
+    prev_res=$res
+  done <<< "$CHAIN_DATA"
+  # Count protein-only segments (ions have no terminal patches, pdb2gmx won't prompt for them)
+  NSEGS_PROTEIN=$(echo "$CHAIN_DATA" | awk -v ions="$ION_RESIDUES" 'BEGIN{split(ions,a,"|"); for(i in a) ion[a[i]]=1; n=0} {if(!($2 in ion)) n++} END{print n}')
+  # Terminal selections per protein segment: N-terminus then C-terminus
   # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
   # GROMOS 54A7: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
   # GROMOS 54A8: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
-    TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
+    TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
   elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     TER_INPUT=""
   elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
-    TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
+    TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
   elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
-    TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
+    TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
   fi
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
@@ -157,36 +164,36 @@ if [[ $bl -eq 0 ]]; then
         sed -i '/ OXT /d' $CUTOUT_PDB
       fi
       # re-solvate cutout
-      # Get chain ID of first atom in each segment
-      CHAIN_IDS=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{print substr($0,22,1); first=0}' $CUTOUT_PDB)
-      # Merge selections: y if same chain ID as previous, n if different
+      # Get chain ID and residue name of first atom in each segment
+      CHAIN_DATA=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{chain=substr($0,22,1); res=substr($0,18,3); gsub(/ /,"",res); print chain, res; first=0}' $CUTOUT_PDB)
+      # Merge selections: y if same chain ID as previous (and neither is an ion), n otherwise
       MERGE_INPUT=""
       prev_chain=""
-      for chain in $CHAIN_IDS; do
+      prev_res=""
+      while read -r chain res; do
         if [[ -n "$prev_chain" ]]; then
-          if [[ "$chain" == "$prev_chain" ]]; then
+          if [[ "$res" =~ ^($ION_RESIDUES)$ ]] || [[ "$prev_res" =~ ^($ION_RESIDUES)$ ]]; then
+            MERGE_INPUT="${MERGE_INPUT}n\n"
+          elif [[ "$chain" == "$prev_chain" ]]; then
             MERGE_INPUT="${MERGE_INPUT}y\n"
           else
             MERGE_INPUT="${MERGE_INPUT}n\n"
           fi
         fi
         prev_chain=$chain
-      done
-      # Count segments for terminal selections (all fragments need termini)
-      NSEGS=$(($(grep -c "^TER" $CUTOUT_PDB) + 1))
-      # Terminal selections per segment: N-terminus then C-terminus
-      # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
-      # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
-      # GROMOS 54A7: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
-      # GROMOS 54A8: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
+        prev_res=$res
+      done <<< "$CHAIN_DATA"
+      # Count protein-only segments (ions don't need terminal selections)
+      NSEGS_PROTEIN=$(echo "$CHAIN_DATA" | awk -v ions="$ION_RESIDUES" 'BEGIN{split(ions,a,"|"); for(i in a) ion[a[i]]=1; n=0} {if(!($2 in ion)) n++} END{print n}')
+      # Terminal selections per protein segment
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
-        TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
+        TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         TER_INPUT=""
       elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
-        TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS))
+        TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
-        TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS))
+        TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       fi
       # Merge questions come first, then terminal selections
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
@@ -242,7 +249,9 @@ if [[ $bl -eq 0 ]]; then
   fi
 
   # create index file for distance restraints
-  echo -e "q\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
+  # Create a combined Protein+Ion group for PBC clustering (structural ions must cluster with protein)
+  # The "Ion" group from genion counterions is harmless here - trjconv just clusters them too
+  echo -e "\"Protein\" | \"Ion\"\nq\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
 
   # Run one equilibration to generate disres (needs equilibrated structure for distances)
   
@@ -286,10 +295,10 @@ if [[ $bl -eq 0 ]]; then
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
   fi
   if [[ ! -f npt_init_cluster.gro ]]; then
-    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster
+    echo -e "Protein_Ion\nProtein_Ion\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
   fi
   if [[ ! -f npt_init_cluster.pdb ]]; then
-    echo -e "1\n1\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster
+    echo -e "Protein_Ion\nProtein_Ion\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
   fi
 
   # Genrate distance restraints for pull simulations based on equilibrated structure

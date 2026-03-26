@@ -5,6 +5,7 @@ import os, sys, re, argparse
 import numpy as np
 from scipy.spatial.distance import cdist
 
+
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Generate distance restraints for pulling and elastic network.")
@@ -55,7 +56,9 @@ if os.path.isfile(args.input):
           atomname = tmp[1]
           atomnum = tmp[2]
           x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-          if atomname == "CL":
+          # Skip solvent - extract residue name from GRO field
+          res3 = re.sub(r'\d+', '', tmp[0])
+          if res3 == "SOL":
             continue
           if resnum not in residues_b:
             prot1_data.append((tmp[0], atomname, atomnum, x, y, z))

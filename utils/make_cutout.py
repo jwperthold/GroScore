@@ -5,6 +5,9 @@ import os, sys, re, argparse
 import numpy as np
 from scipy.spatial.distance import cdist
 
+# Ion residue names supported by all GroScore force fields
+ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
+
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Cut-out protein around the interface.")
@@ -110,8 +113,8 @@ if os.path.isfile("conf.gro"):
           s = re.search(r"\d+(\.\d+)?", tmp[0])
           resnum = int(s.group(0))
           atomname = tmp[1]
-          # Skip CL, H*, MN*
-          if atomname == "CL" or atomname[0] == "H" or atomname[:2] == "MN":
+          # Skip H* (hydrogens for distance calculations)
+          if atomname[0] == "H":
             continue
           coords = [float(tmp[3]), float(tmp[4]), float(tmp[5])]
           if resnum not in residues_b:
@@ -377,6 +380,44 @@ laterkeep2_resnames = extend_small_fragments(laterkeep2_resnames, prot2_resname)
 # Remove all ACE/NME caps - cap_termini.py will add fresh ones to the cutout
 laterkeep1_resnames = remove_caps(laterkeep1_resnames)
 laterkeep2_resnames = remove_caps(laterkeep2_resnames)
+
+# Add structural ions near the kept protein residues
+# Ions are single-atom residues that should be included if within keepcutoff
+# of any kept protein atom (they don't participate in fragment/gap logic)
+def add_nearby_ions(kept_resnames, all_resnames, all_coords):
+  """Add ion residues within keepcutoff of any kept protein atom."""
+  if len(kept_resnames) == 0 or len(all_resnames) == 0:
+    return kept_resnames
+
+  # Separate kept protein atom indices and ion atom indices
+  kept_indices = []
+  ion_indices = []
+  for i, rn in enumerate(all_resnames):
+    res3 = rn[len(str(get_resnum(rn))):]  # extract residue name after digits
+    if rn in kept_resnames:
+      kept_indices.append(i)
+    elif res3 in ION_RESIDUES:
+      ion_indices.append(i)
+
+  if not kept_indices or not ion_indices:
+    return kept_resnames
+
+  kept_coords = all_coords[kept_indices]
+  ion_coords = all_coords[ion_indices]
+
+  # Check distance from each ion to nearest kept atom
+  dists = cdist(ion_coords, kept_coords)
+  min_dists = np.min(dists, axis=1)
+
+  added = set()
+  for idx, ion_i in enumerate(ion_indices):
+    if min_dists[idx] <= keepcutoff:
+      added.add(all_resnames[ion_i])
+
+  return kept_resnames | added
+
+laterkeep1_resnames = add_nearby_ions(laterkeep1_resnames, prot1_resname, prot1_coords)
+laterkeep2_resnames = add_nearby_ions(laterkeep2_resnames, prot2_resname, prot2_coords)
 
 def clean_ter_positions(kept_resnames, ter_pos, real_breaks):
   """Remove TER positions that now fall between contiguous residues after extension.
