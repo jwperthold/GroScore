@@ -213,12 +213,16 @@ if [[ $bl -eq 0 ]]; then
       fi
       if [[ ! -f box_solv.gro ]]; then
         gmx solvate -cp box.gro -cs $WATER_BOX -o box_solv.gro -p topol.top
+        # gmx solvate appends SOL inside [ intermolecular_interactions ] — fix by moving it back to end
+        python3 ../../utils/fix_topol_intermolecular.py -p topol.top
       fi
       if [[ ! -f ions.tpr ]]; then
         gmx grompp -r box_solv.gro -f $MDP_DIR/emin_vac.mdp -c box_solv.gro -o ions.tpr -maxwarn 2
       fi
       if [[ ! -f solv_ions.gro ]]; then
         echo -e "SOL\n" | gmx genion -s ions.tpr -o solv_ions.gro -p topol.top -pname NA -nname CL -conc 0.15 -neutral
+        # gmx genion modifies [ molecules ] — fix topology ordering again
+        python3 ../../utils/fix_topol_intermolecular.py -p topol.top
       fi
       if [[ ! -f emin_solv.tpr ]]; then
         gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 2
