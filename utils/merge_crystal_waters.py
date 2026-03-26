@@ -17,7 +17,11 @@ import argparse
 parser = argparse.ArgumentParser(description="Merge crystal waters into GROMACS system.")
 parser.add_argument('-t', '--topol', type=str, default="topol.top", help="Topology file")
 parser.add_argument('-c', '--conf', type=str, required=True, help="Coordinate file (GRO)")
+parser.add_argument('--proximity', action='store_true',
+                    help="Only include waters within 0.5 nm of protein atoms (for cutout systems)")
 args = parser.parse_args()
+
+PROXIMITY_CUTOFF = 0.5  # nm
 
 water_pdb = "crystal_waters.pdb"
 if not os.path.isfile(water_pdb):
@@ -42,10 +46,9 @@ if not water_coords:
     print("No water oxygen atoms found in crystal_waters.pdb, skipping.")
     sys.exit(0)
 
-n_waters = len(water_coords)
-print(f"Found {n_waters} crystal water(s)")
+print(f"Found {len(water_coords)} crystal water(s)")
 
-# ---- Merge coordinates ----
+# ---- Read existing GRO ----
 with open(args.conf) as f:
     gro_lines = f.readlines()
 
@@ -53,6 +56,35 @@ title = gro_lines[0]
 n_existing = int(gro_lines[1].strip())
 existing_atoms = gro_lines[2:2 + n_existing]
 box_line = gro_lines[2 + n_existing]
+
+# ---- Proximity filter ----
+if args.proximity:
+    import numpy as np
+    from scipy.spatial.distance import cdist
+
+    prot_coords = []
+    for line in existing_atoms:
+        try:
+            left = line[:15]
+            right = line[15:]
+            tmp = left.split() + right.split()
+            x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
+            prot_coords.append((x, y, z))
+        except (ValueError, IndexError):
+            pass
+
+    if prot_coords:
+        dists = cdist(np.array(water_coords), np.array(prot_coords))
+        min_dists = np.min(dists, axis=1)
+        kept = [c for i, c in enumerate(water_coords) if min_dists[i] <= PROXIMITY_CUTOFF]
+        print(f"Proximity filter ({PROXIMITY_CUTOFF} nm): kept {len(kept)}, removed {len(water_coords) - len(kept)} distant water(s)")
+        water_coords = kept
+
+if not water_coords:
+    print("No crystal waters to merge, skipping.")
+    sys.exit(0)
+
+n_waters = len(water_coords)
 
 # Find max residue number and atom number
 max_resnum = 0

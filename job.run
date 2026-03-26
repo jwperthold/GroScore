@@ -135,12 +135,11 @@ if [[ ! -f conf.gro ]]; then
     for ligpdb in ligand_*_*.pdb; do
       [ -f "$ligpdb" ] || continue
       RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_..pdb/\1/')
-      conda run --no-banner -n groscore python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME"
+      python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME"
     done
   fi
-  # Merge ligands and crystal waters into topology
+  # Merge ligands into topology (crystal waters merged after cutout)
   python3 ../../utils/merge_ligand.py -t topol.top -c conf.gro -m chain_map.gs
-  python3 ../../utils/merge_crystal_waters.py -t topol.top -c conf.gro
   # Generate ion coordination restraints (active from first energy minimization)
   python3 ../../utils/make_ion_restraints.py -f conf.gro -m chain_map.gs
 fi
@@ -207,17 +206,19 @@ if [[ $bl -eq 0 ]]; then
           [ -f "$ligpdb" ] || continue
           RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_..pdb/\1/')
           if [[ ! -f "ligand_${RESNAME}.itp" ]]; then
-            conda run --no-banner -n groscore python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME"
+            python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME"
           fi
         done
       fi
       # Merge ligands and crystal waters into cutout topology
       python3 ../../utils/merge_ligand.py -t topol.top -c conf_cutout.gro -m chain_map.gs
-      python3 ../../utils/merge_crystal_waters.py -t topol.top -c conf_cutout.gro
+      python3 ../../utils/merge_crystal_waters.py -t topol.top -c conf_cutout.gro --proximity
       # Generate ion coordination restraints (active from first energy minimization)
       python3 ../../utils/make_ion_restraints.py -f conf_cutout.gro -m chain_map.gs
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
+      # No cutout: merge all crystal waters into full protein system
+      python3 ../../utils/merge_crystal_waters.py -t topol.top -c conf.gro
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     fi
   fi
