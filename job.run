@@ -324,10 +324,10 @@ if [[ $bl -eq 0 ]]; then
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
   fi
   if [[ ! -f npt_init_cluster.gro ]]; then
-    echo -e "!Water\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
+    echo -e "Protein\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
   fi
   if [[ ! -f npt_init_cluster.pdb ]]; then
-    echo -e "!Water\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
+    echo -e "Protein\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
   fi
 
   # Genrate distance restraints for pull simulations based on equilibrated structure
