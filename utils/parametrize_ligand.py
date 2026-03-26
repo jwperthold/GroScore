@@ -19,6 +19,7 @@ import tempfile
 parser = argparse.ArgumentParser(description="Parametrize a small molecule with OpenFF for GROMACS.")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file with ligand HETATM records")
 parser.add_argument('-r', '--resname', type=str, required=True, help="Residue name of the ligand")
+parser.add_argument('-c', '--chain', type=str, default="", help="Chain ID (for per-instance output filenames)")
 parser.add_argument('--ph', type=float, default=7.4, help="pH for protonation state assignment (default: 7.4)")
 parser.add_argument('--ff', type=str, default="openff-2.2.1.offxml", help="OpenFF force field (default: openff-2.2.1.offxml)")
 args = parser.parse_args()
@@ -197,7 +198,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
     # Step 7: Write ligand.gro with coordinates
     # Read the OpenFF-generated GRO for coordinates (already in nm)
-    gro_path = f"ligand_{args.resname}.gro"
+    # GRO is per-instance (different coordinates); ITP is shared (same parameters)
+    chain_suffix = f"_{args.chain}" if args.chain else ""
+    gro_path = f"ligand_{args.resname}{chain_suffix}.gro"
     with open(f"{prefix}.gro") as f:
         gro_lines = f.readlines()
 

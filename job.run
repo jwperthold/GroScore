@@ -132,10 +132,12 @@ if [[ ! -f conf.gro ]]; then
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
   # Parametrize small molecules with OpenFF (AMBER19SB only)
   if [[ "$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
-    for ligpdb in ligand_*_*.pdb; do
+    for ligpdb in ligand_*_?.pdb; do
       [ -f "$ligpdb" ] || continue
-      RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_..pdb/\1/')
-      python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME"
+      # Extract resname and chain from filename: ligand_RESNAME_CHAIN.pdb
+      RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_.\..*/\1/')
+      CHAIN=$(echo "$ligpdb" | sed 's/ligand_.*_\(.\)\..*/\1/')
+      python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME" -c "$CHAIN"
     done
   fi
   # Merge ligands into topology (crystal waters merged after cutout)
@@ -202,11 +204,12 @@ if [[ $bl -eq 0 ]]; then
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
       # Parametrize small molecules with OpenFF (AMBER19SB only) — reuse existing ITP if available
       if [[ "$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
-        for ligpdb in ligand_*_*.pdb; do
+        for ligpdb in ligand_*_?.pdb; do
           [ -f "$ligpdb" ] || continue
-          RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_..pdb/\1/')
+          RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_.\..*/\1/')
+          CHAIN=$(echo "$ligpdb" | sed 's/ligand_.*_\(.\)\..*/\1/')
           if [[ ! -f "ligand_${RESNAME}.itp" ]]; then
-            python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME"
+            python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME" -c "$CHAIN"
           fi
         done
       fi

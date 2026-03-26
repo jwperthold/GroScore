@@ -39,17 +39,70 @@ if not ligands:
     sys.exit(0)
 
 # Check which ligand ITP/GRO files exist
+# GRO files are per-instance (ligand_RESNAME_CHAIN.gro), ITP is shared per resname
 available_ligands = []
 for resname, chain, natoms in ligands:
     itp = f"ligand_{resname}.itp"
-    gro = f"ligand_{resname}.gro"
+    gro = f"ligand_{resname}_{chain}.gro"
+    if not os.path.isfile(gro):
+        gro = f"ligand_{resname}.gro"  # fallback to non-chain GRO
     if os.path.isfile(itp) and os.path.isfile(gro):
         available_ligands.append((resname, chain, natoms, itp, gro))
     else:
-        print(f"Warning: ligand_{resname}.itp or .gro not found, skipping {resname}")
+        print(f"Warning: {itp} or {gro} not found, skipping {resname} chain {chain}")
 
 if not available_ligands:
     print("No parametrized ligands found, skipping merge.")
+    sys.exit(0)
+
+# Filter ligands by proximity to existing protein atoms (skip distant buffer molecules)
+import numpy as np
+from scipy.spatial.distance import cdist
+
+LIGAND_PROXIMITY_CUTOFF = 0.5  # nm — any ligand atom must be within this distance of a protein atom
+
+with open(args.conf) as f:
+    conf_lines = f.readlines()
+n_conf = int(conf_lines[1].strip())
+prot_coords = []
+for line in conf_lines[2:2 + n_conf]:
+    try:
+        left = line[:15]
+        right = line[15:]
+        tmp = left.split() + right.split()
+        prot_coords.append((float(tmp[3]), float(tmp[4]), float(tmp[5])))
+    except (ValueError, IndexError):
+        pass
+
+if prot_coords:
+    prot_arr = np.array(prot_coords)
+    filtered = []
+    for resname, chain, natoms, itp, gro in available_ligands:
+        with open(gro) as f:
+            lig_lines = f.readlines()
+        n_lig = int(lig_lines[1].strip())
+        lig_coords = []
+        for line in lig_lines[2:2 + n_lig]:
+            try:
+                left = line[:15]
+                right = line[15:]
+                tmp = left.split() + right.split()
+                lig_coords.append((float(tmp[3]), float(tmp[4]), float(tmp[5])))
+            except (ValueError, IndexError):
+                pass
+        if lig_coords:
+            dists = cdist(np.array(lig_coords), prot_arr)
+            min_dist = dists.min()
+            if min_dist <= LIGAND_PROXIMITY_CUTOFF:
+                filtered.append((resname, chain, natoms, itp, gro))
+            else:
+                print(f"Skipping {resname} chain {chain}: nearest protein atom {min_dist:.2f} nm (> {LIGAND_PROXIMITY_CUTOFF} nm)")
+        else:
+            filtered.append((resname, chain, natoms, itp, gro))
+    available_ligands = filtered
+
+if not available_ligands:
+    print("No ligands within proximity cutoff, skipping merge.")
     sys.exit(0)
 
 # Sort by resname so all instances of the same molecule type are contiguous
