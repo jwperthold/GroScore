@@ -29,6 +29,40 @@ COORD_CUTOFF = 0.3
 # Strong enough to maintain coordination, weaker than covalent bonds (~250000)
 COORD_K = 10000.0
 
+# Optimal coordination distances (nm) per (ion, coordinating element) pair.
+# Sources:
+#   Zn-S: CHARMM36 SS-ZN bond parameter (Stote & Karplus, 1995)
+#   Zn-N: CHARMM36 NR2-ZN bond parameter (Stote & Karplus, 1995)
+#   Zn-O: Dudev & Lim, JACS 2000; Koca et al., J Comput Chem 2003
+#   Ca-O: Marchand & Bhatt, J Phys Chem B 2020; Dudev & Lim, Chem Rev 2003
+#   Ca-N: Dudev & Lim, Chem Rev 2003
+#   Mg-O: Dudev & Lim, JACS 1999; Zheng et al., J Mol Biol 2008
+#   Mg-N: Zheng et al., J Mol Biol 2008
+#   Cu-S: Comba & Remenyi, Coord Chem Rev 2003
+#   Cu-N: Comba & Remenyi, Coord Chem Rev 2003
+#   Cu-O: Comba & Remenyi, Coord Chem Rev 2003
+OPTIMAL_DISTANCES = {
+    # Zinc (tetrahedral coordination)
+    ("ZN", "S"): 0.232,   # Zn-S(Cys): CHARMM36 parameter
+    ("ZN", "N"): 0.207,   # Zn-N(His): CHARMM36 parameter
+    ("ZN", "O"): 0.210,   # Zn-O(Asp/Glu/water)
+    # Calcium (octahedral/7-8 coordination)
+    ("CA", "O"): 0.236,   # Ca-O(Asp/Glu/backbone carbonyl)
+    ("CA", "N"): 0.245,   # Ca-N(backbone amide) - rare
+    # Magnesium (octahedral coordination)
+    ("MG", "O"): 0.210,   # Mg-O(Asp/Glu/water)
+    ("MG", "N"): 0.220,   # Mg-N(His) - rare
+    # Copper(II) (square planar / distorted octahedral)
+    ("CU", "S"): 0.226,   # Cu(II)-S(Cys/Met)
+    ("CU", "N"): 0.200,   # Cu(II)-N(His)
+    ("CU", "O"): 0.197,   # Cu(II)-O(Asp/Glu/water)
+    # Copper(I) (tetrahedral/linear)
+    ("CU1", "S"): 0.221,  # Cu(I)-S(Cys/Met)
+    ("CU1", "N"): 0.202,  # Cu(I)-N(His)
+}
+# Fallback distance if a specific pair is not parametrized
+DEFAULT_DISTANCE = 0.215
+
 parser = argparse.ArgumentParser(description="Generate ion coordination restraints for topology.")
 parser.add_argument('-f', '--input', type=str, required=True, help="Input coordinate file (GRO format)")
 parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map file (chain_map.gs)")
@@ -101,20 +135,24 @@ prot_coords = np.array([(a[3], a[4], a[5]) for a in prot_atoms], dtype=np.float6
 distances = cdist(ion_coords, prot_coords)
 
 # Find coordination pairs within cutoff
-coord_pairs = []  # [(ion_atomnum, prot_atomnum, distance, ion_name, prot_resname, prot_atomname), ...]
+coord_pairs = []  # [(ion_atomnum, prot_atomnum, measured_dist, optimal_dist, ion_resname, ion_name, prot_resname, prot_atomname), ...]
 
 for i in range(len(ion_atoms)):
+    ion_resname_field = ion_atoms[i][1]
+    ion_res3 = re.sub(r'\d+', '', ion_resname_field)
     for j in range(len(prot_atoms)):
         dist = distances[i, j]
         if dist <= COORD_CUTOFF:
             ion_atomnum = ion_atoms[i][0]
-            ion_resname = ion_atoms[i][1]
             ion_name = ion_atoms[i][2]
             prot_atomnum = prot_atoms[j][0]
             prot_resname = prot_atoms[j][1]
             prot_atomname = prot_atoms[j][2]
-            coord_pairs.append((ion_atomnum, prot_atomnum, dist,
-                                ion_name, prot_resname, prot_atomname))
+            # Look up optimal distance for this ion-element pair
+            coord_element = prot_atomname[0]  # S, N, or O
+            optimal_dist = OPTIMAL_DISTANCES.get((ion_res3, coord_element), DEFAULT_DISTANCE)
+            coord_pairs.append((ion_atomnum, prot_atomnum, dist, optimal_dist,
+                                ion_res3, ion_name, prot_resname, prot_atomname))
 
 if not coord_pairs:
     print("No ion coordination pairs detected within cutoff, skipping restraints.")
@@ -129,13 +167,15 @@ if not os.path.isfile(topol_path):
 with open(topol_path, "a") as f:
     f.write("\n; Ion coordination restraints (auto-detected, cutoff={:.2f} nm, k={:.0f} kJ/mol/nm^2)\n".format(
         COORD_CUTOFF, COORD_K))
+    f.write("; Restraint distances use optimal values from force field parameters and literature\n")
     f.write("[ intermolecular_interactions ]\n")
     f.write("[ bonds ]\n")
     f.write("; ai      aj  funct      b0(nm)      kb(kJ/mol/nm^2)  ; description\n")
-    for ion_num, prot_num, dist, ion_name, prot_resname, prot_atomname in coord_pairs:
-        f.write(f"  {ion_num:6d}  {prot_num:6d}      6  {dist:12.6f}  {COORD_K:14.2f}  "
-                f"; {ion_name}-{prot_atomname}({prot_resname})\n")
+    for ion_num, prot_num, meas_dist, opt_dist, ion_res, ion_name, prot_resname, prot_atomname in coord_pairs:
+        f.write(f"  {ion_num:6d}  {prot_num:6d}      6  {opt_dist:12.6f}  {COORD_K:14.2f}  "
+                f"; {ion_name}-{prot_atomname}({prot_resname}) measured={meas_dist:.3f}\n")
 
 print(f"Generated {len(coord_pairs)} ion coordination restraint(s):")
-for ion_num, prot_num, dist, ion_name, prot_resname, prot_atomname in coord_pairs:
-    print(f"  {ion_name} (atom {ion_num}) - {prot_atomname} of {prot_resname} (atom {prot_num}): {dist:.3f} nm")
+for ion_num, prot_num, meas_dist, opt_dist, ion_res, ion_name, prot_resname, prot_atomname in coord_pairs:
+    print(f"  {ion_name} (atom {ion_num}) - {prot_atomname} of {prot_resname} (atom {prot_num}): "
+          f"measured={meas_dist:.3f} nm, restraint={opt_dist:.3f} nm")
