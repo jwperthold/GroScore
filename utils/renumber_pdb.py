@@ -12,6 +12,22 @@ import argparse
 # Ion residue names supported by all GroScore force fields
 ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
 
+# HETATM residues to skip entirely (handled separately or irrelevant)
+# HOH = crystal waters (extracted to crystal_waters.pdb)
+SKIP_HETATM = {"HOH"}
+
+# Standard amino acid residue names (3-letter codes) — anything else in HETATM is a ligand
+STANDARD_RESIDUES = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    # Common variants
+    "HIE", "HID", "HIP", "HSD", "HSE", "HSP", "CYX", "CYM", "ASH", "GLH",
+    "HISA", "HISB", "HISH", "HISD", "HISE", "HISP",
+    "CYSH", "CYS1", "CYS2", "ASPH", "GLUH", "LYSH", "ARGN",
+    # Caps
+    "ACE", "NME", "NHE", "NH2",
+}
+
 parser = argparse.ArgumentParser(description="Renumber PDB residues sequentially and output chain mapping.")
 parser.add_argument('-f','--pdbfile', type=str, required=True, help="Input PDB file.")
 parser.add_argument('-o','--output', type=str, default="renumbered.pdb", help="Output PDB file.")
@@ -204,3 +220,50 @@ print(f"Detected {len(numbering_gaps)} numbering gap(s), {len(chain_breaks)} rea
 print(f"Generated chain_map.gs with {len(residues_b)} residues for chain(s) {args.chains}")
 if num_ions > 0:
     print(f"Generated ion_residues.gs with {num_ions} structural ion(s)")
+
+# Third pass: extract ligands and crystal waters from HETATM records
+# These are handled separately from the protein pipeline
+ligand_lines = {}   # (resname, chain) -> [lines]
+water_lines = []
+with open(args.pdbfile, "r") as f:
+    for line in f:
+        if line.startswith("HETATM"):
+            resname = get_resname(line)
+            chain_id = line[21]
+
+            if resname in ION_RESIDUES:
+                continue  # Already handled above
+            elif resname in SKIP_HETATM:
+                if resname == "HOH":
+                    water_lines.append(line)
+            elif resname not in STANDARD_RESIDUES:
+                key = (resname, chain_id)
+                if key not in ligand_lines:
+                    ligand_lines[key] = []
+                ligand_lines[key].append(line)
+
+# Write ligand PDB files
+ligand_info = []
+for (resname, chain_id), lines in ligand_lines.items():
+    lig_pdb = f"ligand_{resname}_{chain_id}.pdb"
+    with open(lig_pdb, "w") as f:
+        for line in lines:
+            f.write(line)
+        f.write("END\n")
+    ligand_info.append((resname, chain_id, len(lines)))
+    print(f"Extracted ligand {resname} (chain {chain_id}, {len(lines)} atoms) to {lig_pdb}")
+
+# Write ligand_info.gs
+if ligand_info:
+    with open("ligand_info.gs", "w") as f:
+        f.write("# Ligand residue name, chain, number of heavy atoms\n")
+        for resname, chain_id, natoms in ligand_info:
+            f.write(f"{resname}\t{chain_id}\t{natoms}\n")
+
+# Write crystal waters PDB
+if water_lines:
+    with open("crystal_waters.pdb", "w") as f:
+        for line in water_lines:
+            f.write(line)
+        f.write("END\n")
+    print(f"Extracted {len(water_lines)} crystal water atom(s) to crystal_waters.pdb")

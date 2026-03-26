@@ -30,21 +30,21 @@ def read_chain_map(filepath):
 
 residues_b = read_chain_map(args.chainmap)
 
-# Read ion residue numbers to determine max structural residue number
-ion_residues = set()
-ion_map_path = os.path.join(os.path.dirname(args.chainmap), "ion_residues.gs")
-if os.path.isfile(ion_map_path):
-  for line in open(ion_map_path):
-    if not line.strip().startswith("#"):
-      try:
-        ion_residues.add(int(line.strip()))
-      except (ValueError, IndexError):
-        pass
+# Read ion and ligand residue numbers to determine max structural residue number
+extra_residues = set()
+for gs_file in ["ion_residues.gs", "ligand_residues.gs"]:
+  gs_path = os.path.join(os.path.dirname(args.chainmap), gs_file)
+  if os.path.isfile(gs_path):
+    for line in open(gs_path):
+      if not line.strip().startswith("#"):
+        try:
+          extra_residues.add(int(line.strip()))
+        except (ValueError, IndexError):
+          pass
 
-# Max residue number for protein + structural ions (everything above is counterion/solvent)
-all_structural = residues_b | ion_residues
-# Protein A residues: 1 to max(residues_b) excluding residues_b gives the complement
-# Use the max of all known structural residue numbers as threshold
+# Max residue number for protein + structural ions + ligands
+# Everything above is counterion/solvent added by gmx genion
+all_structural = residues_b | extra_residues
 max_structural_resnum = max(all_structural) if all_structural else 0
 
 #------------------------------------------------------
