@@ -1,0 +1,251 @@
+; Ion residue topologies for CHARMM36
+; Matches ions defined in ions.itp
+; Allows pdb2gmx to process HETATM ion records from PDB files
+;
+; Residue names follow PDB conventions so that pdb2gmx can recognize
+; HETATM records directly. Atom types match charmm36-jul2022 ions.itp.
+
+[ ZN ]
+; Zinc +2 ion
+ [ atoms ]
+  ZN     ZN     2.000    1
+
+[ CA ]
+; Calcium +2 ion
+ [ atoms ]
+  CA     CAL    2.000    1
+
+[ MG ]
+; Magnesium +2 ion
+ [ atoms ]
+  MG     MG     2.000    1
+
+[ NA ]
+; Sodium +1 ion
+ [ atoms ]
+  NA     SOD    1.000    1
+
+[ CL ]
+; Chloride -1 ion
+ [ atoms ]
+  CL     CLA   -1.000    1
+
+[ K ]
+; Potassium +1 ion
+ [ atoms ]
+  K      POT    1.000    1
+
+[ FE2 ]
+; Iron +2 ion
+ [ atoms ]
+  FE     FE2P   2.000    1
+
+[ FE ]
+; Iron +3 ion
+ [ atoms ]
+  FE     FE3P   3.000    1
+
+[ MN ]
+; Manganese +2 ion
+ [ atoms ]
+  MN     MN2P   2.000    1
+
+[ NI ]
+; Nickel +2 ion
+ [ atoms ]
+  NI     NI2P   2.000    1
+
+[ CO ]
+; Cobalt +2 ion
+ [ atoms ]
+  CO     CO2P   2.000    1
+
+[ CU ]
+; Copper +2 ion
+ [ atoms ]
+  CU     CU2P   2.000    1
+
+[ CU1 ]
+; Copper +1 ion
+ [ atoms ]
+  CU     CU1P   1.000    1
+
+[ CD ]
+; Cadmium +2 ion
+ [ atoms ]
+  CD     CAD    2.000    1
+
+[ CS ]
+; Cesium +1 ion
+ [ atoms ]
+  CS     CES    1.000    1
+
+[ LI ]
+; Lithium +1 ion
+ [ atoms ]
+  LI     LIT    1.000    1
+
+[ RB ]
+; Rubidium +1 ion
+ [ atoms ]
+  RB     RUB    1.000    1
+
+[ BA ]
+; Barium +2 ion
+ [ atoms ]
+  BA     BAR    2.000    1
+
+[ SR ]
+; Strontium +2 ion
+ [ atoms ]
+  SR     SR2P   2.000    1
+
+[ PB ]
+; Lead +2 ion
+ [ atoms ]
+  PB     PB2P   2.000    1
+
+[ HG ]
+; Mercury +2 ion
+ [ atoms ]
+  HG     HG2P   2.000    1
+
+[ CR ]
+; Chromium +2 ion
+ [ atoms ]
+  CR     CR2P   2.000    1
+
+[ SM ]
+; Samarium +2 ion
+ [ atoms ]
+  SM     SM2P   2.000    1
+
+[ EU ]
+; Europium +2 ion
+ [ atoms ]
+  EU     EU2P   2.000    1
+
+[ SN ]
+; Tin +2 ion
+ [ atoms ]
+  SN     SN2P   2.000    1
+
+[ PT ]
+; Platinum +2 ion
+ [ atoms ]
+  PT     PT2P   2.000    1
+
+[ PD ]
+; Palladium +2 ion
+ [ atoms ]
+  PD     PD2P   2.000    1
+
+[ V ]
+; Vanadium +2 ion
+ [ atoms ]
+  V      V2P    2.000    1
+
+[ YB ]
+; Ytterbium +2 ion
+ [ atoms ]
+  YB     YB2P   2.000    1
+
+[ RA ]
+; Radium +2 ion
+ [ atoms ]
+  RA     RA2P   2.000    1
+
+[ BE ]
+; Beryllium +2 ion
+ [ atoms ]
+  BE     BE2P   2.000    1
+
+[ AL ]
+; Aluminum +3 ion
+ [ atoms ]
+  AL     AL3P   3.000    1
+
+[ LA ]
+; Lanthanum +3 ion
+ [ atoms ]
+  LA     LA3P   3.000    1
+
+[ CE ]
+; Cerium +3 ion
+ [ atoms ]
+  CE     CE3P   3.000    1
+
+[ PR ]
+; Praseodymium +3 ion
+ [ atoms ]
+  PR     PR3P   3.000    1
+
+[ ND ]
+; Neodymium +3 ion
+ [ atoms ]
+  ND     ND3P   3.000    1
+
+[ GD ]
+; Gadolinium +3 ion
+ [ atoms ]
+  GD     GD3P   3.000    1
+
+[ TB ]
+; Terbium +3 ion
+ [ atoms ]
+  TB     TB3P   3.000    1
+
+[ DY ]
+; Dysprosium +3 ion
+ [ atoms ]
+  DY     DY3P   3.000    1
+
+[ ER ]
+; Erbium +3 ion
+ [ atoms ]
+  ER     ER3P   3.000    1
+
+[ LU ]
+; Lutetium +3 ion
+ [ atoms ]
+  LU     LU3P   3.000    1
+
+[ Y ]
+; Yttrium +3 ion
+ [ atoms ]
+  Y      Y3P    3.000    1
+
+[ IN ]
+; Indium +3 ion
+ [ atoms ]
+  IN     IN3P   3.000    1
+
+[ SC ]
+; Scandium +3 ion
+ [ atoms ]
+  SC     SC3P   3.000    1
+
+[ GA ]
+; Gallium +3 ion
+ [ atoms ]
+  GA     GA3P   3.000    1
+
+[ EU3 ]
+; Europium +3 ion
+ [ atoms ]
+  EU     EU3P   3.000    1
+
+[ TL ]
+; Thallium +3 ion
+ [ atoms ]
+  TL     TL3P   3.000    1
+
+[ AU ]
+; Gold +1 ion
+ [ atoms ]
+  AU     AU1P   1.000    1
+
+[ AG ]
+; Silver +1 ion
+ [ atoms ]
+  AG     AG1P   1.000    1

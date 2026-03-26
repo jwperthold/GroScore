@@ -1,0 +1,38 @@
+; Ion residue topologies for GROMOS 54A8
+; Matches ions defined in ions.itp
+; Allows pdb2gmx to process HETATM ion records from PDB files
+
+[ CU1 ]
+; Copper +1 ion
+ [ atoms ]
+  CU     CU1+   1.000    1
+
+[ CU ]
+; Copper +2 ion
+ [ atoms ]
+  CU     CU2+   2.000    1
+
+[ ZN ]
+; Zinc +2 ion
+ [ atoms ]
+  ZN     ZN2+   2.000    1
+
+[ MG ]
+; Magnesium +2 ion
+ [ atoms ]
+  MG     MG2+   2.000    1
+
+[ CA ]
+; Calcium +2 ion
+ [ atoms ]
+  CA     CA2+   2.000    1
+
+[ NA ]
+; Sodium +1 ion
+ [ atoms ]
+  NA     NA+    1.000    1
+
+[ CL ]
+; Chloride -1 ion
+ [ atoms ]
+  CL     CL-   -1.000    1
