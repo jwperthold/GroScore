@@ -61,35 +61,31 @@ from scipy.spatial.distance import cdist
 
 LIGAND_PROXIMITY_CUTOFF = 0.5  # nm — any ligand atom must be within this distance of a protein atom
 
-with open(args.conf) as f:
-    conf_lines = f.readlines()
-n_conf = int(conf_lines[1].strip())
-prot_coords = []
-for line in conf_lines[2:2 + n_conf]:
-    try:
-        left = line[:15]
-        right = line[15:]
-        tmp = left.split() + right.split()
-        prot_coords.append((float(tmp[3]), float(tmp[4]), float(tmp[5])))
-    except (ValueError, IndexError):
-        pass
+def read_gro_coords(path, max_atoms=None):
+    """Read coordinates from GRO file using fixed-width format (positions 20-44)."""
+    coords = []
+    with open(path) as f:
+        lines = f.readlines()
+    n = int(lines[1].strip())
+    if max_atoms:
+        n = min(n, max_atoms)
+    for line in lines[2:2 + n]:
+        try:
+            x = float(line[20:28])
+            y = float(line[28:36])
+            z = float(line[36:44])
+            coords.append((x, y, z))
+        except (ValueError, IndexError):
+            pass
+    return coords
+
+prot_coords = read_gro_coords(args.conf)
 
 if prot_coords:
     prot_arr = np.array(prot_coords)
     filtered = []
     for resname, chain, natoms, itp, gro in available_ligands:
-        with open(gro) as f:
-            lig_lines = f.readlines()
-        n_lig = int(lig_lines[1].strip())
-        lig_coords = []
-        for line in lig_lines[2:2 + n_lig]:
-            try:
-                left = line[:15]
-                right = line[15:]
-                tmp = left.split() + right.split()
-                lig_coords.append((float(tmp[3]), float(tmp[4]), float(tmp[5])))
-            except (ValueError, IndexError):
-                pass
+        lig_coords = read_gro_coords(gro)
         if lig_coords:
             dists = cdist(np.array(lig_coords), prot_arr)
             min_dist = dists.min()
