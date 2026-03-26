@@ -6,8 +6,8 @@
 
 **Computational Chemistry Toolkit for Protein-Protein Affinity Scoring with MD**
 
-[![Version](https://img.shields.io/badge/version-0.97-blue.svg)](https://github.com/jwperthold/GroScore)
-[![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-0.98-blue.svg)](https://github.com/jwperthold/GroScore)
+[![Python](https://img.shields.io/badge/python-3.10-green.svg)](https://www.python.org/)
 [![GROMACS](https://img.shields.io/badge/GROMACS-2026.0-orange.svg)](https://www.gromacs.org/)
 
 GroScore estimates binding affinities between protein pairs using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
@@ -22,19 +22,28 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
-- **Multiple Force Fields** - Support for AMBER19SB (all-atom), GROMOS 54A7/54A8 (united-atom), and CHARMM36 (all-atom)
+- **Structural Ion Support** - Automatic handling of metal ions (ZN, CA, MG, CU, CU1, NA, CL) with coordination restraints
+- **Small Molecule Support** - OpenFF-based parametrization of ligands and cofactors (AMBER19SB only), with OpenBabel bond perception and RCSB template fallback
+- **Crystal Water Preservation** - Crystal waters from PDB structures are retained and included in simulations
+- **Multiple Force Fields** - Support for AMBER19SB (all-atom), GROMOS 54A8 (united-atom), and CHARMM36 (all-atom)
 
 ## Requirements
 
-| Dependency | Version |
-|------------|---------|
-| Python | 3.10 |
-| NumPy | 2.2.5 |
-| SciPy | 1.15 |
-| OpenMM | 8.5 |
-| PDBFixer | 1.12 |
-| GROMACS | 2026.0 |
-| SLURM | 23.11 |
+| Dependency | Version | Purpose |
+|------------|---------|---------|
+| Python | 3.10 | Runtime |
+| NumPy | 2.2 | Numerical operations |
+| SciPy | 1.15 | Distance calculations |
+| OpenMM | 8.5 | PDBFixer backend |
+| PDBFixer | 1.12 | Missing atom/residue repair |
+| RDKit | 2025.09 | Molecular graph handling |
+| OpenBabel | 3.1 | Bond order perception from 3D coordinates |
+| OpenFF Toolkit | 0.16 | Small molecule parametrization |
+| Interchange | 0.4 | OpenFF → GROMACS topology export |
+| GROMACS | 2026.0 | Molecular dynamics engine |
+| SLURM | 23.11 | HPC job scheduler |
+
+**Conda environment:** All Python dependencies are available in the `groscore` conda environment.
 
 ## Force Fields
 
@@ -42,10 +51,9 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
-| **AMBER19SB** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
+| **AMBER19SB OPC** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
 | **AMBER19SB OPC3** (default) | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
-| **GROMOS 54A7** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
 All force fields use:
@@ -54,16 +62,32 @@ All force fields use:
 - **Heavy hydrogens**: `mass-repartition-factor = 3` for stable 4 fs timesteps
 
 **Terminal Capping Details:**
-- **AMBER19SB / AMBER19SB OPC3**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
+- **AMBER19SB**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
 - **CHARMM36**: Uses ACE (N-acetyl) caps at N-termini (explicit residues) and COOH patches at C-termini for improved stability.
-- **GROMOS 54A7 / GROMOS 54A8**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
-
-**Water Model Details:**
-- **OPC** (Optimal Point Charge, 4-point): Default for AMBER19SB
-- **OPC3** (3-point variant): Alternative for AMBER19SB
-- **SPC** and **TIP3P**: Traditional 3-point models for GROMOS and CHARMM36 respectively
+- **GROMOS 54A8**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
 
 The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`. The GROMOS 54A8 force field parameters are included in `forcefield/gromos54a8.ff/`.
+
+## Heteroatom Support
+
+### Structural Ions
+
+Metal ions (ZN, CA, MG, CU, CU1, NA, CL) are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain.
+
+### Small Molecules (AMBER19SB only)
+
+Ligands and cofactors are automatically extracted from PDB HETATM records and parametrized using the [Open Force Field](https://openforcefield.org/) (Sage 2.2.1):
+
+1. **Bond order perception**: OpenBabel reads 3D coordinates and assigns bond orders. If kekulization fails (common for fused ring systems without H), the RCSB Chemical Component Dictionary is used as fallback.
+2. **Protonation**: Assigned at physiological pH (7.4) by OpenBabel
+3. **Parametrization**: OpenFF Sage force field via Interchange → GROMACS topology
+4. **Merging**: Ligand topology and coordinates are merged into the protein system
+
+For best results with novel (non-PDB) ligands, provide input structures with explicit hydrogen coordinates.
+
+### Crystal Waters
+
+Crystal water molecules (HOH) from PDB structures are preserved and included as SOL in the simulation. They are placed at crystallographic positions before bulk solvation.
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
@@ -81,11 +105,6 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 |--------------------|-------------|
 | **Fit:** pKd = -0.0178 × GroScore + 3.4113 | Convergence |
 | <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36/TIP3P" height="290"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36/TIP3P" height="290"> |
-
-| **GROMOS 54A7/SPC** | |
-|---------------------|-------------|
-| **Fit:** pKd = -0.0151 × GroScore + 4.3045 | Convergence |
-| <img src="/benchmark/results/correlation_plot_gromos.png" alt="Correlation Plot GROMOS 54A7/SPC" height="290"> | <img src="/benchmark/results/convergence_plot_gromos.png" alt="Convergence Plot GROMOS 54A7/SPC" height="290"> |
 
 | **GROMOS 54A8/SPC** | |
 |---------------------|-------------|
@@ -184,9 +203,13 @@ Results are written to two output files ranked by binding affinity:
 ```
 Stage 0: Preparation
 ├── PDB fixing (missing atoms, non-standard residues)
+├── Ligand extraction & OpenFF parametrization (AMBER19SB)
+├── Crystal water extraction
 ├── Structure validation
-├── PDB conversion
-├── Solvation (SPC water, 0.15 M NaCl)
+├── PDB conversion (pdb2gmx)
+├── Ligand/water/ion merging into topology
+├── Ion coordination restraints (topology-level)
+├── Solvation (water + 0.15 M NaCl)
 └── Energy minimization → emin_solv.gro
 
 Initial Equilibration (for distance restraints)
@@ -219,6 +242,8 @@ groscore/
 │   ├── charmm36-jul2022.ff/  # CHARMM36 force field parameters
 │   └── gromos54a8.ff/        # GROMOS 54A8 force field parameters
 ├── settings/
+│   ├── amber19sb_opc/   # AMBER19SB/OPC parameter files
+│   ├── amber19sb_opc3/  # AMBER19SB/OPC3 parameter files
 │   ├── gromos54a8/      # GROMOS 54A8 parameter files
 │   │   ├── emin_*.mdp   # Energy minimization
 │   │   ├── nvt_*.mdp    # NVT equilibration phases
@@ -227,14 +252,19 @@ groscore/
 │   └── charmm36/        # CHARMM36 parameter files
 │       └── (same files)
 └── utils/
-    ├── renumber_pdb.py          # Assign sequential residue numbers
-    ├── fix_pdb.py               # Fix missing atoms with PDBFixer
-    ├── cap_termini.py           # Add ACE/NME terminal caps
-    ├── check_brokenloop.py      # Loop connectivity validation
-    ├── check_entangledloops.py  # Topological knot detection
-    ├── make_cutout.py           # Interface region extraction
-    ├── make_disres_en.py        # Distance restraints & elastic network
-    └── integrate.py             # Force curve integration
+    ├── renumber_pdb.py              # Assign sequential residue numbers, extract ligands/waters
+    ├── fix_pdb.py                   # Fix missing atoms with PDBFixer
+    ├── cap_termini.py               # Add ACE/NME terminal caps
+    ├── parametrize_ligand.py        # OpenFF small molecule parametrization
+    ├── merge_ligand.py              # Merge ligand topology into protein system
+    ├── merge_crystal_waters.py      # Merge crystal waters as SOL
+    ├── make_ion_restraints.py       # Ion coordination restraints
+    ├── fix_topol_intermolecular.py  # Fix topology after solvation/genion
+    ├── check_brokenloop.py          # Loop connectivity validation
+    ├── check_entangledloops.py      # Topological knot detection
+    ├── make_cutout.py               # Interface region extraction
+    ├── make_disres_en.py            # Distance restraints & elastic network
+    └── integrate.py                 # Force curve integration
 ```
 
 ## Key SMD Pulling Parameters
@@ -249,6 +279,8 @@ groscore/
 | Keep cutoff | 2.0 nm | Interface extraction radius |
 | Minimum fragment size | 5 residues | Ensures stable fragments in cutout mode |
 | Gap filling threshold | < 4 residues | Fills small gaps to avoid artificial chain breaks |
+| Ion coordination cutoff | 0.3 nm | Detection radius for ion-ligand coordination |
+| Ion coordination k | 10000 kJ·mol<sup>–1</sup>·nm<sup>–2</sup> | Harmonic restraint force constant for coordination bonds |
 
 ## Fragment Handling
 
@@ -261,7 +293,7 @@ GroScore automatically handles complex protein structures with multiple chains a
 - **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
 - **Terminal Capping** - Fragment termini are capped to provide neutral ends:
   - **AMBER19SB**: ACE/NME residues added explicitly via `cap_termini.py` before pdb2gmx
-  - **CHARMM36/GROMOS 54A7/GROMOS 54A8**: ACE residues (N-termini) added via `cap_termini.py`, COOH patches (C-termini) applied during pdb2gmx
+  - **CHARMM36/GROMOS 54A8**: ACE residues (N-termini) added via `cap_termini.py`, COOH patches (C-termini) applied during pdb2gmx
 
 This ensures proper topology generation even for structures with missing loops or multi-chain complexes, while maintaining chain boundaries and avoiding artificial chain breaks.
 
@@ -271,6 +303,8 @@ This ensures proper topology generation even for structures with missing loops o
 - `.mdp` - GROMACS molecular dynamics parameter files
 - `.gro` - GROMACS coordinate files
 - `.xvg` - GROMACS output data (force curves)
+- `.itp` - GROMACS topology include files (ligand parameters)
+- `.sdf` - Structure-data files (ligand bond orders, for debugging)
 
 ## Troubleshooting
 
@@ -281,6 +315,8 @@ This ensures proper topology generation even for structures with missing loops o
 **ENTANGLED status**: Topological knots detected. The protein structure may have threading artifacts that would invalidate pulling simulations.
 
 **Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment.
+
+**Ligand parametrization fails**: If OpenBabel kekulization fails and RCSB download is unavailable, provide input PDB with explicit hydrogen coordinates for the ligand.
 
 ## Benchmark
 
