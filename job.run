@@ -130,6 +130,8 @@ if [[ ! -f conf.gro ]]; then
   fi
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
+  # Generate ion coordination restraints (active from first energy minimization)
+  python3 ../../utils/make_ion_restraints.py -f conf.gro -m chain_map.gs
 fi
 # with restart and cutout mode, chain_map.gs references the cutout protein
 bl=0
@@ -188,6 +190,8 @@ if [[ $bl -eq 0 ]]; then
       fi
       # Merge questions come first, then terminal selections
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
+      # Generate ion coordination restraints (active from first energy minimization)
+      python3 ../../utils/make_ion_restraints.py -f conf_cutout.gro -m chain_map.gs
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
