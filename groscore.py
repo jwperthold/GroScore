@@ -12,7 +12,7 @@ parser.add_argument('-s','--structparams', type=str, default="sp.gs", required=F
 parser.add_argument('-n','--numruns', type=int, default=3, required=False, help="Number of pull/push cycles to perform (default: 3)")
 parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable interface cutout (default)")
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
-parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", choices=["gromos54a7", "gromos54a8", "charmm36", "amber19sb", "amber19sb_opc3"], help="Force field to use (default: amber19sb_opc3)")
+parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", choices=["gromos54a8", "charmm36", "amber19sb", "amber19sb_opc3"], help="Force field to use (default: amber19sb_opc3)")
 parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ directory (default: workstation)")
 parser.set_defaults(cutout=True)

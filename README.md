@@ -149,7 +149,7 @@ python ../groscore.py
 **Options:**
 - `-n, --numruns` - Number of independent pull/push cycles (default: 3)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
-- `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb`, `gromos54a7`, `gromos54a8`, or `charmm36`
+- `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb`, `gromos54a8`, or `charmm36`
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
@@ -219,7 +219,6 @@ groscore/
 │   ├── charmm36-jul2022.ff/  # CHARMM36 force field parameters
 │   └── gromos54a8.ff/        # GROMOS 54A8 force field parameters
 ├── settings/
-│   ├── gromos54a7/      # GROMOS 54A7 parameter files
 │   ├── gromos54a8/      # GROMOS 54A8 parameter files
 │   │   ├── emin_*.mdp   # Energy minimization
 │   │   ├── nvt_*.mdp    # NVT equilibration phases

@@ -68,11 +68,6 @@ elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
   FF_FLAG="-ff gromos54a8"
   WATER_MODEL="spc"
   WATER_BOX="spc216.gro"
-else
-  # gromos54a7
-  FF_FLAG="-ff gromos54a7"
-  WATER_MODEL="spc"
-  WATER_BOX="spc216.gro"
 fi
 
 # Renumber PDB to have unique sequential residue numbers across chains
@@ -89,7 +84,7 @@ if [[ ! -f conf.gro ]]; then
   elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
     PDB2GMX_INPUT="fixed_capped.pdb"
-  elif [[ "$FORCEFIELD" == "gromos54a7" || "$FORCEFIELD" == "gromos54a8" ]]; then
+  elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only --rename-ace-carbon
     PDB2GMX_INPUT="fixed_capped.pdb"
   fi
@@ -130,8 +125,6 @@ if [[ ! -f conf.gro ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
   elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
     TER_INPUT=""
-  elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
-    TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
   elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
   fi
@@ -155,7 +148,7 @@ if [[ $bl -eq 0 ]]; then
       elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs
         CUTOUT_PDB="cutout_capped.pdb"
-      elif [[ "$FORCEFIELD" == "gromos54a7" || "$FORCEFIELD" == "gromos54a8" ]]; then
+      elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
         python3 ../../utils/cap_termini.py -f cutout.pdb -o cutout_capped.pdb -m chain_map.gs --ace-only --rename-ace-carbon
         CUTOUT_PDB="cutout_capped.pdb"
       fi
@@ -190,8 +183,6 @@ if [[ $bl -eq 0 ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       elif [[ "$FORCEFIELD" == "amber19sb" || "$FORCEFIELD" == "amber19sb_opc3" ]]; then
         TER_INPUT=""
-      elif [[ "$FORCEFIELD" == "gromos54a7" ]]; then
-        TER_INPUT=$(printf '2\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       fi
