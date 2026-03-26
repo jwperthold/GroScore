@@ -52,6 +52,10 @@ if not available_ligands:
     print("No parametrized ligands found, skipping merge.")
     sys.exit(0)
 
+# Sort by resname so all instances of the same molecule type are contiguous
+# (GROMACS requires molecules in GRO to match [ molecules ] order in topology)
+available_ligands.sort(key=lambda x: x[0])
+
 # Read chain_map.gs to determine protein B residue numbers
 residues_b = set()
 with open(args.chainmap) as f:
