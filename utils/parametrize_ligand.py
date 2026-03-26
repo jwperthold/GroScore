@@ -49,6 +49,12 @@ print(f"OpenBabel: {n_atoms} atoms (with H), charge={total_charge}")
 conv.SetOutFormat("sdf")
 sdf_block = conv.WriteString(mol_ob)
 
+# Save SDF to disk for reference/debugging
+sdf_path = f"ligand_{args.resname}.sdf"
+with open(sdf_path, "w") as f:
+    f.write(sdf_block)
+print(f"Wrote {sdf_path}")
+
 # Step 2: RDKit reads SDF
 from rdkit import Chem
 
