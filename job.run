@@ -278,7 +278,9 @@ if [[ $bl -eq 0 ]]; then
   # create index file for distance restraints
   # Create a combined Protein+Ion group for PBC clustering (structural ions must cluster with protein)
   # The "Ion" group from genion counterions is harmless here - trjconv just clusters them too
-  echo -e "\"Protein\" | \"Ion\"\nq\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
+  # Create index group for PBC clustering: everything except water
+  # This includes protein, ions, ligands, and counterions (counterions filtered downstream)
+  echo -e "! \"Water\"\nq\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
 
   # Run one equilibration to generate disres (needs equilibrated structure for distances)
   
@@ -322,10 +324,10 @@ if [[ $bl -eq 0 ]]; then
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
   fi
   if [[ ! -f npt_init_cluster.gro ]]; then
-    echo -e "Protein_Ion\nProtein_Ion\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
+    echo -e "!Water\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
   fi
   if [[ ! -f npt_init_cluster.pdb ]]; then
-    echo -e "Protein_Ion\nProtein_Ion\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
+    echo -e "!Water\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
   fi
 
   # Genrate distance restraints for pull simulations based on equilibrated structure
