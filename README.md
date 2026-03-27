@@ -72,7 +72,7 @@ All force fields use:
 - **CHARMM36**: Uses ACE (N-acetyl) caps at N-termini (explicit residues) and COOH patches at C-termini for improved stability.
 - **GROMOS 54A8**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
 
-The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`. The GROMOS 54A8 force field parameters are included in `forcefield/gromos54a8.ff/`.
+The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`. The GROMOS 54A8 force field parameters (from [Oostenbrink group](https://boku.ac.at/en/nwnr/mmsi/research/force-field-development)) are included in `forcefield/gromos54a8.ff/`.
 
 ## Heteroatom Support
 
