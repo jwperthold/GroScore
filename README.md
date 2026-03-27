@@ -177,6 +177,7 @@ python ../groscore.py
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
 - `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields).
+- `--slurm` - SLURM template name from slurm/ directory (default: workstation)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 
 This will:
