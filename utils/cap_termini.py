@@ -117,11 +117,11 @@ for chain in fixer.topology.chains():
 fixer.findMissingAtoms()
 fixer.addMissingAtoms()
 
-# Brief energy minimization of cap atoms to resolve steric clashes
+# Brief OpenMM energy minimization of cap atoms to resolve steric clashes
 # PDBFixer places ACE/NME atoms from templates without checking for clashes,
 # which can result in cap hydrogens overlapping backbone atoms (e.g., ACE H1 on CA)
-# Uses a simple LJ-like repulsive potential (no force field templates needed)
 import openmm
+from openmm import app as mmapp
 
 cap_residue_names = {'ACE', 'NME', 'NHE'}
 cap_atom_indices = set()
@@ -130,45 +130,57 @@ for atom in fixer.topology.atoms():
         cap_atom_indices.add(atom.index)
 
 if cap_atom_indices:
-    n_atoms = sum(1 for _ in fixer.topology.atoms())
-    system = openmm.System()
-    for i in range(n_atoms):
-        system.addParticle(12.0 * unit.dalton)
+    # Build modeller with hydrogens for AMBER14 compatibility
+    ff_mm = mmapp.ForceField('amber14-all.xml')
+    modeller = mmapp.Modeller(fixer.topology, fixer.positions)
+    modeller.addHydrogens(ff_mm)
 
-    # Repulsive-only pairwise potential: V = epsilon * (sigma/r)^12
-    # Only between cap atoms and all other atoms
-    repulsion = openmm.CustomNonbondedForce("epsilon*(sigma/r)^12")
-    repulsion.addGlobalParameter("epsilon", 1.0 * unit.kilojoules_per_mole)
-    repulsion.addGlobalParameter("sigma", 0.15 * unit.nanometer)
-    repulsion.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
-    for i in range(n_atoms):
-        repulsion.addParticle([])
-    # Only compute interactions between cap atoms and non-cap atoms
-    cap_list = sorted(cap_atom_indices)
-    non_cap_list = sorted(set(range(n_atoms)) - cap_atom_indices)
-    repulsion.addInteractionGroup(cap_list, non_cap_list)
-    # Also between cap atoms themselves
-    repulsion.addInteractionGroup(cap_list, cap_list)
-    system.addForce(repulsion)
+    # Build mapping: fixer atom index -> modeller atom index (by residue index + atom name)
+    # Modeller.addHydrogens() inserts H atoms between existing atoms, so indices don't match
+    mm_atom_lookup = {}
+    for atom in modeller.topology.atoms():
+        key = (atom.residue.index, atom.name)
+        mm_atom_lookup[key] = atom.index
 
-    # Restrain all non-cap atoms
+    fixer_to_mm = {}
+    for atom in fixer.topology.atoms():
+        key = (atom.residue.index, atom.name)
+        if key in mm_atom_lookup:
+            fixer_to_mm[atom.index] = mm_atom_lookup[key]
+
+    # Identify cap atoms in the modeller topology
+    cap_indices_mm = set()
+    for atom in modeller.topology.atoms():
+        if atom.residue.name in cap_residue_names:
+            cap_indices_mm.add(atom.index)
+
+    system = ff_mm.createSystem(modeller.topology, nonbondedMethod=mmapp.NoCutoff,
+                                constraints=None, rigidWater=False)
+
+    # Restrain all non-cap atoms with a strong harmonic potential
     restraint = openmm.CustomExternalForce("0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)")
-    restraint.addGlobalParameter("k", 10000.0 * unit.kilojoules_per_mole / unit.nanometer**2)
+    restraint.addGlobalParameter("k", 1000.0 * unit.kilojoules_per_mole / unit.nanometer**2)
     restraint.addPerParticleParameter("x0")
     restraint.addPerParticleParameter("y0")
     restraint.addPerParticleParameter("z0")
-    positions_list = fixer.positions
-    for i in range(n_atoms):
-        if i not in cap_atom_indices:
-            pos = positions_list[i]
+    mm_positions = modeller.positions
+    for i in range(system.getNumParticles()):
+        if i not in cap_indices_mm:
+            pos = mm_positions[i]
             restraint.addParticle(i, [pos.x, pos.y, pos.z])
     system.addForce(restraint)
 
     integrator = openmm.LangevinIntegrator(300*unit.kelvin, 1/unit.picosecond, 0.002*unit.picoseconds)
     context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName('CPU'))
-    context.setPositions(fixer.positions)
-    openmm.LocalEnergyMinimizer.minimize(context, tolerance=1.0, maxIterations=500)
-    fixer.positions = context.getState(getPositions=True).getPositions()
+    context.setPositions(mm_positions)
+    openmm.LocalEnergyMinimizer.minimize(context, tolerance=10.0, maxIterations=200)
+
+    # Map minimized positions back to fixer topology using residue+name mapping
+    min_positions = context.getState(getPositions=True).getPositions()
+    new_positions = list(fixer.positions)
+    for fixer_idx, mm_idx in fixer_to_mm.items():
+        new_positions[fixer_idx] = min_positions[mm_idx]
+    fixer.positions = new_positions
 
     n_caps = len([r for r in fixer.topology.residues() if r.name in cap_residue_names])
     print(f"Minimized {n_caps} cap residue(s) to resolve steric clashes")
