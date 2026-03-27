@@ -45,11 +45,11 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 **Conda environment:**
 
-`conda create -n groscore python=3.10`
-
-`conda install numpy scipy conda-forge::openmm omnia::pdbfixer conda-forge::openbabel conda-forge::openff-toolkit`
-
-`conda activate groscore`
+```bash
+conda create -n groscore python=3.10
+conda install numpy scipy conda-forge::openmm omnia::pdbfixer conda-forge::openbabel conda-forge::openff-toolkit
+conda activate groscore
+```
 
 ## Force Fields
 
