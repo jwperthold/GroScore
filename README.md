@@ -18,14 +18,14 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 - **Automated MD Pipeline** - Complete workflow from structure preparation to final scoring
 - **SLURM Integration** - Efficient HPC execution via job arrays
-- **Structure Validation** - Built-in checks for broken loops and topological knots
-- **Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
-- **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
-- **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
+- **Multiple Force Fields** - Support for AMBER19SB (all-atom), CHARMM36 (all-atom), and GROMOS 54A8 (united-atom)
 - **Structural Ion Support** - Automatic handling of metal ions (ZN, CA, MG, CU, CU1, NA, CL) with coordination restraints
 - **Small Molecule Support** - OpenFF-based parametrization of ligands and cofactors (AMBER19SB only), with OpenBabel bond perception and RCSB template fallback
 - **Crystal Water Preservation** - Crystal waters from PDB structures are retained and included in simulations
-- **Multiple Force Fields** - Support for AMBER19SB (all-atom), GROMOS 54A8 (united-atom), and CHARMM36 (all-atom)
+- **Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
+- **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
+- **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
+- **Structure Validation** - Built-in checks for broken loops and topological knots
 
 ## Requirements
 
