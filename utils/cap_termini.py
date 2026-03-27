@@ -39,6 +39,18 @@ if args.chainmap and os.path.isfile(args.chainmap):
                 except (ValueError, IndexError):
                     pass
 
+# Read original ion_residues.gs (will be updated with new residue numbers)
+original_ion_resnums = set()
+ion_residues_path = os.path.join(os.path.dirname(args.chainmap) if args.chainmap else ".", "ion_residues.gs")
+if os.path.isfile(ion_residues_path):
+    with open(ion_residues_path, "r") as f:
+        for line in f:
+            if not line.strip().startswith("#"):
+                try:
+                    original_ion_resnums.add(int(line.strip()))
+                except (ValueError, IndexError):
+                    pass
+
 # Read original PDB to map residue numbers to chain IDs
 # We need this to determine protein A/B membership for ACE/NME caps
 # Also separate ion lines (PDBFixer cannot handle single-atom ion residues)
@@ -131,6 +143,7 @@ for chain in fixer.topology.chains():
 # We need ATOM records (not HETATM), fixed-width format, and TER records
 positions = fixer.positions
 new_b_resnums = set()
+new_ion_resnums = set()
 resnum_counter = 0
 atom_num = 0
 prev_chain_idx = None
@@ -228,6 +241,10 @@ with open(args.output, "w") as out:
             if resnum in original_b_resnums:
                 new_b_resnums.add(resnum_counter)
 
+            # Track ion residue number mapping
+            if resnum in original_ion_resnums:
+                new_ion_resnums.add(resnum_counter)
+
             if len(atomname) < 4:
                 atomname_fmt = f" {atomname:<3s}"
             else:
@@ -253,7 +270,17 @@ if args.chainmap:
         for resnum in sorted(new_b_resnums):
             f.write(f"{resnum}\n")
 
+# Update ion_residues.gs with new residue numbers
+if new_ion_resnums and os.path.isfile(ion_residues_path):
+    with open(ion_residues_path, "w") as f:
+        f.write("# Sequential residue numbers of structural ions\n")
+        f.write("# Updated by cap_termini.py\n")
+        for resnum in sorted(new_ion_resnums):
+            f.write(f"{resnum}\n")
+
 cap_type = "ACE caps (no NME)" if args.ace_only else "ACE/NME caps"
 print(f"Added {cap_type}, wrote {args.output} ({resnum_counter} residues, {atom_num} atoms)")
 if args.chainmap:
     print(f"Updated {args.chainmap} with {len(new_b_resnums)} residues for protein B")
+if new_ion_resnums:
+    print(f"Updated {ion_residues_path} with {len(new_ion_resnums)} ion(s)")
