@@ -117,6 +117,64 @@ for chain in fixer.topology.chains():
 fixer.findMissingAtoms()
 fixer.addMissingAtoms()
 
+# Brief energy minimization of cap atoms to resolve steric clashes
+# PDBFixer places ACE/NME atoms from templates without checking for clashes,
+# which can result in cap hydrogens overlapping backbone atoms (e.g., ACE H1 on CA)
+import openmm
+from openmm import app as mmapp
+
+cap_residue_names = {'ACE', 'NME', 'NHE'}
+cap_atom_indices = set()
+for atom in fixer.topology.atoms():
+    if atom.residue.name in cap_residue_names:
+        cap_atom_indices.add(atom.index)
+
+if cap_atom_indices:
+    ff_mm = mmapp.ForceField('amber14-all.xml')
+    modeller = mmapp.Modeller(fixer.topology, fixer.positions)
+    modeller.addHydrogens(ff_mm)
+
+    # Identify cap atoms in the modeller topology (after H addition)
+    cap_indices_mm = set()
+    for atom in modeller.topology.atoms():
+        if atom.residue.name in cap_residue_names:
+            cap_indices_mm.add(atom.index)
+
+    system = ff_mm.createSystem(modeller.topology, nonbondedMethod=mmapp.NoCutoff,
+                                constraints=None, rigidWater=False)
+
+    # Restrain all non-cap atoms with a strong harmonic potential
+    restraint = openmm.CustomExternalForce("0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)")
+    restraint.addGlobalParameter("k", 1000.0 * unit.kilojoules_per_mole / unit.nanometer**2)
+    restraint.addPerParticleParameter("x0")
+    restraint.addPerParticleParameter("y0")
+    restraint.addPerParticleParameter("z0")
+    mm_positions = modeller.positions
+    for i in range(system.getNumParticles()):
+        if i not in cap_indices_mm:
+            pos = mm_positions[i]
+            restraint.addParticle(i, [pos.x, pos.y, pos.z])
+    system.addForce(restraint)
+
+    integrator = openmm.LangevinIntegrator(300*unit.kelvin, 1/unit.picosecond, 0.002*unit.picoseconds)
+    context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName('CPU'))
+    context.setPositions(mm_positions)
+    openmm.LocalEnergyMinimizer.minimize(context, tolerance=10.0, maxIterations=200)
+
+    # Map minimized positions back to fixer topology (drop extra H added by Modeller)
+    min_positions = context.getState(getPositions=True).getPositions()
+    # Build atom name map from modeller back to fixer
+    fixer_atoms = list(fixer.topology.atoms())
+    mm_atoms = list(modeller.topology.atoms())
+    # The first len(fixer_atoms) atoms in modeller correspond to fixer atoms (Modeller appends H)
+    new_positions = []
+    for i in range(len(fixer_atoms)):
+        new_positions.append(min_positions[i])
+    fixer.positions = new_positions
+
+    n_caps = len([r for r in fixer.topology.residues() if r.name in cap_residue_names])
+    print(f"Minimized {n_caps} cap residue(s) to resolve steric clashes")
+
 # Build mapping: for each PDBFixer chain, determine if it belongs to protein B
 # All original residues in a PDBFixer chain share the same protein membership
 # (TER records create separate chains, and chains don't mix proteins)
