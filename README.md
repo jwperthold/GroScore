@@ -57,8 +57,8 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
-| **AMBER19SB OPC** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
 | **AMBER19SB OPC3** (default) | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
+| **AMBER19SB OPC** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
 | **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
