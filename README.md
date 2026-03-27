@@ -43,7 +43,10 @@ GroScore estimates binding affinities between protein pairs using short steered 
 | GROMACS | 2026.0 | Molecular dynamics engine |
 | SLURM | 23.11 | HPC job scheduler |
 
-**Conda environment:** All Python dependencies are available in the `groscore` conda environment.
+**Conda environment:**
+`conda create -n groscore python=3.10`
+`conda install numpy scipy conda-forge::openmm omnia::pdbfixer conda-forge::openbabel conda-forge::openff-toolkit`
+`conda activate groscore`
 
 ## Force Fields
 
