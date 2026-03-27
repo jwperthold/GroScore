@@ -14,8 +14,9 @@ parser.add_argument('--cutout', dest='cutout', action='store_true', help="Enable
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"], help="Force field to use (default: amber19sb_opc3)")
 parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
+parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Disable small molecule parametrization with OpenFF (AMBER forcefields)")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ directory (default: workstation)")
-parser.set_defaults(cutout=True)
+parser.set_defaults(cutout=True, ligand_param=True)
 args=parser.parse_args()
 
 #------------------------------------------------------
@@ -326,7 +327,8 @@ while j <= args.numruns*2:
           f = open("./%s/run.gs"%structids[i], "w")
           cutout_flag = 1 if args.cutout else 0
           # MAXRUNS = numruns * 2 because each cycle has one pull (odd) and one push (even)
-          f.write("%s %d %d %s\n"%(structchains[i],args.numruns*2,cutout_flag,args.forcefield))
+          ligand_param_flag = 1 if args.ligand_param else 0
+          f.write("%s %d %d %s %d\n"%(structchains[i],args.numruns*2,cutout_flag,args.forcefield,ligand_param_flag))
           f.close()
         # Copy job.run to structure directory and make executable
         job_run_dst = "./%s/job.run"%structids[i]
