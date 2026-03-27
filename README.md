@@ -176,8 +176,8 @@ python ../groscore.py
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
-- `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 - `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields).
+- `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
