@@ -84,7 +84,7 @@ Metal ions (ZN, CA, MG, CU, CU1, NA, CL) are automatically detected from PDB HET
 
 Ligands and cofactors are automatically extracted from PDB HETATM records and parametrized using the [Open Force Field](https://openforcefield.org/) (Sage 2.2.1):
 
-1. **Bond order perception**: OpenBabel reads 3D coordinates and assigns bond orders. If kekulization fails (common for fused ring systems without H), the RCSB Chemical Component Dictionary is used as fallback.
+1. **Bond order perception**: OpenBabel reads 3D coordinates and assigns bond orders. If kekulization fails (common for fused ring systems without explicit H), the RCSB Chemical Component Dictionary is used as fallback.
 2. **Protonation**: Assigned at physiological pH (7.4) by OpenBabel
 3. **Parametrization**: OpenFF Sage force field via Interchange → GROMACS topology
 4. **Merging**: Ligand topology and coordinates are merged into the protein system
