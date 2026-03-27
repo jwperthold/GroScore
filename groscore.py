@@ -437,24 +437,35 @@ while j <= args.numruns*2:
         fren.sort(key=lambda x: (math.isnan(x[1]), x[1]))
         frencgi.sort(key=lambda x: (math.isnan(x[1]), x[1]))
 
-        # Write scores for this cycle threshold
+        # Write scores for this cycle threshold (all structures, nan for missing)
+        avg_c = {s: (sc, ci, nc) for s, sc, ci, nc in fren}
+        cgi_c = {s: (sc, ci, nc) for s, sc, ci, nc in frencgi}
+
         with open("scores_avg_c%d.gs"%cycle_threshold, "w") as f:
-          f.write("# Scores using first %d cycle%s (structures with >=%d cycles)\n"%(cycle_threshold, "s" if cycle_threshold > 1 else "", cycle_threshold))
+          f.write("# Scores using first %d cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
           f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-          for struct_id, score, ci95, num_cycles in fren:
-            if not np.isnan(score):
-              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
+          for struct_id in structids:
+            if struct_id in avg_c:
+              score, ci95, nc = avg_c[struct_id]
+              if not np.isnan(score):
+                f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
+              else:
+                f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
             else:
-              f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
+              f.write("%s\tnan\tnan\t0\n"%struct_id)
 
         with open("scores_cgi_c%d.gs"%cycle_threshold, "w") as f:
-          f.write("# Scores using first %d cycle%s (structures with >=%d cycles)\n"%(cycle_threshold, "s" if cycle_threshold > 1 else "", cycle_threshold))
+          f.write("# Scores using first %d cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
           f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-          for struct_id, score, ci95, num_cycles in frencgi:
-            if not np.isnan(score):
-              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
+          for struct_id in structids:
+            if struct_id in cgi_c:
+              score, ci95, nc = cgi_c[struct_id]
+              if not np.isnan(score):
+                f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
+              else:
+                f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
             else:
-              f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
+              f.write("%s\tnan\tnan\t0\n"%struct_id)
 
       # Update main score files (all structures using their maximum available data)
       # Include all structures with at least 1 complete cycle, each using all its available data
@@ -462,23 +473,36 @@ while j <= args.numruns*2:
       fren_max.sort(key=lambda x: (math.isnan(x[1]), x[1]))
       frencgi_max.sort(key=lambda x: (math.isnan(x[1]), x[1]))
 
+      # Build lookup dicts for scores (keyed by struct_id)
+      avg_scores = {s: (sc, ci, nc) for s, sc, ci, nc in fren_max}
+      cgi_scores = {s: (sc, ci, nc) for s, sc, ci, nc in frencgi_max}
+
+      # Write all structures (matching sp.gs order), nan for missing data
       with open("scores_avg.gs", "w") as f:
         f.write("# Scores for all structures (each using maximum available data)\n")
         f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-        for struct_id, score, ci95, num_cycles in fren_max:
-          if not np.isnan(score):
-            f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
+        for struct_id in structids:
+          if struct_id in avg_scores:
+            score, ci95, nc = avg_scores[struct_id]
+            if not np.isnan(score):
+              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
+            else:
+              f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
           else:
-            f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
+            f.write("%s\tnan\tnan\t0\n"%struct_id)
 
       with open("scores_cgi.gs", "w") as f:
         f.write("# Scores for all structures (each using maximum available data)\n")
         f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-        for struct_id, score, ci95, num_cycles in frencgi_max:
-          if not np.isnan(score):
-            f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, num_cycles))
+        for struct_id in structids:
+          if struct_id in cgi_scores:
+            score, ci95, nc = cgi_scores[struct_id]
+            if not np.isnan(score):
+              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
+            else:
+              f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
           else:
-            f.write("%s\tnan\tnan\t%d\n"%(struct_id, num_cycles))
+            f.write("%s\tnan\tnan\t0\n"%struct_id)
 
       print("Done!")
 
