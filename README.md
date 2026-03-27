@@ -89,7 +89,7 @@ Ligands and cofactors are automatically extracted from PDB HETATM records and pa
 3. **Parametrization**: OpenFF Sage force field via Interchange → GROMACS topology
 4. **Merging**: Ligand topology and coordinates are merged into the protein system
 
-For best results with novel (non-PDB) ligands, provide input structures with explicit hydrogen coordinates.
+For best results with novel (non-PDB) ligands, provide input structures with explicit hydrogen coordinates. To skip ligand parametrization entirely (e.g., for protein-only systems), use `--no-ligand-param`.
 
 ### Crystal Waters
 
@@ -178,6 +178,7 @@ python ../groscore.py
 - `--cutout` - Extract interface region only (default, faster)
 - `--no-cutout` - Use full protein structure (slower)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
+- `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields). Use when ligands are already parametrized or not present
 
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
