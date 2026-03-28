@@ -346,7 +346,7 @@ while j <= args.numruns*2:
         sys.stdout.write("Gunzipping. ")
         sys.stdout.flush()
         os.system("gunzip -f ./%s.tar.gz"%structids[i])
-        sys.stdout.write("Injecting. ")
+        sys.stdout.write("Injecting job.run. ")
         sys.stdout.flush()
         os.system("tar -rf ./%s.tar ./%s/job.run"%(structids[i], structids[i]))
         sys.stdout.write("Gzipping. ")
