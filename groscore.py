@@ -300,9 +300,10 @@ j = 0
 while j <= args.numruns*2:
   # setup simulations
   if j == 0 and (args.restart or not os.path.isfile("results_%.0f.gs"%j)):
-    f = open("results_%.0f.gs"%j, "a")
-    f.write("# Results for simulation fitness:\n")
-    f.close()
+    if not os.path.isfile("results_%.0f.gs"%j):
+      f = open("results_%.0f.gs"%j, "a")
+      f.write("# Results for simulation fitness:\n")
+      f.close()
     # Write structure ID mapping file for job.run
     f = open("struct_map.gs", "w")
     f.write("# Array_Index Structure_ID\n")
