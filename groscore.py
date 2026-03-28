@@ -275,7 +275,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
 print("")
 print("#################################")
 print("#                               #")
-print("#         GroScore 0.97         #")
+print("#         GroScore 0.98         #")
 print("#                               #")
 print("#################################")
 print("")
@@ -338,20 +338,22 @@ while j <= args.numruns*2:
         sys.stdout.write("Setting up %s.tar.gz. "%structids[i])
         sys.stdout.flush()
         # Archived structure: inject fresh job.run into archive
-        # Extraction handled by SLURM job at runtime
+        # Uses Python tarfile to stream gz→gz without full decompression on disk
+        import tarfile
         tmpdir = "./%s"%structids[i]
         os.makedirs(tmpdir, exist_ok=True)
         shutil.copy(job_run_src, os.path.join(tmpdir, "job.run"))
         os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
-        sys.stdout.write("Gunzipping. ")
-        sys.stdout.flush()
-        os.system("gunzip -f ./%s.tar.gz"%structids[i])
-        sys.stdout.write("Injecting job.run. ")
-        sys.stdout.flush()
-        os.system("tar -rf ./%s.tar ./%s/job.run"%(structids[i], structids[i]))
-        sys.stdout.write("Gzipping. ")
-        sys.stdout.flush()
-        os.system("gzip -f ./%s.tar"%structids[i])
+        archive_path = "./%s.tar.gz"%structids[i]
+        new_archive_path = "./%s_new.tar.gz"%structids[i]
+        with tarfile.open(archive_path, "r:gz") as old_tar:
+          with tarfile.open(new_archive_path, "w:gz") as new_tar:
+            for member in old_tar:
+              if member.name.endswith("/job.run"):
+                continue  # skip old job.run
+              new_tar.addfile(member, old_tar.extractfile(member) if member.isreg() else None)
+            new_tar.add(os.path.join(tmpdir, "job.run"), arcname="./%s/job.run"%structids[i])
+        os.replace(new_archive_path, archive_path)
         print("Done.")
         shutil.rmtree(tmpdir)
       else:
