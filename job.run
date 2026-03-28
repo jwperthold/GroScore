@@ -144,8 +144,6 @@ if [[ ! -f conf.gro ]]; then
       python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME" -c "$CHAIN"
     done
   fi
-  # Generate ion coordination restraints (active from first energy minimization)
-  python3 ../../utils/make_ion_restraints.py -f conf.gro -m chain_map.gs
 fi
 # with restart and cutout mode, chain_map.gs references the cutout protein
 bl=0
