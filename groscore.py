@@ -15,6 +15,7 @@ parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Di
 parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Disable small molecule parametrization with OpenFF (AMBER forcefields)")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ directory (default: workstation)")
 parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
+parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job.run into archived (.tar.gz) structures")
 parser.set_defaults(cutout=True, ligand_param=True)
 args=parser.parse_args()
 
@@ -335,27 +336,30 @@ while j <= args.numruns*2:
         shutil.copy(job_run_src, job_run_dst)
         os.chmod(job_run_dst, 0o755)
       elif os.path.isfile("./%s.tar.gz"%structids[i]):
-        sys.stdout.write("Setting up %s.tar.gz. "%structids[i])
-        sys.stdout.flush()
-        # Archived structure: inject fresh job.run into archive
-        # Uses Python tarfile to stream gz→gz without full decompression on disk
-        import tarfile
-        tmpdir = "./%s"%structids[i]
-        os.makedirs(tmpdir, exist_ok=True)
-        shutil.copy(job_run_src, os.path.join(tmpdir, "job.run"))
-        os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
-        archive_path = "./%s.tar.gz"%structids[i]
-        new_archive_path = "./%s_new.tar.gz"%structids[i]
-        with tarfile.open(archive_path, "r:gz") as old_tar:
-          with tarfile.open(new_archive_path, "w:gz") as new_tar:
-            for member in old_tar:
-              if member.name.endswith("/job.run"):
-                continue  # skip old job.run
-              new_tar.addfile(member, old_tar.extractfile(member) if member.isreg() else None)
-            new_tar.add(os.path.join(tmpdir, "job.run"), arcname="./%s/job.run"%structids[i])
-        os.replace(new_archive_path, archive_path)
-        print("Done.")
-        shutil.rmtree(tmpdir)
+        if args.inject_job_run:
+          sys.stdout.write("Setting up %s.tar.gz. "%structids[i])
+          sys.stdout.flush()
+          # Archived structure: inject fresh job.run into archive
+          # Uses Python tarfile to stream gz→gz without full decompression on disk
+          import tarfile
+          tmpdir = "./%s"%structids[i]
+          os.makedirs(tmpdir, exist_ok=True)
+          shutil.copy(job_run_src, os.path.join(tmpdir, "job.run"))
+          os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
+          archive_path = "./%s.tar.gz"%structids[i]
+          new_archive_path = "./%s_new.tar.gz"%structids[i]
+          with tarfile.open(archive_path, "r:gz") as old_tar:
+            with tarfile.open(new_archive_path, "w:gz") as new_tar:
+              for member in old_tar:
+                if member.name.endswith("/job.run"):
+                  continue  # skip old job.run
+                new_tar.addfile(member, old_tar.extractfile(member) if member.isreg() else None)
+              new_tar.add(os.path.join(tmpdir, "job.run"), arcname="./%s/job.run"%structids[i])
+          os.replace(new_archive_path, archive_path)
+          print("Done.")
+          shutil.rmtree(tmpdir)
+        else:
+          print("Skipping %s.tar.gz (archived, use --inject-job-run to update)."%structids[i])
       else:
         print("Structure %s: directory doesn't exist."%structids[i])
         f = open("results_0.gs", "a")

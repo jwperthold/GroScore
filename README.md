@@ -179,6 +179,7 @@ python ../groscore.py
 - `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields).
 - `--slurm` - SLURM template name from slurm/ directory (default: workstation)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
+- `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures (skipped by default)
 
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
