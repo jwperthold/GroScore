@@ -16,3 +16,4 @@ benchmark_gromos/
 benchmark_gromos_54a8/
 benchmark_ppb/*/
 !benchmark_ppb/setup_benchmark.py
+bm_*/
