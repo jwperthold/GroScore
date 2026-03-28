@@ -147,8 +147,12 @@ with open('scores_avg.gs', 'r') as f:
         parts = line.strip().split()
         if len(parts) >= 2:
             structure_id = parts[0]
-            score = float(parts[1])
-            scores[structure_id] = score
+            try:
+                score = float(parts[1])
+                if not np.isnan(score):
+                    scores[structure_id] = score
+            except ValueError:
+                pass
 
 # Read experimental data
 df = pd.read_csv('benchmark.csv')

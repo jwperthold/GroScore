@@ -188,8 +188,12 @@ for cycle_file in cycle_files:
             parts = line.strip().split()
             if len(parts) >= 2:
                 structure_id = parts[0]
-                score = float(parts[1])
-                scores[structure_id] = score
+                try:
+                    score = float(parts[1])
+                    if not np.isnan(score):
+                        scores[structure_id] = score
+                except ValueError:
+                    pass
 
     # Match structures and collect data
     groscore_values = []
