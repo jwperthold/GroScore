@@ -80,6 +80,41 @@ try:
             print(f"Keeping {len(skipped)} NCAA residue(s): {', '.join(r.name for r, _ in skipped)}")
         fixer.nonstandardResidues = kept
     fixer.replaceNonstandardResidues()
+    # Check for NCAAs that PDBFixer couldn't replace (not in its dictionary)
+    # Rename them to parent residue so pdb2gmx can process them
+    if not ncaa_keep:
+        unreplaced = set()
+        STANDARD_3 = {'ALA','ARG','ASN','ASP','CYS','GLN','GLU','GLY','HIS','ILE',
+                       'LEU','LYS','MET','PHE','PRO','SER','THR','TRP','TYR','VAL'}
+        for res in fixer.topology.residues():
+            if res.name not in STANDARD_3 and res.name not in ION_RESIDUES and res.name not in {'ACE','NME','NHE','HOH'}:
+                # Check if it has backbone atoms (modified AA vs ligand)
+                atom_names = {a.name for a in res.atoms}
+                if {'N','CA','C','O'} <= atom_names:
+                    unreplaced.add(res.name)
+        if unreplaced:
+            # Try to get parent from RCSB CCD
+            import urllib.request
+            for resname in unreplaced:
+                parent = None
+                try:
+                    url = f"https://files.rcsb.org/ligands/download/{resname}.cif"
+                    cif_data = urllib.request.urlopen(url, timeout=10).read().decode()
+                    for line in cif_data.split('\n'):
+                        if '_chem_comp.mon_nstd_parent_comp_id' in line:
+                            parts = line.strip().split()
+                            if len(parts) >= 2 and parts[1] != '?':
+                                parent = parts[1]
+                                break
+                except Exception:
+                    pass
+                if parent and parent in STANDARD_3:
+                    for res in fixer.topology.residues():
+                        if res.name == resname:
+                            res.name = parent
+                    print(f"Replaced unreplaced NCAA {resname} → {parent} (from RCSB CCD)")
+                else:
+                    print(f"Warning: could not determine parent for {resname}, keeping as-is")
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
 
