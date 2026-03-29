@@ -134,7 +134,12 @@ with open(args.file, 'w') as f:
                 resnum = int(line[22:26])
                 if resnum in rename_map:
                     new_name = rename_map[resnum]
-                    line = line[:17] + f'{new_name:>3s}' + line[20:]
+                    # PDB columns 18-20 (0-indexed 17-19) = 3-char residue name
+                    # Some FFs use 4-char names (HISA, HISB, CYSH) which need column 17 too
+                    if len(new_name) <= 3:
+                        line = line[:17] + f'{new_name:>3s}' + line[20:]
+                    else:
+                        line = line[:17] + f'{new_name:>4s}' + line[21:]
             except (ValueError, IndexError):
                 pass
         f.write(line)
