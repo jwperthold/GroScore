@@ -29,7 +29,7 @@ FF_NAMES = {
         'his_ne_prot': 'HSE',   # Nε protonated
     },
     'gromos54a8': {
-        'cys_deprot': 'CYS',    # GROMOS: CYS = deprotonated, CYSH = protonated
+        'cys_deprot': 'CYS1',   # GROMOS: CYS1 = deprotonated (CYS in r2b maps to CYSH)
         'his_nd_prot': 'HISA',  # Nδ protonated
         'his_ne_prot': 'HISB',  # Nε protonated
     },
@@ -37,7 +37,7 @@ FF_NAMES = {
 
 # All HIS variant names across force fields
 ALL_HIS = {'HIS', 'HIE', 'HID', 'HIP', 'HSD', 'HSE', 'HSP', 'HISA', 'HISB', 'HISH', 'HISD', 'HISE', 'HISP'}
-ALL_CYS = {'CYS', 'CYSH', 'CYM', 'CYX'}
+ALL_CYS = {'CYS', 'CYSH', 'CYM', 'CYX', 'CYS1', 'CYS2'}
 
 parser = argparse.ArgumentParser(description="Fix protonation states for ion-coordinating residues.")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file (modified in-place)")
