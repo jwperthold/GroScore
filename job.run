@@ -133,7 +133,7 @@ if [[ ! -f conf.gro ]]; then
         echo "Created local amber19sb.ff for SD ion entry"
       fi
       if ! grep -q '^\[ SD \]' amber19sb.ff/aminoacids.rtp 2>/dev/null; then
-        printf '\n[ SD ]\n; Sulfide ion (from FeS cluster, charge -1.0 for oxidized state)\n [ atoms ]\n  SD     S     -1.000000    1\n [ bonds ]\n\n' >> amber19sb.ff/aminoacids.rtp
+        printf '\n[ SD ]\n; Sulfide ion (from FeS cluster, charge -1.0 for oxidized state)\n [ atoms ]\n  S      S     -1.000000    1\n [ bonds ]\n\n' >> amber19sb.ff/aminoacids.rtp
         echo "Added SD ion entry to local amber19sb.ff"
       fi
       if [[ -n "${GMXLIB:-}" ]]; then
