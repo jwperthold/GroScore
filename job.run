@@ -191,10 +191,14 @@ if [[ ! -f conf.gro ]]; then
   # Each instance gets a unique molecule name via running counter (-i)
   if [[ $LIGAND_PARAM -eq 1 && ("$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3") ]]; then
     LIGAND_INSTANCE=0
-    for ligpdb in ligand_*_?.pdb; do
+    for ligpdb in ligand_*.pdb; do
       [ -f "$ligpdb" ] || continue
-      RESNAME=$(echo "$ligpdb" | sed 's/ligand_\(.*\)_.\..*/\1/')
-      CHAIN=$(echo "$ligpdb" | sed 's/ligand_.*_\(.\)\..*/\1/')
+      # Parse resname and chain from filename:
+      #   ligand_{RESNAME}_{CHAIN}.pdb        (single instance)
+      #   ligand_{RESNAME}_{CHAIN}_{RESNUM}.pdb (multiple instances)
+      SUFFIX=$(basename "$ligpdb" .pdb | sed 's/^ligand_//')
+      RESNAME=$(echo "$SUFFIX" | sed 's/_[A-Z]$//;s/_[A-Z]_[0-9]*$//')
+      CHAIN=$(echo "$SUFFIX" | sed 's/.*_\(.\)$/\1/;s/.*_\(.\)_[0-9]*$/\1/')
       python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME" -c "$CHAIN" -i $LIGAND_INSTANCE
       LIGAND_INSTANCE=$((LIGAND_INSTANCE + 1))
     done

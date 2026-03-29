@@ -272,7 +272,8 @@ if num_ions > 0:
 
 # Third pass: extract ligands and crystal waters from HETATM records
 # These are handled separately from the protein pipeline
-ligand_lines = {}   # (resname, chain) -> [lines]
+# Key by (resname, chain, resnum) to keep separate instances apart
+ligand_lines = {}   # (resname, chain, resnum) -> [lines]
 water_lines = []
 with open(args.pdbfile, "r") as f:
     for line in f:
@@ -286,15 +287,27 @@ with open(args.pdbfile, "r") as f:
                 if resname == "HOH":
                     water_lines.append(line)
             elif resname not in STANDARD_RESIDUES:
-                key = (resname, chain_id)
+                try:
+                    resnum = int(line[22:26].strip())
+                except (ValueError, IndexError):
+                    resnum = 0
+                key = (resname, chain_id, resnum)
                 if key not in ligand_lines:
                     ligand_lines[key] = []
                 ligand_lines[key].append(line)
 
-# Write ligand PDB files
+# Write ligand PDB files — each unique (resname, chain, resnum) is a separate instance
+# Filename: ligand_{resname}_{chain}.pdb for single instance,
+#           ligand_{resname}_{chain}_{resnum}.pdb when multiple instances on same chain
 ligand_info = []
-for (resname, chain_id), lines in ligand_lines.items():
-    lig_pdb = f"ligand_{resname}_{chain_id}.pdb"
+# Count instances per (resname, chain) to decide filename format
+from collections import Counter
+instance_counts = Counter((rn, ch) for rn, ch, _ in ligand_lines.keys())
+for (resname, chain_id, resnum), lines in ligand_lines.items():
+    if instance_counts[(resname, chain_id)] > 1:
+        lig_pdb = f"ligand_{resname}_{chain_id}_{resnum}.pdb"
+    else:
+        lig_pdb = f"ligand_{resname}_{chain_id}.pdb"
     with open(lig_pdb, "w") as f:
         for line in lines:
             f.write(line)
