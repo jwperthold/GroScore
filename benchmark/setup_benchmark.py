@@ -33,11 +33,23 @@ with open('sp.gs', 'w') as sp:
         input_pdb = f"{pdb_id}/input.pdb"
 
         if os.path.exists(input_pdb):
-            print(f"{pdb_id}: input.pdb already exists, skipping download")
-            # Convert "AB" to "A,B" for multi-character chain specifications
-            chain_id_2_formatted = ','.join(chain_id_2)
-            sp.write(f"{pdb_id}\t{chain_id_2_formatted}\n")
-            continue
+            # Validate chain IDs against existing PDB
+            pdb_chains_existing = set()
+            with open(input_pdb) as pf:
+                for line in pf:
+                    if line.startswith('ATOM') and len(line) > 21:
+                        pdb_chains_existing.add(line[21])
+            chains_needed = set(chain_id_1) | set(chain_id_2)
+            if chains_needed <= pdb_chains_existing:
+                chain_id_2_formatted = ','.join(chain_id_2)
+                sp.write(f"{pdb_id}\t{chain_id_2_formatted}\n")
+                continue
+            else:
+                # Chain IDs don't match — re-download and remap
+                print(f"{pdb_id}: chain mismatch (need {chains_needed}, have {pdb_chains_existing}), re-downloading")
+                import shutil
+                shutil.rmtree(pdb_id, ignore_errors=True)
+                os.makedirs(pdb_id)
 
         # Download mmCIF from RCSB (has both auth and label chain IDs)
         cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
@@ -116,8 +128,6 @@ with open('sp.gs', 'w') as sp:
             fields = rec.split()
             if len(fields) <= max(auth_chain_col, comp_col, seq_col):
                 continue
-            if group_col is not None and fields[group_col] != 'ATOM':
-                continue
             if model_col is not None and fields[model_col] != '1':
                 continue
             auth_ch = fields[auth_chain_col]
@@ -125,6 +135,9 @@ with open('sp.gs', 'w') as sp:
             if atom_name != 'CA':
                 continue
             comp = fields[comp_col].strip('"')
+            # Skip water/ions (no CA atoms anyway, but be safe)
+            if comp in ('HOH', 'WAT', 'DOD'):
+                continue
             seq_id = fields[seq_col]
             key = (auth_ch, seq_id)
             if key != prev_key.get(auth_ch):
@@ -180,56 +193,56 @@ with open('sp.gs', 'w') as sp:
             matched_pdb_chains = set(remap.values())
 
             # Identify which PDB chains belong to protein 2 (protein B)
-            # The remap maps CSV chain letters → PDB auth chain IDs
-            # chain_id_2 from CSV tells us which chains are protein B
+            # Strategy 1: chain_id_2 letters directly match remap keys
             protein_b_pdb_chains = set()
             for ch in set(chain_id_2):
                 if ch in remap:
                     protein_b_pdb_chains.add(remap[ch])
 
-            # If chain_id_2 letters didn't map, the CSV chain_id_2 uses wrong IDs.
-            # Match the protein_2 description to PDB chains by sequence.
+            # Strategy 2: chain_id_2 letters have sequences in chain_X columns
             if not protein_b_pdb_chains:
-                # Try: find the chain_id_2 sequences in chain_X columns
-                protein_2_seq = None
                 for ch in set(chain_id_2):
                     col = f"chain_{ch}"
                     if col in row and row[col].strip():
-                        protein_2_seq = row[col].strip()
-                        break
+                        probe = row[col].strip()[:20]
+                        for pdb_ch, pdb_seq in pdb_chain_seqs.items():
+                            if pdb_ch in matched_pdb_chains and probe in pdb_seq:
+                                protein_b_pdb_chains.add(pdb_ch)
 
-                if protein_2_seq:
-                    probe = protein_2_seq[:20]
-                    for pdb_ch, pdb_seq in pdb_chain_seqs.items():
-                        if pdb_ch in matched_pdb_chains and probe in pdb_seq:
-                            protein_b_pdb_chains.add(pdb_ch)
-                            break
-
-            # Still nothing: use chain_id_1 to exclude — what's left is protein B
+            # Strategy 3: chain_id_1 letters exclude some remap keys
             if not protein_b_pdb_chains:
-                candidates = set()
-                for ref_ch, pdb_ch in remap.items():
-                    if ref_ch not in set(chain_id_1):
-                        candidates.add(pdb_ch)
-                # If exclusion gives all matched chains, chain_id_1 letters are also wrong
-                # Fall back to: the protein with fewer chains is protein B
-                if candidates and candidates != matched_pdb_chains:
-                    protein_b_pdb_chains = candidates
-                elif len(matched_pdb_chains) >= 2:
-                    # Count chains per protein from chain_id_1/2 field lengths
-                    n_chains_2 = len(set(chain_id_2))
-                    # Assign the n_chains_2 smallest chains as protein B
-                    chain_sizes = sorted([(ch, len(pdb_chain_seqs.get(ch, ''))) for ch in matched_pdb_chains], key=lambda x: x[1])
-                    protein_b_pdb_chains = {ch for ch, _ in chain_sizes[:n_chains_2]}
-                    print(f"Assigning protein B = {protein_b_pdb_chains} (smallest {n_chains_2} chain(s))", end=" ")
+                protein_a_pdb_chains = set()
+                for ch in set(chain_id_1):
+                    if ch in remap:
+                        protein_a_pdb_chains.add(remap[ch])
+                    else:
+                        col = f"chain_{ch}"
+                        if col in row and row[col].strip():
+                            probe = row[col].strip()[:20]
+                            for pdb_ch, pdb_seq in pdb_chain_seqs.items():
+                                if pdb_ch in matched_pdb_chains and probe in pdb_seq:
+                                    protein_a_pdb_chains.add(pdb_ch)
+                protein_b_pdb_chains = matched_pdb_chains - protein_a_pdb_chains
+
+            # Strategy 4: partition by chain count from chain_id_1/2
+            # The number of letters in chain_id_1 and chain_id_2 indicates the
+            # expected number of chains per protein. Use the remap order to split.
+            if not protein_b_pdb_chains or protein_b_pdb_chains == matched_pdb_chains:
+                n_chains_1 = len(set(chain_id_1))
+                n_chains_2 = len(set(chain_id_2))
+                # The remap was built by matching sequences longest-first.
+                # The chain_X columns with sequences ARE the correct auth chain IDs.
+                # Split them: first n_chains_1 matched → protein A, rest → protein B
+                matched_list = list(remap.values())
+                if len(matched_list) == n_chains_1 + n_chains_2:
+                    protein_b_pdb_chains = set(matched_list[n_chains_1:])
+                elif len(matched_list) > n_chains_2:
+                    # Take the last n_chains_2 matched chains as protein B
+                    protein_b_pdb_chains = set(matched_list[-n_chains_2:])
 
             if not protein_b_pdb_chains:
-                # Last resort: smaller chain = protein B
-                chain_sizes = [(ch, len(seq)) for ch, seq in pdb_chain_seqs.items() if ch in matched_pdb_chains]
-                if len(chain_sizes) >= 2:
-                    chain_sizes.sort(key=lambda x: x[1])
-                    protein_b_pdb_chains = {chain_sizes[0][0]}
-                    print(f"Guessing protein B = {protein_b_pdb_chains} (smaller chain)", end=" ")
+                print(f"FAILED: Could not determine protein B chains for {pdb_id}")
+                continue
 
             chains_to_keep = matched_pdb_chains
             actual_chain_id_2 = ''.join(sorted(protein_b_pdb_chains))
