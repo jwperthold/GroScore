@@ -185,57 +185,36 @@ with open('sp.gs', 'w') as sp:
         missing = chains_to_keep - pdb_chains
 
         if missing:
-            # Some chains not found — likely lowercase SAbDab chains or wrong IDs
-            # Try: keep only chains that exist in PDB
-            existing = chains_to_keep & pdb_chains
-            missing_b = actual_b_chains - pdb_chains
-            missing_a = (set(info['ligand_chains']) - pdb_chains)
+            # Only lowercase chains (SAbDab antibody light chain convention) may be dropped
+            # Uppercase chains missing from PDB is a data error — fail loudly
+            missing_uppercase = {c for c in missing if c.isupper()}
+            missing_lowercase = {c for c in missing if c.islower()}
 
-            if existing and not missing_b:
-                # Protein B chains exist, some protein A chains missing (lowercase light chains)
-                chains_to_keep = existing
-            elif existing and not missing_a:
-                # Protein A chains exist, some protein B chains missing
-                chains_to_keep = existing
-                actual_b_chains = actual_b_chains & pdb_chains
-            elif existing:
-                chains_to_keep = existing
-                actual_b_chains = actual_b_chains & pdb_chains
-            else:
-                # No chains match — try sequence matching
-                # Build PDB sequences
-                pdb_seqs = {}
-                prev_key = {}
-                for rec in atom_records:
-                    fields = rec.split()
-                    if len(fields) <= max(auth_chain_col, comp_col or 0, seq_col or 0):
-                        continue
-                    if model_col is not None and fields[model_col] != '1':
-                        continue
-                    auth_ch = fields[auth_chain_col]
-                    atom_name = fields[atom_name_col].strip('"') if atom_name_col else ''
-                    if atom_name != 'CA':
-                        continue
-                    comp = fields[comp_col].strip('"') if comp_col else ''
-                    seq_id = fields[seq_col] if seq_col else ''
-                    key = (auth_ch, seq_id)
-                    if key != prev_key.get(auth_ch):
-                        pdb_seqs.setdefault(auth_ch, '')
-                        pdb_seqs[auth_ch] += aa3to1.get(comp, 'X')
-                        prev_key[auth_ch] = key
-
-                print(f"FAILED: chains {missing} not in PDB {pdb_chains}")
+            # Missing uppercase chains is always an error
+            if missing_uppercase:
+                print(f"FAILED: uppercase chains {missing_uppercase} not in PDB {pdb_chains}")
                 n_fail += 1
                 continue
+
+            # Lowercase chains: only drop if they don't exist in the PDB
+            # Some PDBs genuinely use lowercase chain IDs (e.g., 1TZN heptamer)
+            lowercase_in_pdb = missing_lowercase & pdb_chains
+            lowercase_not_in_pdb = missing_lowercase - pdb_chains
+
+            if lowercase_in_pdb:
+                # These lowercase chains exist in PDB — keep them
+                pass
+
+            if lowercase_not_in_pdb:
+                # SAbDab convention — drop
+                chains_to_keep = chains_to_keep - lowercase_not_in_pdb
+                actual_b_chains = actual_b_chains - lowercase_not_in_pdb
+                print(f"(dropped SAbDab {lowercase_not_in_pdb})", end=" ")
 
             if not actual_b_chains:
                 print(f"FAILED: no protein B chains remain after filtering")
                 n_fail += 1
                 continue
-
-            dropped = missing
-            if dropped:
-                print(f"(dropped {dropped})", end=" ")
 
         # Write PDB from mmCIF
         pdb_lines = []
