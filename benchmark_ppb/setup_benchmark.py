@@ -71,9 +71,14 @@ for row in ws.iter_rows(min_row=2, values_only=True):
     except (ValueError, TypeError):
         continue
 
-    # Deduplicate by PDB ID (keep first entry)
+    # Deduplicate by PDB ID
+    # Prefer entries with all-uppercase chain IDs (avoid SAbDab lowercase convention)
+    has_lowercase = any(c.islower() for c in ''.join(ligand_chains + receptor_chains))
     if pdb_id in structures:
-        continue
+        prev_has_lowercase = structures[pdb_id].get('_has_lowercase', False)
+        if has_lowercase or not prev_has_lowercase:
+            continue  # keep previous (it's already uppercase, or both are same quality)
+        # Replace: current entry has all uppercase, previous had lowercase
 
     import math
     pkd = -math.log10(kd)
@@ -81,6 +86,7 @@ for row in ws.iter_rows(min_row=2, values_only=True):
     structures[pdb_id] = {
         'ligand_chains': ligand_chains,
         'receptor_chains': receptor_chains,
+        '_has_lowercase': has_lowercase,
         'ligand_name': str(row[7]).strip() if row[7] else "",
         'receptor_name': str(row[8]).strip() if row[8] else "",
         'kd': kd,
