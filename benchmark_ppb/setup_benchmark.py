@@ -1,38 +1,130 @@
 #!/usr/bin/env python3
 """
-Setup benchmark structures from the HADDOCKING protein-protein affinity benchmark.
-Downloads PDBs, extracts relevant chains, and creates sp.gs file.
+Setup benchmark structures from the PPB-Affinity dataset.
+Downloads mmCIF files from RCSB, extracts relevant chains, and creates sp.gs file.
+
+Reads PPB-Affinity.xlsx directly (authoritative source with proper chain assignments).
 """
 
-import csv
 import os
-import urllib.request
 import sys
+import argparse
+import urllib.request
+import openpyxl
 
-# Read the benchmark CSV
-structures = []
-with open('benchmark.csv', 'r') as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        pdb_id = row['pdb_id'].upper()
-        chain_id_1 = row['chain_id_1']
-        chain_id_2 = row['chain_id_2']
-        structures.append((pdb_id, chain_id_1, chain_id_2, dict(row)))
+parser = argparse.ArgumentParser(description="Setup PPB-Affinity benchmark structures.")
+parser.add_argument('--include-mutants', action='store_true', help="Include mutant entries (default: wild-type only)")
+parser.add_argument('--max-entries', type=int, default=0, help="Limit number of structures (0 = all)")
+parser.add_argument('--max-resolution', type=float, default=0, help="Filter by resolution in Angstrom (0 = no filter)")
+parser.add_argument('--source', type=str, default="", help="Filter by source dataset (e.g., 'SAbDab', 'PDBbind v2020')")
+args = parser.parse_args()
 
-print(f"Found {len(structures)} structures in benchmark")
+# Read PPB-Affinity.xlsx
+xlsx_path = "PPB-Affinity.xlsx"
+if not os.path.isfile(xlsx_path):
+    print(f"Error: {xlsx_path} not found. Download from https://zenodo.org/doi/10.5281/zenodo.11070823")
+    sys.exit(1)
 
-# Create sp.gs file
+wb = openpyxl.load_workbook(xlsx_path, read_only=True)
+ws = wb.active
+
+# Parse xlsx rows
+# Columns: 0=idx, 1=source, 2=complex_id, 3=PDB, 4=mutations, 5=ligand_chains,
+#          6=receptor_chains, 7=ligand_name, 8=receptor_name, 9=KD, 10=method,
+#          11=struct_method, 12=temperature, 13=resolution, 14-18=misc
+structures = {}  # pdb_id -> first entry (deduplicate by PDB)
+for row in ws.iter_rows(min_row=2, values_only=True):
+    pdb_id = str(row[3]).strip().upper() if row[3] else None
+    if not pdb_id or len(pdb_id) != 4:
+        continue
+
+    mutations = row[4]
+    if not args.include_mutants and mutations is not None:
+        continue
+
+    source = str(row[1]).strip() if row[1] else ""
+    if args.source and args.source not in source:
+        continue
+
+    resolution = row[13]
+    if args.max_resolution > 0 and resolution is not None:
+        try:
+            if float(resolution) > args.max_resolution:
+                continue
+        except (ValueError, TypeError):
+            pass
+
+    # Parse chain IDs from comma-separated fields (e.g., "A, B" or "H, L")
+    ligand_chains_raw = str(row[5]).strip() if row[5] else ""
+    receptor_chains_raw = str(row[6]).strip() if row[6] else ""
+    ligand_chains = [c.strip() for c in ligand_chains_raw.split(',') if c.strip()]
+    receptor_chains = [c.strip() for c in receptor_chains_raw.split(',') if c.strip()]
+
+    if not ligand_chains or not receptor_chains:
+        continue
+
+    kd = row[9]
+    if kd is None:
+        continue
+    try:
+        kd = float(kd)
+    except (ValueError, TypeError):
+        continue
+
+    # Deduplicate by PDB ID (keep first entry)
+    if pdb_id in structures:
+        continue
+
+    import math
+    pkd = -math.log10(kd)
+
+    structures[pdb_id] = {
+        'ligand_chains': ligand_chains,
+        'receptor_chains': receptor_chains,
+        'ligand_name': str(row[7]).strip() if row[7] else "",
+        'receptor_name': str(row[8]).strip() if row[8] else "",
+        'kd': kd,
+        'pkd': pkd,
+        'source': source,
+        'resolution': resolution,
+    }
+
+    if args.max_entries > 0 and len(structures) >= args.max_entries:
+        break
+
+print(f"Found {len(structures)} structures in PPB-Affinity dataset")
+
+# aa3to1 mapping for sequence building
+aa3to1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
+          'GLY':'G','HIS':'H','ILE':'I','LEU':'L','LYS':'K','MET':'M','PHE':'F',
+          'PRO':'P','SER':'S','THR':'T','TRP':'W','TYR':'Y','VAL':'V',
+          'MSE':'M','HSD':'H','HSE':'H','HSP':'H','HIE':'H','HID':'H','HIP':'H',
+          'SEC':'C','PYL':'K','CSE':'C','TPO':'T','SEP':'S','PTR':'Y'}
+
+# Write benchmark.csv for analysis scripts
+with open('benchmark.csv', 'w') as csvf:
+    csvf.write("pdb_id,chain_id_1,chain_id_2,protein_1,protein_2,kd,pkd,source,resolution\n")
+    for pdb_id, info in structures.items():
+        chain_1 = ''.join(info['ligand_chains'])
+        chain_2 = ''.join(info['receptor_chains'])
+        csvf.write(f"{pdb_id},{chain_1},{chain_2},{info['ligand_name']},{info['receptor_name']},"
+                   f"{info['kd']},{info['pkd']:.2f},{info['source']},{info['resolution']}\n")
+
+# Create sp.gs file and download structures
+n_ok = 0
+n_fail = 0
 with open('sp.gs', 'w') as sp:
     sp.write("# Structure_ID  Chains_for_Protein_B\n")
 
-    for pdb_id, chain_id_1, chain_id_2, row in structures:
-        # Create directory
+    for pdb_id, info in structures.items():
         os.makedirs(pdb_id, exist_ok=True)
-
         input_pdb = f"{pdb_id}/input.pdb"
 
-        # Always download fresh from RCSB to ensure correct chain mapping
-        # Download mmCIF (has both auth and label chain IDs)
+        # All chains needed (ligand = protein A, receptor = protein B in GroScore convention)
+        all_chains = info['ligand_chains'] + info['receptor_chains']
+        protein_b_chains = info['receptor_chains']
+
+        # Download mmCIF
         cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
         print(f"Downloading {pdb_id}...", end=" ", flush=True)
 
@@ -41,11 +133,10 @@ with open('sp.gs', 'w') as sp:
                 cif_content = response.read().decode('utf-8')
         except Exception as e:
             print(f"FAILED: {e}")
+            n_fail += 1
             continue
 
-        # Parse mmCIF _atom_site to get auth_asym_id and label_asym_id mapping
-        # and extract ATOM records for the chains we need
-        # mmCIF _atom_site columns vary by file; find the column indices
+        # Parse mmCIF _atom_site
         in_atom_site = False
         columns = []
         atom_records = []
@@ -59,17 +150,11 @@ with open('sp.gs', 'w') as sp:
                 elif line.strip():
                     atom_records.append(line)
 
-        # Find column indices
         col_idx = {col: i for i, col in enumerate(columns)}
         auth_chain_col = col_idx.get('_atom_site.auth_asym_id')
-        label_chain_col = col_idx.get('_atom_site.label_asym_id')
-        group_col = col_idx.get('_atom_site.group_PDB')  # ATOM or HETATM
-        atom_name_col = col_idx.get('_atom_site.label_atom_id')  # or auth_atom_id
-        if atom_name_col is None:
-            atom_name_col = col_idx.get('_atom_site.auth_atom_id')
-        comp_col = col_idx.get('_atom_site.label_comp_id')  # residue name
-        if comp_col is None:
-            comp_col = col_idx.get('_atom_site.auth_comp_id')
+        group_col = col_idx.get('_atom_site.group_PDB')
+        atom_name_col = col_idx.get('_atom_site.label_atom_id') or col_idx.get('_atom_site.auth_atom_id')
+        comp_col = col_idx.get('_atom_site.label_comp_id') or col_idx.get('_atom_site.auth_comp_id')
         seq_col = col_idx.get('_atom_site.auth_seq_id')
         x_col = col_idx.get('_atom_site.Cartn_x')
         y_col = col_idx.get('_atom_site.Cartn_y')
@@ -80,226 +165,153 @@ with open('sp.gs', 'w') as sp:
         alt_col = col_idx.get('_atom_site.label_alt_id')
         model_col = col_idx.get('_atom_site.pdbx_PDB_model_num')
 
-        if auth_chain_col is None or label_chain_col is None:
-            print(f"FAILED: Could not find chain ID columns in mmCIF")
+        if auth_chain_col is None:
+            print(f"FAILED: no auth_asym_id column in mmCIF")
+            n_fail += 1
             continue
 
-        # Build chain ID mapping: label -> auth (and vice versa)
-        label_to_auth = {}
-        auth_to_label = {}
+        # Get available auth chain IDs
+        pdb_chains = set()
         for rec in atom_records:
             fields = rec.split()
-            if len(fields) <= max(auth_chain_col, label_chain_col):
-                continue
-            auth_ch = fields[auth_chain_col]
-            label_ch = fields[label_chain_col]
-            if label_ch not in label_to_auth:
-                label_to_auth[label_ch] = auth_ch
-            if auth_ch not in auth_to_label:
-                auth_to_label[auth_ch] = label_ch
+            if len(fields) > auth_chain_col:
+                if model_col is not None and len(fields) > model_col and fields[model_col] != '1':
+                    continue
+                pdb_chains.add(fields[auth_chain_col])
 
-        # Handle SAbDab convention: lowercase letters represent antibody light chains
-        # paired with the uppercase heavy chain (e.g., "Aa" = heavy A + light a)
-        # Strip lowercase — actual PDB files use uppercase-only chain IDs
-        if any(c.islower() for c in chain_id_1 + chain_id_2):
-            chain_id_1 = ''.join(c for c in chain_id_1 if c.isupper())
-            chain_id_2 = ''.join(c for c in chain_id_2 if c.isupper())
-            if not chain_id_1 or not chain_id_2:
-                print(f"FAILED: SAbDab chain IDs have no uppercase letters after cleanup")
-                continue
+        # Validate chain IDs against PDB
+        chains_to_keep = set(all_chains)
+        actual_b_chains = set(protein_b_chains)
+        missing = chains_to_keep - pdb_chains
 
-        # Build per-chain sequences from auth chain IDs (protein chains only)
-        aa3to1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
-                  'GLY':'G','HIS':'H','ILE':'I','LEU':'L','LYS':'K','MET':'M','PHE':'F',
-                  'PRO':'P','SER':'S','THR':'T','TRP':'W','TYR':'Y','VAL':'V',
-                  'MSE':'M','HSD':'H','HSE':'H','HSP':'H','HIE':'H','HID':'H','HIP':'H'}
-        pdb_chain_seqs = {}
-        prev_key = {}
-        for rec in atom_records:
-            fields = rec.split()
-            if len(fields) <= max(auth_chain_col, comp_col, seq_col):
-                continue
-            if model_col is not None and fields[model_col] != '1':
-                continue
-            auth_ch = fields[auth_chain_col]
-            atom_name = fields[atom_name_col].strip('"')
-            if atom_name != 'CA':
-                continue
-            comp = fields[comp_col].strip('"')
-            # Skip water/ions (no CA atoms anyway, but be safe)
-            if comp in ('HOH', 'WAT', 'DOD'):
-                continue
-            seq_id = fields[seq_col]
-            key = (auth_ch, seq_id)
-            if key != prev_key.get(auth_ch):
-                if auth_ch not in pdb_chain_seqs:
-                    pdb_chain_seqs[auth_ch] = ''
-                pdb_chain_seqs[auth_ch] += aa3to1.get(comp, 'X')
-                prev_key[auth_ch] = key
+        if missing:
+            # Some chains not found — likely lowercase SAbDab chains or wrong IDs
+            # Try: keep only chains that exist in PDB
+            existing = chains_to_keep & pdb_chains
+            missing_b = actual_b_chains - pdb_chains
+            missing_a = (set(info['ligand_chains']) - pdb_chains)
 
-        # Match benchmark chain IDs to PDB auth chain IDs by sequence
-        chains_needed = set(chain_id_1) | set(chain_id_2)
-        auth_chains = set(pdb_chain_seqs.keys())
-
-        if chains_needed <= auth_chains:
-            # Direct match — benchmark uses auth chain IDs
-            chains_to_keep = chains_needed
-            actual_chain_id_2 = chain_id_2
-        else:
-            # Need to remap: match ALL non-empty chain_X sequences to PDB chains
-            # The benchmark may store sequences under the correct auth chain IDs
-            # even if chain_id_1/chain_id_2 fields are wrong
-            all_ref_seqs = {}
-            for key in row:
-                if key.startswith('chain_') and len(key) == 7 and row[key].strip():
-                    ch = key[-1]
-                    all_ref_seqs[ch] = row[key].strip()
-
-            # Match each reference sequence to a PDB chain
-            remap = {}
-            used = set()
-            for ref_ch, ref_seq in sorted(all_ref_seqs.items(), key=lambda x: -len(x[1])):
-                best_score = 0
-                best_pdb_ch = None
-                probe = ref_seq[:min(20, len(ref_seq))]
-                for pdb_ch, pdb_seq in pdb_chain_seqs.items():
-                    if pdb_ch in used:
+            if existing and not missing_b:
+                # Protein B chains exist, some protein A chains missing (lowercase light chains)
+                chains_to_keep = existing
+            elif existing and not missing_a:
+                # Protein A chains exist, some protein B chains missing
+                chains_to_keep = existing
+                actual_b_chains = actual_b_chains & pdb_chains
+            elif existing:
+                chains_to_keep = existing
+                actual_b_chains = actual_b_chains & pdb_chains
+            else:
+                # No chains match — try sequence matching
+                # Build PDB sequences
+                pdb_seqs = {}
+                prev_key = {}
+                for rec in atom_records:
+                    fields = rec.split()
+                    if len(fields) <= max(auth_chain_col, comp_col or 0, seq_col or 0):
                         continue
-                    if probe in pdb_seq:
-                        score = len(ref_seq) / max(len(pdb_seq), 1)
-                        if score > best_score:
-                            best_score = score
-                            best_pdb_ch = pdb_ch
-                if best_pdb_ch:
-                    remap[ref_ch] = best_pdb_ch
-                    used.add(best_pdb_ch)
+                    if model_col is not None and fields[model_col] != '1':
+                        continue
+                    auth_ch = fields[auth_chain_col]
+                    atom_name = fields[atom_name_col].strip('"') if atom_name_col else ''
+                    if atom_name != 'CA':
+                        continue
+                    comp = fields[comp_col].strip('"') if comp_col else ''
+                    seq_id = fields[seq_col] if seq_col else ''
+                    key = (auth_ch, seq_id)
+                    if key != prev_key.get(auth_ch):
+                        pdb_seqs.setdefault(auth_ch, '')
+                        pdb_seqs[auth_ch] += aa3to1.get(comp, 'X')
+                        prev_key[auth_ch] = key
 
-            if not remap:
-                print(f"FAILED: Could not map any sequences to PDB chains {auth_chains}")
+                print(f"FAILED: chains {missing} not in PDB {pdb_chains}")
+                n_fail += 1
                 continue
 
-            # Rebuild chain_id_1 and chain_id_2 from the matched chains
-            # chain_id_1 chains: those in remap that were referenced by chain_id_1
-            # If chain_id_1/2 reference empty chains, find the correct mapping
-            matched_pdb_chains = set(remap.values())
-
-            # Identify which PDB chains belong to protein 2 (protein B)
-            # Strategy 1: chain_id_2 letters directly match remap keys
-            protein_b_pdb_chains = set()
-            for ch in set(chain_id_2):
-                if ch in remap:
-                    protein_b_pdb_chains.add(remap[ch])
-
-            # Strategy 2: chain_id_2 letters have sequences in chain_X columns
-            if not protein_b_pdb_chains:
-                for ch in set(chain_id_2):
-                    col = f"chain_{ch}"
-                    if col in row and row[col].strip():
-                        probe = row[col].strip()[:20]
-                        for pdb_ch, pdb_seq in pdb_chain_seqs.items():
-                            if pdb_ch in matched_pdb_chains and probe in pdb_seq:
-                                protein_b_pdb_chains.add(pdb_ch)
-
-            # Strategy 3: chain_id_1 letters exclude some remap keys
-            if not protein_b_pdb_chains:
-                protein_a_pdb_chains = set()
-                for ch in set(chain_id_1):
-                    if ch in remap:
-                        protein_a_pdb_chains.add(remap[ch])
-                    else:
-                        col = f"chain_{ch}"
-                        if col in row and row[col].strip():
-                            probe = row[col].strip()[:20]
-                            for pdb_ch, pdb_seq in pdb_chain_seqs.items():
-                                if pdb_ch in matched_pdb_chains and probe in pdb_seq:
-                                    protein_a_pdb_chains.add(pdb_ch)
-                protein_b_pdb_chains = matched_pdb_chains - protein_a_pdb_chains
-
-            # Strategy 4: partition by chain count from chain_id_1/2
-            # The number of letters in chain_id_1 and chain_id_2 indicates the
-            # expected number of chains per protein. Use the remap order to split.
-            if not protein_b_pdb_chains or protein_b_pdb_chains == matched_pdb_chains:
-                n_chains_1 = len(set(chain_id_1))
-                n_chains_2 = len(set(chain_id_2))
-                # The remap was built by matching sequences longest-first.
-                # The chain_X columns with sequences ARE the correct auth chain IDs.
-                # Split them: first n_chains_1 matched → protein A, rest → protein B
-                matched_list = list(remap.values())
-                if len(matched_list) == n_chains_1 + n_chains_2:
-                    protein_b_pdb_chains = set(matched_list[n_chains_1:])
-                elif len(matched_list) > n_chains_2:
-                    # Take the last n_chains_2 matched chains as protein B
-                    protein_b_pdb_chains = set(matched_list[-n_chains_2:])
-
-            if not protein_b_pdb_chains:
-                print(f"FAILED: Could not determine protein B chains for {pdb_id}")
+            if not actual_b_chains:
+                print(f"FAILED: no protein B chains remain after filtering")
+                n_fail += 1
                 continue
 
-            chains_to_keep = matched_pdb_chains
-            actual_chain_id_2 = ''.join(sorted(protein_b_pdb_chains))
+            dropped = missing
+            if dropped:
+                print(f"(dropped {dropped})", end=" ")
 
-            changed = {k: v for k, v in remap.items() if k != v}
-            if changed:
-                print(f"Chain remap: {changed}", end=" ")
-
-        # Write PDB from mmCIF records (using auth chain IDs)
+        # Write PDB from mmCIF
         pdb_lines = []
         prev_chain = None
         for rec in atom_records:
             fields = rec.split()
-            if len(fields) <= max(x_col, y_col, z_col, auth_chain_col):
+            required_cols = [x_col, y_col, z_col, auth_chain_col]
+            if any(c is None for c in required_cols):
                 continue
-            # Only first model
-            if model_col is not None and fields[model_col] != '1':
+            if len(fields) <= max(c for c in required_cols if c is not None):
                 continue
-            # Skip alternate conformations (keep first or '.')
-            if alt_col is not None and fields[alt_col] not in ('.', 'A', '?'):
+            if model_col is not None and len(fields) > model_col and fields[model_col] != '1':
+                continue
+            if alt_col is not None and len(fields) > alt_col and fields[alt_col] not in ('.', 'A', '?'):
                 continue
             auth_ch = fields[auth_chain_col]
             if auth_ch not in chains_to_keep:
                 continue
 
-            group = fields[group_col] if group_col is not None else 'ATOM'
-            atom_name = fields[atom_name_col].strip('"')
-            comp = fields[comp_col].strip('"')
-            seq_id = fields[seq_col] if seq_col is not None else '1'
-            x = float(fields[x_col])
-            y = float(fields[y_col])
-            z = float(fields[z_col])
-            element = fields[element_col] if element_col is not None else atom_name[0]
-            occ = float(fields[occ_col]) if occ_col is not None else 1.0
-            bfactor = float(fields[bfactor_col]) if bfactor_col is not None else 0.0
+            group = fields[group_col] if group_col is not None and len(fields) > group_col else 'ATOM'
+            atom_name = fields[atom_name_col].strip('"') if atom_name_col and len(fields) > atom_name_col else 'X'
+            comp = fields[comp_col].strip('"') if comp_col and len(fields) > comp_col else 'UNK'
+            seq_id = fields[seq_col] if seq_col and len(fields) > seq_col else '1'
+            try:
+                x = float(fields[x_col])
+                y = float(fields[y_col])
+                z = float(fields[z_col])
+            except (ValueError, IndexError):
+                continue
+            element = fields[element_col] if element_col and len(fields) > element_col else atom_name[0]
+            try:
+                occ = float(fields[occ_col]) if occ_col and len(fields) > occ_col else 1.0
+            except ValueError:
+                occ = 1.0
+            try:
+                bfactor = float(fields[bfactor_col]) if bfactor_col and len(fields) > bfactor_col else 0.0
+            except ValueError:
+                bfactor = 0.0
 
-            # Write TER between chains
             if prev_chain is not None and auth_ch != prev_chain:
                 pdb_lines.append("TER")
             prev_chain = auth_ch
 
-            # Format atom name (4 chars, left-padded for 1-3 char names)
             if len(atom_name) < 4:
                 atom_name_fmt = f" {atom_name:<3s}"
             else:
                 atom_name_fmt = f"{atom_name:<4s}"
 
+            try:
+                seq_int = int(seq_id)
+            except ValueError:
+                seq_int = 1
+
             serial = len(pdb_lines) + 1
-            record = f"{group:<6s}{serial:5d} {atom_name_fmt} {comp:>3s} {auth_ch}{int(seq_id):4d}    " \
-                     f"{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{bfactor:6.2f}          {element:>2s}"
+            record = (f"{group:<6s}{serial:5d} {atom_name_fmt} {comp:>3s} {auth_ch}{seq_int:4d}    "
+                      f"{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{bfactor:6.2f}          {element:>2s}")
             pdb_lines.append(record)
 
         pdb_lines.append("END")
 
         if len(pdb_lines) <= 1:
-            print(f"FAILED: No atoms extracted for chains {chains_to_keep}")
+            print(f"FAILED: no atoms extracted")
+            n_fail += 1
             continue
 
         with open(input_pdb, 'w') as out:
             out.write('\n'.join(pdb_lines) + '\n')
 
-        print(f"OK ({len(pdb_lines)-1} atoms, chains: {','.join(sorted(chains_to_keep))})")
+        # Write sp.gs entry
+        b_chain_str = ','.join(sorted(actual_b_chains))
+        sp.write(f"{pdb_id}\t{b_chain_str}\n")
 
-        # Add to sp.gs with comma-separated chain IDs (using auth chain IDs from PDB)
-        chain_id_2_formatted = ','.join(actual_chain_id_2)
-        sp.write(f"{pdb_id}\t{chain_id_2_formatted}\n")
+        print(f"OK ({len(pdb_lines)-1} atoms, chains: {','.join(sorted(chains_to_keep))}, B={b_chain_str})")
+        n_ok += 1
 
-print(f"\nCreated sp.gs with {len(structures)} entries")
+print(f"\n{n_ok} structures OK, {n_fail} failed")
+print(f"Created sp.gs with {n_ok} entries")
+print(f"Created benchmark.csv with {len(structures)} entries")
 print("Run: python ../groscore.py")
