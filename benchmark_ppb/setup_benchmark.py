@@ -27,8 +27,7 @@ with open('sp.gs', 'w') as sp:
 
     for pdb_id, chain_id_1, chain_id_2, row in structures:
         # Create directory
-        if not os.path.exists(pdb_id):
-            os.makedirs(pdb_id)
+        os.makedirs(pdb_id, exist_ok=True)
 
         input_pdb = f"{pdb_id}/input.pdb"
 
@@ -98,6 +97,16 @@ with open('sp.gs', 'w') as sp:
                 label_to_auth[label_ch] = auth_ch
             if auth_ch not in auth_to_label:
                 auth_to_label[auth_ch] = label_ch
+
+        # Handle SAbDab convention: lowercase letters represent antibody light chains
+        # paired with the uppercase heavy chain (e.g., "Aa" = heavy A + light a)
+        # Strip lowercase — actual PDB files use uppercase-only chain IDs
+        if any(c.islower() for c in chain_id_1 + chain_id_2):
+            chain_id_1 = ''.join(c for c in chain_id_1 if c.isupper())
+            chain_id_2 = ''.join(c for c in chain_id_2 if c.isupper())
+            if not chain_id_1 or not chain_id_2:
+                print(f"FAILED: SAbDab chain IDs have no uppercase letters after cleanup")
+                continue
 
         # Build per-chain sequences from auth chain IDs (protein chains only)
         aa3to1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
