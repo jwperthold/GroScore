@@ -79,6 +79,7 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         if has_lowercase or not prev_has_lowercase:
             continue  # keep previous (it's already uppercase, or both are same quality)
         # Replace: current entry has all uppercase, previous had lowercase
+        stats['uppercase_replaced_lowercase'] += 1
 
     import math
     pkd = -math.log10(kd)
@@ -99,6 +100,12 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         break
 
 print(f"Found {len(structures)} structures in PPB-Affinity dataset")
+
+# Statistics tracking
+stats = {'direct_match': 0, 'dropped_lowercase': 0, 'failed_missing_uppercase': 0,
+         'failed_no_protein_b': 0, 'failed_download': 0, 'failed_no_atoms': 0,
+         'failed_no_auth_col': 0, 'uppercase_replaced_lowercase': 0}
+fail_details = []
 
 # aa3to1 mapping for sequence building
 aa3to1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
@@ -140,6 +147,8 @@ with open('sp.gs', 'w') as sp:
         except Exception as e:
             print(f"FAILED: {e}")
             n_fail += 1
+            stats['failed_download'] += 1
+            fail_details.append((pdb_id, f"download: {e}"))
             continue
 
         # Parse mmCIF _atom_site
@@ -174,6 +183,8 @@ with open('sp.gs', 'w') as sp:
         if auth_chain_col is None:
             print(f"FAILED: no auth_asym_id column in mmCIF")
             n_fail += 1
+            stats['failed_no_auth_col'] += 1
+            fail_details.append((pdb_id, "no auth_asym_id in CIF"))
             continue
 
         # Get available auth chain IDs
@@ -191,36 +202,33 @@ with open('sp.gs', 'w') as sp:
         missing = chains_to_keep - pdb_chains
 
         if missing:
-            # Only lowercase chains (SAbDab antibody light chain convention) may be dropped
-            # Uppercase chains missing from PDB is a data error — fail loudly
             missing_uppercase = {c for c in missing if c.isupper()}
             missing_lowercase = {c for c in missing if c.islower()}
 
-            # Missing uppercase chains is always an error
             if missing_uppercase:
                 print(f"FAILED: uppercase chains {missing_uppercase} not in PDB {pdb_chains}")
                 n_fail += 1
+                stats['failed_missing_uppercase'] += 1
+                fail_details.append((pdb_id, f"uppercase chains {missing_uppercase} not in PDB"))
                 continue
 
-            # Lowercase chains: only drop if they don't exist in the PDB
-            # Some PDBs genuinely use lowercase chain IDs (e.g., 1TZN heptamer)
-            lowercase_in_pdb = missing_lowercase & pdb_chains
+            # Lowercase: keep if in PDB (real chain IDs), drop if not (SAbDab convention)
             lowercase_not_in_pdb = missing_lowercase - pdb_chains
 
-            if lowercase_in_pdb:
-                # These lowercase chains exist in PDB — keep them
-                pass
-
             if lowercase_not_in_pdb:
-                # SAbDab convention — drop
                 chains_to_keep = chains_to_keep - lowercase_not_in_pdb
                 actual_b_chains = actual_b_chains - lowercase_not_in_pdb
+                stats['dropped_lowercase'] += 1
                 print(f"(dropped SAbDab {lowercase_not_in_pdb})", end=" ")
 
             if not actual_b_chains:
                 print(f"FAILED: no protein B chains remain after filtering")
                 n_fail += 1
+                stats['failed_no_protein_b'] += 1
+                fail_details.append((pdb_id, f"no protein B after dropping {lowercase_not_in_pdb}"))
                 continue
+        else:
+            stats['direct_match'] += 1
 
         # Write PDB from mmCIF
         pdb_lines = []
@@ -284,6 +292,8 @@ with open('sp.gs', 'w') as sp:
         if len(pdb_lines) <= 1:
             print(f"FAILED: no atoms extracted")
             n_fail += 1
+            stats['failed_no_atoms'] += 1
+            fail_details.append((pdb_id, "no atoms extracted"))
             continue
 
         with open(input_pdb, 'w') as out:
@@ -296,7 +306,28 @@ with open('sp.gs', 'w') as sp:
         print(f"OK ({len(pdb_lines)-1} atoms, chains: {','.join(sorted(chains_to_keep))}, B={b_chain_str})")
         n_ok += 1
 
-print(f"\n{n_ok} structures OK, {n_fail} failed")
-print(f"Created sp.gs with {n_ok} entries")
+print(f"\n{'='*60}")
+print(f"SETUP STATISTICS")
+print(f"{'='*60}")
+print(f"Total structures in dataset:     {len(structures)}")
+print(f"Successfully set up:             {n_ok}")
+print(f"Failed:                          {n_fail}")
+print(f"")
+print(f"Chain matching breakdown:")
+print(f"  Direct match (all chains OK):  {stats['direct_match']}")
+print(f"  Dropped SAbDab lowercase:      {stats['dropped_lowercase']}")
+print(f"  Uppercase replaced lowercase:  {stats['uppercase_replaced_lowercase']}")
+print(f"")
+print(f"Failure breakdown:")
+print(f"  Missing uppercase chains:      {stats['failed_missing_uppercase']}")
+print(f"  No protein B after filtering:  {stats['failed_no_protein_b']}")
+print(f"  Download failed:               {stats['failed_download']}")
+print(f"  No atoms extracted:            {stats['failed_no_atoms']}")
+print(f"  No auth_asym_id in CIF:        {stats['failed_no_auth_col']}")
+if fail_details:
+    print(f"\nFailed structures:")
+    for pdb_id, reason in fail_details:
+        print(f"  {pdb_id}: {reason}")
+print(f"\nCreated sp.gs with {n_ok} entries")
 print(f"Created benchmark.csv with {len(structures)} entries")
 print("Run: python ../groscore.py")
