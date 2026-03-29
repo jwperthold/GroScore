@@ -228,10 +228,13 @@ def get_resnum(resname):
   return int(digits)
 
 def get_res3(resname):
-  """Extract residue name from GRO resname field (e.g. '219ZN' -> 'ZN', '123ALA' -> 'ALA')."""
+  """Extract residue name from GRO resname field (e.g. '219ZN' -> 'ZN', '123ALA' -> 'ALA').
+  Truncates to 3 chars for PDB compatibility — 4-char names (HISB, HISA, CYSH)
+  corrupt PDB column alignment when processed by PDBFixer/OpenMM downstream."""
   for i, c in enumerate(resname):
     if not c.isdigit():
-      return resname[i:]
+      name = resname[i:]
+      return name[:3] if len(name) > 3 else name
   return resname
 
 # Minimum fragment length (residues)
