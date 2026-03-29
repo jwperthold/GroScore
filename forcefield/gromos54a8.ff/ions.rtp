@@ -40,12 +40,12 @@
 [ FE ]
 ; Iron +3 ion
  [ atoms ]
-  FE     FE     3.000    1
+  FE     FE2+   3.000    1
 
 [ FE2 ]
 ; Iron +2 ion (e.g., from [2Fe-2S] cluster)
  [ atoms ]
-  FE     FE     2.000    1
+  FE     FE2+   2.000    1
 
 [ SD ]
 ; Sulfide ion (from [2Fe-2S] / [4Fe-4S] cluster, charge -1.0 for oxidized state)

@@ -55,3 +55,4 @@ NUREA  14.00670 ;     nitrogen in urea
  MNH3   0       ;     Dummy mass in rigid tetraedrical NH3 group
    MW   0       ;     Dummy mass in rigid tyrosine rings
  CH3p  15.03500 ;     Polar aliphatic CH3-group 
+FE2+    55.84700 ;     iron (2+) ion
