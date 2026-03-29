@@ -74,14 +74,17 @@ atoms = []
 with open(args.file) as f:
     for line in f:
         if line.startswith(('ATOM', 'HETATM')) and len(line) >= 54:
-            atoms.append({
-                'name': line[12:16].strip(),
-                'resname': line[17:20].strip(),
-                'resnum': int(line[22:26]),
-                'x': float(line[30:38]),
-                'y': float(line[38:46]),
-                'z': float(line[46:54]),
-            })
+            try:
+                atoms.append({
+                    'name': line[12:16].strip(),
+                    'resname': line[17:20].strip(),
+                    'resnum': int(line[22:26]),
+                    'x': float(line[30:38]),
+                    'y': float(line[38:46]),
+                    'z': float(line[46:54]),
+                })
+            except (ValueError, IndexError):
+                continue
 
 # Collect ion coordinates
 ion_coords = [(a['x'], a['y'], a['z']) for a in atoms if a['resnum'] in ion_resnums]
