@@ -234,7 +234,7 @@ if [[ $bl -eq 0 ]]; then
         TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
       fi
       # Merge questions come first, then terminal selections
-      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -rtpo -o conf_cutout.gro
+      echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
       # Ligand ITP/GRO files already created during initial parametrization above
       # Merge ligands and crystal waters into cutout topology
       python3 ../../utils/merge_ligand.py -t topol.top -c conf_cutout.gro -m chain_map.gs
