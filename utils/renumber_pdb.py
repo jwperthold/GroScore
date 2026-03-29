@@ -40,13 +40,28 @@ if not os.path.isfile(args.pdbfile):
     print(f"Error: PDB file '{args.pdbfile}' not found.", file=sys.stderr)
     sys.exit(1)
 
+# Pre-scan: identify HETATM residues that have backbone atoms (N, CA, C, O)
+# These are modified amino acids (e.g., TRQ, TPO, SEP, MSE, HYP, MLY, CSO, PTR)
+# and should be treated as protein, not ligands
+MODIFIED_AA_RESIDUES = set()
+with open(args.pdbfile) as f:
+    for line in f:
+        if line.startswith("HETATM"):
+            resname = line[17:20].strip()
+            atomname = line[12:16].strip()
+            if resname not in ION_RESIDUES and resname not in SKIP_HETATM:
+                if atomname == 'CA':
+                    MODIFIED_AA_RESIDUES.add(resname)
+if MODIFIED_AA_RESIDUES:
+    print(f"Detected modified amino acids (HETATM with backbone): {', '.join(sorted(MODIFIED_AA_RESIDUES))}")
+
 def is_atom_or_ion(line):
-    """Check if line is an ATOM record or a HETATM record for a supported ion."""
+    """Check if line is an ATOM record or a HETATM record for a supported ion or modified amino acid."""
     if line.startswith("ATOM"):
         return True
     if line.startswith("HETATM"):
         resname = line[17:20].strip()
-        if resname in ION_RESIDUES:
+        if resname in ION_RESIDUES or resname in MODIFIED_AA_RESIDUES:
             return True
     return False
 
@@ -231,8 +246,8 @@ with open(args.pdbfile, "r") as f:
             resname = get_resname(line)
             chain_id = line[21]
 
-            if resname in ION_RESIDUES:
-                continue  # Already handled above
+            if resname in ION_RESIDUES or resname in MODIFIED_AA_RESIDUES:
+                continue  # Already handled above (ions and modified AAs are part of protein)
             elif resname in SKIP_HETATM:
                 if resname == "HOH":
                     water_lines.append(line)
