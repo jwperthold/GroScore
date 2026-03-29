@@ -715,3 +715,12 @@ ZN2        3
 [ atoms ]
 ; id    at type     res nr  res name   at name  cg nr  charge    mass
   1     ZN          1      ZN2        ZN       1       2.000    65.37000 ; qtot = 2.000000
+
+[ moleculetype ]
+; Sulfide ion (from FeS cluster)
+; molname  nrexcl
+SD         3
+
+[ atoms ]
+; id    at type     res nr  res name   at name  cg nr  charge    mass
+  1     S           1      SD         S        1      -1.000    32.06000 ; qtot = -1.000000
