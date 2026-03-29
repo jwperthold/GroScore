@@ -1177,8 +1177,8 @@
 
 ; residue topologies from file toppar_c36_jul22/stream/prot/toppar_all36_prot_heme.str
 
-[ CO ]
-; CO ligand for heme
+[ COHEME ]
+; CO ligand for heme (renamed from CO to avoid conflict with cobalt ion in ions.rtp)
   [ atoms ]
         C       CM  0.0210   1
         O       OM -0.0210   1

@@ -32441,8 +32441,8 @@
        CG   CC3    NT    OG
        CA   CC1   OA1   OA2
 
-[ GA ]
-; C29H45NO7, GLUTAMIC ACID CDCA AMIDE, cacha
+[ GACDCA ]
+; C29H45NO7, GLUTAMIC ACID CDCA AMIDE (renamed from GA to avoid conflict with gallium ion in ions.rtp)
   [ atoms ]
        C3    CG311  0.1400   1
        O3    OG311 -0.6500   1

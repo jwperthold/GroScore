@@ -312,20 +312,10 @@
   [ atoms ]
       CES      CES  1.0000   1
 
-[ CL ]
-; Chloride Ion
-  [ atoms ]
-       CL      CLA -1.0000   1
-
 [ CLA ]
 ; Chloride Ion
   [ atoms ]
       CLA      CLA -1.0000   1
-
-[ CS ]
-; Cesium Ion
-  [ atoms ]
-      CES      CES  1.0000   1
 
 [ H2O2 ]
 ; hydrogen peroxide
@@ -352,30 +342,10 @@
   [ angles ]
       HW1    OW   HW2
 
-[ K ]
-; Potassium Ion
-  [ atoms ]
-        K      POT  1.0000   1
-
-[ LI ]
-; Lithium Ion
-  [ atoms ]
-       LI      LIT  1.0000   1
-
 [ LIT ]
 ; Lithium Ion
   [ atoms ]
       LIT      LIT  1.0000   1
-
-[ MG ]
-; Magnesium Ion
-  [ atoms ]
-       MG       MG  2.0000   1
-
-[ NA ]
-; Sodium Ion
-  [ atoms ]
-       NA      SOD  1.0000   1
 
 [ OH ]
 ; hydroxide ion by adm.jr.
@@ -424,11 +394,6 @@
       OH2    H2
   [ angles ]
        H1   OH2    H2
-
-[ ZN ]
-; Zinc (II) cation, Roland Stote
-  [ atoms ]
-       ZN       ZN  2.0000   1
 
 [ ZN2 ]
 ; Zinc (II) cation, Roland Stote
