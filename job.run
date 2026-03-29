@@ -123,6 +123,8 @@ if [[ ! -f conf.gro ]]; then
       echo "Using local amber19sb.ff with NCAA entries"
     fi
   fi
+  # Fix protonation states for ion-coordinating CYS/HIS residues
+  python3 ../../utils/fix_ion_protonation.py -f $PDB2GMX_INPUT -m ion_residues.gs --ff $FORCEFIELD
   # Ion residue names for pdb2gmx chain handling
   ION_RESIDUES="ZN|CA|MG|CU|CU1|NA|CL"
   # Get chain ID and residue name of first atom in each segment
@@ -199,6 +201,8 @@ if [[ $bl -eq 0 ]]; then
       if [[ "$FORCEFIELD" == "gromos54a8" ]]; then
         sed -i '/ OXT /d' $CUTOUT_PDB
       fi
+      # Fix protonation states for ion-coordinating CYS/HIS in cutout
+      python3 ../../utils/fix_ion_protonation.py -f $CUTOUT_PDB -m chain_map.gs --ff $FORCEFIELD
       # re-solvate cutout
       # Get chain ID and residue name of first atom in each segment
       CHAIN_DATA=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{chain=substr($0,22,1); res=substr($0,18,3); gsub(/ /,"",res); print chain, res; first=0}' $CUTOUT_PDB)
