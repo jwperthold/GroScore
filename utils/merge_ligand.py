@@ -19,37 +19,65 @@ parser.add_argument('-c', '--conf', type=str, required=True, help="Protein coord
 parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map file (chain_map.gs)")
 args = parser.parse_args()
 
-# Read ligand_info.gs to find ligands and their chain assignments
-ligand_info_path = os.path.join(os.path.dirname(args.chainmap), "ligand_info.gs")
-if not os.path.isfile(ligand_info_path):
-    print("No ligand_info.gs found, skipping ligand merge.")
-    sys.exit(0)
+# Read ligand manifest (written by parametrize_ligand.py)
+# Format: mol_name  itp_path  atomtypes_path  gro_path  natoms
+manifest_path = os.path.join(os.path.dirname(args.chainmap), "ligand_manifest.gs")
+if not os.path.isfile(manifest_path):
+    # Fallback: try ligand_info.gs for backward compatibility
+    ligand_info_path = os.path.join(os.path.dirname(args.chainmap), "ligand_info.gs")
+    if not os.path.isfile(ligand_info_path):
+        print("No ligand_manifest.gs or ligand_info.gs found, skipping ligand merge.")
+        sys.exit(0)
+    # Legacy mode: shared ITP per resname
+    ligands = []
+    with open(ligand_info_path) as f:
+        for line in f:
+            if line.strip().startswith("#") or not line.strip():
+                continue
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                ligands.append((parts[0], parts[1], int(parts[2])))
+    available_ligands = []
+    for resname, chain, natoms in ligands:
+        itp = f"ligand_{resname}.itp"
+        gro = f"ligand_{resname}_{chain}.gro"
+        if not os.path.isfile(gro):
+            gro = f"ligand_{resname}.gro"
+        atomtypes = f"ligand_{resname}_atomtypes.itp"
+        if os.path.isfile(itp) and os.path.isfile(gro):
+            available_ligands.append((resname, chain, natoms, itp, gro, atomtypes, atomtypes))
+        else:
+            print(f"Warning: {itp} or {gro} not found, skipping {resname} chain {chain}")
+else:
+    # New mode: per-instance ITP from manifest
+    available_ligands = []
+    # Also read ligand_info.gs for chain assignments (needed for proximity filtering)
+    ligand_info_path = os.path.join(os.path.dirname(args.chainmap), "ligand_info.gs")
+    chain_for_ligand = {}
+    if os.path.isfile(ligand_info_path):
+        idx = 0
+        with open(ligand_info_path) as f:
+            for line in f:
+                if line.strip().startswith("#") or not line.strip():
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 3:
+                    chain_for_ligand[idx] = parts[1]
+                    idx += 1
 
-ligands = []  # [(resname, chain, natoms), ...]
-with open(ligand_info_path) as f:
-    for line in f:
-        if line.strip().startswith("#") or not line.strip():
-            continue
-        parts = line.strip().split()
-        if len(parts) >= 3:
-            ligands.append((parts[0], parts[1], int(parts[2])))
-
-if not ligands:
-    print("No ligands in ligand_info.gs, skipping.")
-    sys.exit(0)
-
-# Check which ligand ITP/GRO files exist
-# GRO files are per-instance (ligand_RESNAME_CHAIN.gro), ITP is shared per resname
-available_ligands = []
-for resname, chain, natoms in ligands:
-    itp = f"ligand_{resname}.itp"
-    gro = f"ligand_{resname}_{chain}.gro"
-    if not os.path.isfile(gro):
-        gro = f"ligand_{resname}.gro"  # fallback to non-chain GRO
-    if os.path.isfile(itp) and os.path.isfile(gro):
-        available_ligands.append((resname, chain, natoms, itp, gro))
-    else:
-        print(f"Warning: {itp} or {gro} not found, skipping {resname} chain {chain}")
+    with open(manifest_path) as f:
+        for idx, line in enumerate(f):
+            if line.strip().startswith("#") or not line.strip():
+                continue
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                mol_name, itp, atomtypes, gro = parts[0], parts[1], parts[2], parts[3]
+                natoms = int(parts[4])
+                chain = chain_for_ligand.get(idx, "")
+                if os.path.isfile(itp) and os.path.isfile(gro):
+                    available_ligands.append((mol_name, chain, natoms, itp, gro, atomtypes))
+                else:
+                    print(f"Warning: {itp} or {gro} not found, skipping {mol_name}")
 
 if not available_ligands:
     print("No parametrized ligands found, skipping merge.")
@@ -84,17 +112,17 @@ prot_coords = read_gro_coords(args.conf)
 if prot_coords:
     prot_arr = np.array(prot_coords)
     filtered = []
-    for resname, chain, natoms, itp, gro in available_ligands:
+    for resname, chain, natoms, itp, gro, atomtypes in available_ligands:
         lig_coords = read_gro_coords(gro)
         if lig_coords:
             dists = cdist(np.array(lig_coords), prot_arr)
             min_dist = dists.min()
             if min_dist <= LIGAND_PROXIMITY_CUTOFF:
-                filtered.append((resname, chain, natoms, itp, gro))
+                filtered.append((resname, chain, natoms, itp, gro, atomtypes))
             else:
                 print(f"Skipping {resname} chain {chain}: nearest protein atom {min_dist:.2f} nm (> {LIGAND_PROXIMITY_CUTOFF} nm)")
         else:
-            filtered.append((resname, chain, natoms, itp, gro))
+            filtered.append((resname, chain, natoms, itp, gro, atomtypes))
     available_ligands = filtered
 
 if not available_ligands:
@@ -169,20 +197,18 @@ includes_added = set()
 for i, line in enumerate(lines):
     # Before the first protein moleculetype include, insert ligand moleculetype includes
     if i == first_moltype_idx:
-        for resname, chain, natoms, itp, gro in available_ligands:
-            if resname not in includes_added:
-                new_lines.append(f'#include "ligand_{resname}.itp"')
-                includes_added.add(resname)
+        for resname, chain, natoms, itp, gro, atomtypes in available_ligands:
+            if itp not in includes_added:
+                new_lines.append(f'#include "{itp}"')
+                includes_added.add(itp)
     new_lines.append(line)
     # After forcefield include, add ligand atomtype includes
     if i == insert_include_idx:
         atomtypes_added = set()
-        for resname, chain, natoms, itp, gro in available_ligands:
-            if resname not in atomtypes_added:
-                atomtypes_itp = f"ligand_{resname}_atomtypes.itp"
-                if os.path.isfile(atomtypes_itp):
-                    new_lines.append(f'#include "{atomtypes_itp}"')
-                    atomtypes_added.add(resname)
+        for resname, chain, natoms, itp, gro, atomtypes in available_ligands:
+            if atomtypes not in atomtypes_added and os.path.isfile(atomtypes):
+                new_lines.append(f'#include "{atomtypes}"')
+                atomtypes_added.add(atomtypes)
 
 # Add ligand molecules to [ molecules ] section
 # Find the last line of [ molecules ] (before any intermolecular_interactions or EOF)
@@ -208,16 +234,10 @@ for i in range(len(new_lines) - 1, -1, -1):
         mol_insert_idx = i + 1
         break
 
-# Count unique ligand types (same resname = same moleculetype, may have multiple instances)
-from collections import Counter
-ligand_counts = Counter()
-for resname, chain, natoms, itp, gro in available_ligands:
-    ligand_counts[resname] += 1
-
-# Insert ligand molecule entries
+# Insert ligand molecule entries (each instance is its own molecule type)
 ligand_mol_lines = []
-for resname, count in ligand_counts.items():
-    ligand_mol_lines.append(f"{resname:20s} {count}")
+for resname, chain, natoms, itp, gro, atomtypes in available_ligands:
+    ligand_mol_lines.append(f"{resname:20s} 1")
 
 # Rebuild with ligand molecules inserted
 output_lines = new_lines[:mol_insert_idx] + ligand_mol_lines + new_lines[mol_insert_idx:]
@@ -254,7 +274,7 @@ next_resnum = max_resnum + 1
 next_atomnum = n_protein_atoms + 1
 ligand_resnum_map = {}  # resname -> new_resnum (for chain_map update)
 
-for resname, chain, natoms, itp, gro in available_ligands:
+for resname, chain, natoms, itp, gro, atomtypes in available_ligands:
     with open(gro) as f:
         lig_gro_lines = f.readlines()
 

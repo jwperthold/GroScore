@@ -20,6 +20,7 @@ parser = argparse.ArgumentParser(description="Parametrize a small molecule with 
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file with ligand HETATM records")
 parser.add_argument('-r', '--resname', type=str, required=True, help="Residue name of the ligand")
 parser.add_argument('-c', '--chain', type=str, default="", help="Chain ID (for per-instance output filenames)")
+parser.add_argument('-i', '--instance', type=int, default=0, help="Instance number (for unique molecule names across same resname)")
 parser.add_argument('--ph', type=float, default=7.4, help="pH for protonation state assignment (default: 7.4)")
 parser.add_argument('--ff', type=str, default="openff-2.2.1.offxml", help="OpenFF force field (default: openff-2.2.1.offxml)")
 args = parser.parse_args()
@@ -172,23 +173,26 @@ with tempfile.TemporaryDirectory() as tmpdir:
         if in_moltype:
             moltype_lines.append(line)
 
-    # Rename molecule type from MOL0 to the residue name
-    mol_name = args.resname
+    # Rename molecule type from MOL0 to a per-instance name
+    # Each instance gets its own ITP because different copies of the same ligand
+    # may have different atom counts (e.g., truncated crystal fragments)
+    instance_suffix = f"_{args.instance}" if args.instance > 0 else ""
+    mol_name = f"{args.resname}{instance_suffix}"
     atomtypes_lines = [l.replace("MOL0", mol_name) for l in atomtypes_lines]
     moltype_lines = [l.replace("MOL0", mol_name) for l in moltype_lines]
 
     # Write atomtypes to separate file (must be included before any moleculetype)
-    atomtypes_path = f"ligand_{args.resname}_atomtypes.itp"
+    atomtypes_path = f"ligand_{mol_name}_atomtypes.itp"
     with open(atomtypes_path, "w") as f:
-        f.write(f"; Atom types for ligand {args.resname}\n")
+        f.write(f"; Atom types for ligand {args.resname} (instance {args.instance})\n")
         f.write(f"; Parametrized with OpenFF {args.ff}\n\n")
         for line in atomtypes_lines:
             f.write(line)
 
     # Write moleculetype to separate file
-    itp_path = f"ligand_{args.resname}.itp"
+    itp_path = f"ligand_{mol_name}.itp"
     with open(itp_path, "w") as f:
-        f.write(f"; Molecule type for ligand {args.resname}\n")
+        f.write(f"; Molecule type for ligand {args.resname} (instance {args.instance})\n")
         f.write(f"; Parametrized with OpenFF {args.ff}\n")
         f.write(f"; Total charge: {total_charge}\n\n")
         for line in moltype_lines:
@@ -197,10 +201,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     print(f"Wrote {itp_path} ({len(atomtypes_lines)} atomtype lines, {len(moltype_lines)} moleculetype lines)")
 
     # Step 7: Write ligand.gro with coordinates
-    # Read the OpenFF-generated GRO for coordinates (already in nm)
-    # GRO is per-instance (different coordinates); ITP is shared (same parameters)
     chain_suffix = f"_{args.chain}" if args.chain else ""
-    gro_path = f"ligand_{args.resname}{chain_suffix}.gro"
+    gro_path = f"ligand_{mol_name}{chain_suffix}.gro"
     with open(f"{prefix}.gro") as f:
         gro_lines = f.readlines()
 
@@ -220,3 +222,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
         f.write(gro_lines[-1])
 
     print(f"Wrote {gro_path} ({n_atoms_gro} atoms)")
+
+    # Append to ligand manifest for merge_ligand.py
+    with open("ligand_manifest.gs", "a") as f:
+        f.write(f"{mol_name}\t{itp_path}\t{atomtypes_path}\t{gro_path}\t{n_atoms_gro}\n")
