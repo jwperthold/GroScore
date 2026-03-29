@@ -32,26 +32,8 @@ with open('sp.gs', 'w') as sp:
 
         input_pdb = f"{pdb_id}/input.pdb"
 
-        if os.path.exists(input_pdb):
-            # Validate chain IDs against existing PDB
-            pdb_chains_existing = set()
-            with open(input_pdb) as pf:
-                for line in pf:
-                    if line.startswith('ATOM') and len(line) > 21:
-                        pdb_chains_existing.add(line[21])
-            chains_needed = set(chain_id_1) | set(chain_id_2)
-            if chains_needed <= pdb_chains_existing:
-                chain_id_2_formatted = ','.join(chain_id_2)
-                sp.write(f"{pdb_id}\t{chain_id_2_formatted}\n")
-                continue
-            else:
-                # Chain IDs don't match — re-download and remap
-                print(f"{pdb_id}: chain mismatch (need {chains_needed}, have {pdb_chains_existing}), re-downloading")
-                import shutil
-                shutil.rmtree(pdb_id, ignore_errors=True)
-                os.makedirs(pdb_id)
-
-        # Download mmCIF from RCSB (has both auth and label chain IDs)
+        # Always download fresh from RCSB to ensure correct chain mapping
+        # Download mmCIF (has both auth and label chain IDs)
         cif_url = f"https://files.rcsb.org/download/{pdb_id}.cif"
         print(f"Downloading {pdb_id}...", end=" ", flush=True)
 
