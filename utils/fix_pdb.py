@@ -89,7 +89,7 @@ try:
         for res in fixer.topology.residues():
             if res.name not in STANDARD_3 and res.name not in ION_RESIDUES and res.name not in {'ACE','NME','NHE','HOH'}:
                 # Check if it has backbone atoms (modified AA vs ligand)
-                atom_names = {a.name for a in res.atoms}
+                atom_names = {a.name for a in res.atoms()}
                 if {'N','CA','C','O'} <= atom_names:
                     unreplaced.add(res.name)
         if unreplaced:
