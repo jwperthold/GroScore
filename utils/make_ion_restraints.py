@@ -146,9 +146,14 @@ distances = cdist(ion_coords, prot_coords)
 # Find coordination pairs within cutoff
 coord_pairs = []  # [(ion_atomnum, prot_atomnum, measured_dist, optimal_dist, ion_resname, ion_name, prot_resname, prot_atomname), ...]
 
+# Only metal ions coordinate protein atoms (lone pair donation from S, N, O)
+METAL_IONS = {"ZN", "CA", "MG", "CU", "CU1", "FE", "FE2"}
+
 for i in range(len(ion_atoms)):
     ion_resname_field = ion_atoms[i][1]
     ion_res3 = re.sub(r'\d+', '', ion_resname_field)
+    if ion_res3 not in METAL_IONS:
+        continue  # non-metal ions (SD, CL, NA) don't coordinate protein atoms
     for j in range(len(prot_atoms)):
         dist = distances[i, j]
         if dist <= COORD_CUTOFF:
