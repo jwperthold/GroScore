@@ -80,6 +80,20 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 
 Metal ions (ZN, CA, MG, CU, CU1, NA, CL) are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain.
 
+**Ion coordination protonation**: Residues coordinating metal ions are automatically assigned correct protonation states before topology generation. Cysteine thiolates (CYS → CYM) are deprotonated to expose the lone pair on sulfur. Histidine residues are set so the coordinating nitrogen is deprotonated (ND1 coordinates → HIE; NE2 coordinates → HID). Detection uses a 3.0 Å distance cutoff. This is supported for all force fields (AMBER19SB, CHARMM36, GROMOS 54A8) with the appropriate residue naming conventions.
+
+### Non-Standard Amino Acids (AMBER19SB only)
+
+Modified amino acids (e.g., TRQ, TPO, SEP, MSE, HYP, MLY, CSO, PTR) are automatically detected from HETATM records that contain backbone atoms. Instead of replacing them with their parent residue, GroScore parametrizes them with OpenFF while keeping AMBER19SB backbone parameters:
+
+1. **Detection**: HETATM residues with backbone atoms (N, CA, C, O) are identified as modified amino acids
+2. **Capped tripeptide**: An ACE-NCAA-NME fragment is built from the PDB coordinates for charge consistency
+3. **Bond orders**: OpenBabel 3D perception with RCSB Chemical Component Dictionary fallback for complex ring systems
+4. **Parametrization**: OpenFF Sage assigns charges and bonded parameters for the sidechain; backbone atoms retain AMBER19SB types and charges
+5. **Force field injection**: Custom RTP, HDB, atom types, bonded parameters, and CMAP (from parent residue) are injected into a local force field copy
+
+This is only active when using AMBER19SB force fields with ligand parametrization enabled (default). Use `--no-ligand-param` to disable.
+
 ### Small Molecules (AMBER19SB only)
 
 Ligands and cofactors are automatically extracted from PDB HETATM records and parametrized using the [Open Force Field](https://openforcefield.org/) (Sage 2.2.1):
@@ -211,7 +225,9 @@ Results are written to two output files ranked by binding affinity:
 ```
 Stage 0: Preparation
 ├── PDB fixing (missing atoms, non-standard residues)
+├── NCAA parametrization (OpenFF sidechain + AMBER backbone)
 ├── Ligand extraction & OpenFF parametrization (AMBER19SB)
+├── Ion coordination protonation (CYS/HIS)
 ├── Crystal water extraction
 ├── Structure validation
 ├── PDB conversion (pdb2gmx)
@@ -263,10 +279,13 @@ groscore/
     ├── renumber_pdb.py              # Assign sequential residue numbers, extract ligands/waters
     ├── fix_pdb.py                   # Fix missing atoms with PDBFixer
     ├── cap_termini.py               # Add ACE/NME terminal caps
+    ├── parametrize_ncaa.py          # NCAA parametrization (OpenFF sidechain + AMBER backbone)
     ├── parametrize_ligand.py        # OpenFF small molecule parametrization
+    ├── fix_ion_protonation.py       # Ion-coordinating CYS/HIS protonation states
     ├── merge_ligand.py              # Merge ligand topology into protein system
     ├── merge_crystal_waters.py      # Merge crystal waters as SOL
     ├── make_ion_restraints.py       # Ion coordination restraints
+    ├── make_cluster_group.py        # PBC clustering index group
     ├── fix_topol_intermolecular.py  # Fix topology after solvation/genion
     ├── check_brokenloop.py          # Loop connectivity validation
     ├── check_entangledloops.py      # Topological knot detection
