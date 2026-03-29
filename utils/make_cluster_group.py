@@ -36,6 +36,10 @@ PROTEIN_RESNAMES = {
     'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
     'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL',
     'HIE', 'HID', 'HIP', 'CYX', 'CYM',  # AMBER variants
+    'HSD', 'HSE', 'HSP',  # CHARMM variants
+    'HISA', 'HISB', 'HISH', 'HISD', 'HISE', 'HISP',  # GROMOS variants
+    'CYSH', 'CYS1', 'CYS2',  # GROMOS CYS variants
+    'ASH', 'GLH', 'ASPH', 'GLUH', 'LYSH', 'ARGN',  # protonation variants
     'ACE', 'NME', 'NHE',  # terminal caps
     'NALA', 'NARG', 'NASN', 'NASP', 'NCYS', 'NGLN', 'NGLU', 'NGLY', 'NHIS',
     'NILE', 'NLEU', 'NLYS', 'NMET', 'NPHE', 'NPRO', 'NSER', 'NTHR', 'NTRP',
