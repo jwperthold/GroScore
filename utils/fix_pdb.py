@@ -17,7 +17,11 @@ ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
 parser = argparse.ArgumentParser(description="Fix PDB file with PDBFixer")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file")
 parser.add_argument('-o', '--output', type=str, required=True, help="Output PDB file")
+parser.add_argument('--keep-ncaa', type=str, default='', help="Comma-separated NCAA residue names to preserve (skip replacement)")
 args = parser.parse_args()
+
+# NCAA residues to keep (not replace with standard equivalents)
+ncaa_keep = set(r.strip() for r in args.keep_ncaa.split(',') if r.strip())
 
 # Separate ion lines from protein lines before PDBFixer
 # PDBFixer may drop or corrupt single-atom ion residues
@@ -68,6 +72,13 @@ try:
     fixer = PDBFixer(filename=tmp_path)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
+    # Filter out NCAA residues from replacement list (keep them as-is)
+    if ncaa_keep and fixer.nonstandardResidues:
+        kept = [(res, std) for res, std in fixer.nonstandardResidues if res.name not in ncaa_keep]
+        skipped = [(res, std) for res, std in fixer.nonstandardResidues if res.name in ncaa_keep]
+        if skipped:
+            print(f"Keeping {len(skipped)} NCAA residue(s): {', '.join(r.name for r, _ in skipped)}")
+        fixer.nonstandardResidues = kept
     fixer.replaceNonstandardResidues()
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
@@ -75,6 +86,18 @@ try:
     # Write fixed protein
     with open(args.output, "w") as out:
         PDBFile.writeFile(fixer.topology, fixer.positions, out, keepIds=True)
+
+    # Convert NCAA HETATM back to ATOM (PDBFixer outputs non-standard residues as HETATM)
+    if ncaa_keep:
+        with open(args.output) as f:
+            content = f.read()
+        with open(args.output, 'w') as f:
+            for line in content.split('\n'):
+                if line.startswith('HETATM'):
+                    resname = line[17:20].strip()
+                    if resname in ncaa_keep:
+                        line = 'ATOM  ' + line[6:]
+                f.write(line + '\n')
 
     # Append ion lines before END record
     if ion_lines:

@@ -79,8 +79,22 @@ if [[ ! -f chain_map.gs ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
 fi
 if [[ ! -f conf.gro ]]; then
+  # Detect NCAA residues for AMBER19SB with ligand parametrization enabled
+  NCAA_FLAG=""
+  if [[ $LIGAND_PARAM -eq 1 && ("$FORCEFIELD" == "amber19sb_opc" || "$FORCEFIELD" == "amber19sb_opc3") ]]; then
+    # Check if renumber_pdb.py detected modified amino acids
+    NCAA_LIST=$(grep "Detected modified amino acids" renumbered.pdb.log 2>/dev/null | sed 's/.*: //' || true)
+    if [[ -z "$NCAA_LIST" ]]; then
+      # Fallback: check for HETATM with backbone CA in renumbered.pdb
+      NCAA_LIST=$(awk '/^ATOM/ {res=substr($0,18,3); gsub(/ /,"",res); name=substr($0,13,4); gsub(/ /,"",name); if(name=="CA") seen[res]=1} END{for(r in seen) if(r!="ALA"&&r!="ARG"&&r!="ASN"&&r!="ASP"&&r!="CYS"&&r!="CYX"&&r!="GLN"&&r!="GLU"&&r!="GLY"&&r!="HID"&&r!="HIE"&&r!="HIP"&&r!="HIS"&&r!="ILE"&&r!="LEU"&&r!="LYS"&&r!="MET"&&r!="PHE"&&r!="PRO"&&r!="SER"&&r!="THR"&&r!="TRP"&&r!="TYR"&&r!="VAL"&&r!="ACE"&&r!="NME"&&r!="NHE"&&r!="ZN"&&r!="CA"&&r!="MG"&&r!="CU"&&r!="CU1"&&r!="NA"&&r!="CL") printf "%s,",r}' renumbered.pdb | sed 's/,$//')
+    fi
+    if [[ -n "$NCAA_LIST" ]]; then
+      echo "NCAA residues detected: $NCAA_LIST"
+      NCAA_FLAG="--keep-ncaa $NCAA_LIST"
+    fi
+  fi
   # Fix missing atoms and non-standard residues
-  python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
+  python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb $NCAA_FLAG
   # Add terminal caps: ACE/NME for AMBER19SB variants, ACE-only for CHARMM36 and GROMOS (uses COOH C-term patches)
   if [[ "$FORCEFIELD" == "charmm36" ]]; then
     python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only
@@ -95,6 +109,19 @@ if [[ ! -f conf.gro ]]; then
   # GROMOS 54A8: Remove OXT atoms added by PDBFixer - RTP doesn't define OXT, COOH patch handles C-termini
   if [[ "$FORCEFIELD" == "gromos54a8" ]]; then
     sed -i '/ OXT /d' $PDB2GMX_INPUT
+  fi
+  # Parametrize NCAA residues with OpenFF (AMBER19SB only, before pdb2gmx)
+  if [[ -n "$NCAA_FLAG" ]]; then
+    python3 ../../utils/parametrize_ncaa.py -f fixed.pdb --gmx-ff amber19sb
+    if [[ -d amber19sb.ff ]]; then
+      # Use local FF with NCAA entries; set GMXLIB to current dir so pdb2gmx finds it
+      if [[ -n "${GMXLIB:-}" ]]; then
+        export GMXLIB="$(pwd):${GMXLIB}"
+      else
+        export GMXLIB="$(pwd)"
+      fi
+      echo "Using local amber19sb.ff with NCAA entries"
+    fi
   fi
   # Ion residue names for pdb2gmx chain handling
   ION_RESIDUES="ZN|CA|MG|CU|CU1|NA|CL"
