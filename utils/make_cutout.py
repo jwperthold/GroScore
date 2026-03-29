@@ -18,6 +18,14 @@ STANDARD_RESIDUES = {
     "ACE", "NME", "NHE", "NH2", "SOL",
 }
 
+# Add NCAA residue names (if parametrized) to the standard set
+if os.path.isfile("ncaa_residues.gs"):
+    with open("ncaa_residues.gs") as f:
+        for line in f:
+            line = line.split("#")[0].strip()
+            if line:
+                STANDARD_RESIDUES.add(line)
+
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Cut-out protein around the interface.")

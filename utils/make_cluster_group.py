@@ -45,6 +45,15 @@ PROTEIN_RESNAMES = {
     'CTYR', 'CVAL',  # GROMOS C-terminal
 }
 
+# Add NCAA residue names (if parametrized) to the protein set
+if os.path.isfile("ncaa_residues.gs"):
+    with open("ncaa_residues.gs") as f:
+        for line in f:
+            line = line.split("#")[0].strip()
+            if line:
+                PROTEIN_RESNAMES.add(line)
+                print(f"Added NCAA residue {line} to protein group")
+
 atom_numbers = []
 with open(args.gro) as f:
     lines = f.readlines()
