@@ -33,6 +33,7 @@ ws = wb.active
 #          6=receptor_chains, 7=ligand_name, 8=receptor_name, 9=KD, 10=method,
 #          11=struct_method, 12=temperature, 13=resolution, 14-18=misc
 structures = {}  # pdb_id -> first entry (deduplicate by PDB)
+n_uppercase_replaced = 0
 for row in ws.iter_rows(min_row=2, values_only=True):
     pdb_id = str(row[3]).strip().upper() if row[3] else None
     if not pdb_id or len(pdb_id) != 4:
@@ -79,7 +80,7 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         if has_lowercase or not prev_has_lowercase:
             continue  # keep previous (it's already uppercase, or both are same quality)
         # Replace: current entry has all uppercase, previous had lowercase
-        stats['uppercase_replaced_lowercase'] += 1
+        n_uppercase_replaced += 1
 
     import math
     pkd = -math.log10(kd)
@@ -104,7 +105,7 @@ print(f"Found {len(structures)} structures in PPB-Affinity dataset")
 # Statistics tracking
 stats = {'direct_match': 0, 'dropped_lowercase': 0, 'failed_missing_uppercase': 0,
          'failed_no_protein_b': 0, 'failed_download': 0, 'failed_no_atoms': 0,
-         'failed_no_auth_col': 0, 'uppercase_replaced_lowercase': 0}
+         'failed_no_auth_col': 0}
 fail_details = []
 
 # aa3to1 mapping for sequence building
@@ -316,7 +317,7 @@ print(f"")
 print(f"Chain matching breakdown:")
 print(f"  Direct match (all chains OK):  {stats['direct_match']}")
 print(f"  Dropped SAbDab lowercase:      {stats['dropped_lowercase']}")
-print(f"  Uppercase replaced lowercase:  {stats['uppercase_replaced_lowercase']}")
+print(f"  Uppercase replaced lowercase:  {n_uppercase_replaced}")
 print(f"")
 print(f"Failure breakdown:")
 print(f"  Missing uppercase chains:      {stats['failed_missing_uppercase']}")
