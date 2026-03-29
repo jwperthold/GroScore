@@ -500,13 +500,16 @@ lenlk1 = len(protlaterkeep1)
 lenlk2 = len(protlaterkeep2)
 
 def fmt_pdb_atom(serial, atomname, res3, chain, resnum, x, y, z):
-  """Format a PDB ATOM line with correct column alignment."""
+  """Format a PDB ATOM line with correct column alignment.
+  3-char resname: columns 18-20 (0-indexed 17-19), space at 17 (alt loc) and 21
+  4-char resname: columns 18-21 (0-indexed 17-20), GROMACS convention, no space before chain
+  """
   name_fmt = f" {atomname:<3s}" if len(atomname) < 4 else f"{atomname:<4s}"
   if len(res3) <= 3:
     return (f"ATOM  {serial:5d} {name_fmt} {res3:>3s} {chain}{resnum:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {atomname[0]:>2s}\n")
   else:
-    return (f"ATOM  {serial:5d} {name_fmt}{res3:>4s} {chain}{resnum:4d}    "
+    return (f"ATOM  {serial:5d} {name_fmt} {res3:>4s}{chain}{resnum:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {atomname[0]:>2s}\n")
 
 # Write cutout PDB file
