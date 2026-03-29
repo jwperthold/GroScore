@@ -25203,8 +25203,8 @@
        C1   O1B   O1A   CZ1
        C2   O2B   O2A   CZ2
 
-[ CA ]
-; C24H39O5, Cholic Acid, cacha
+[ CACHA ]
+; C24H39O5, Cholic Acid (renamed from CA to avoid conflict with calcium ion in ions.rtp)
   [ atoms ]
        C3    CG311  0.1400   1
        O3    OG311 -0.6500   1
