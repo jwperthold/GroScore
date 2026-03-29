@@ -117,6 +117,34 @@ for chain in fixer.topology.chains():
 fixer.findMissingAtoms()
 fixer.addMissingAtoms()
 
+# Strip extra terminal atoms that conflict with caps
+# PDBFixer adds ACE/NME but doesn't remove N-terminal H2/H3 or C-terminal OXT
+# from the adjacent residue, causing template mismatches in OpenMM
+from openmm.app import Modeller as _Modeller
+atoms_to_delete = []
+for chain in fixer.topology.chains():
+    residues = list(chain.residues())
+    if len(residues) < 2:
+        continue
+    # If first residue is ACE, strip extra N-terminal H from second residue
+    if residues[0].name == 'ACE':
+        next_res = residues[1]
+        for atom in next_res.atoms():
+            if atom.name in ('H2', 'H3'):
+                atoms_to_delete.append(atom)
+    # If last residue is NME/NHE, strip OXT from second-to-last residue
+    if residues[-1].name in ('NME', 'NHE'):
+        prev_res = residues[-2]
+        for atom in prev_res.atoms():
+            if atom.name == 'OXT':
+                atoms_to_delete.append(atom)
+if atoms_to_delete:
+    modeller_cleanup = _Modeller(fixer.topology, fixer.positions)
+    modeller_cleanup.delete(atoms_to_delete)
+    fixer.topology = modeller_cleanup.topology
+    fixer.positions = modeller_cleanup.positions
+    print(f"Removed {len(atoms_to_delete)} extra terminal atom(s) conflicting with caps")
+
 # Brief OpenMM energy minimization of cap atoms to resolve steric clashes
 # PDBFixer places ACE/NME atoms from templates without checking for clashes,
 # which can result in cap hydrogens overlapping backbone atoms (e.g., ACE H1 on CA)
