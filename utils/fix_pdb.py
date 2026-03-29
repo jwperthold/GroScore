@@ -72,49 +72,52 @@ try:
     fixer = PDBFixer(filename=tmp_path)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
-    # Filter out NCAA residues from replacement list (keep them as-is)
+    # Filter out NCAA residues from replacement list (keep them as-is for OpenFF parametrization)
     if ncaa_keep and fixer.nonstandardResidues:
         kept = [(res, std) for res, std in fixer.nonstandardResidues if res.name not in ncaa_keep]
         skipped = [(res, std) for res, std in fixer.nonstandardResidues if res.name in ncaa_keep]
         if skipped:
             print(f"Keeping {len(skipped)} NCAA residue(s): {', '.join(r.name for r, _ in skipped)}")
         fixer.nonstandardResidues = kept
+    # Add modified AAs that PDBFixer doesn't know about to its replacement list
+    # PDBFixer only recognizes ~100 common modifications; others (e.g., TRQ) are missed.
+    # Look up parent residue from RCSB CCD and add to the list before replacement.
+    STANDARD_3 = {'ALA','ARG','ASN','ASP','CYS','GLN','GLU','GLY','HIS','ILE',
+                   'LEU','LYS','MET','PHE','PRO','SER','THR','TRP','TYR','VAL'}
+    already_listed = {res.name for res, _ in fixer.nonstandardResidues}
+    unknown_ncaa = {}  # resname -> parent
+    for res in fixer.topology.residues():
+        rn = res.name
+        if rn in STANDARD_3 or rn in ION_RESIDUES or rn in already_listed or rn in ncaa_keep:
+            continue
+        if rn in {'ACE', 'NME', 'NHE', 'HOH'}:
+            continue
+        atom_names = {a.name for a in res.atoms()}
+        if {'N', 'CA', 'C', 'O'} <= atom_names and rn not in unknown_ncaa:
+            unknown_ncaa[rn] = None
+    if unknown_ncaa:
+        import urllib.request
+        for resname in list(unknown_ncaa.keys()):
+            try:
+                url = f"https://files.rcsb.org/ligands/download/{resname}.cif"
+                cif_data = urllib.request.urlopen(url, timeout=10).read().decode()
+                for line in cif_data.split('\n'):
+                    if '_chem_comp.mon_nstd_parent_comp_id' in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 2 and parts[1] != '?':
+                            unknown_ncaa[resname] = parts[1]
+                            break
+            except Exception:
+                pass
+        for resname, parent in unknown_ncaa.items():
+            if parent and parent in STANDARD_3:
+                for res in fixer.topology.residues():
+                    if res.name == resname:
+                        fixer.nonstandardResidues.append((res, parent))
+                print(f"Added {resname} → {parent} to PDBFixer replacement list (from RCSB CCD)")
+            else:
+                print(f"Warning: could not determine parent for {resname}")
     fixer.replaceNonstandardResidues()
-    # Check for NCAAs that PDBFixer couldn't replace (not in its dictionary)
-    # Rename them to parent residue so pdb2gmx can process them
-    if not ncaa_keep:
-        unreplaced = set()
-        STANDARD_3 = {'ALA','ARG','ASN','ASP','CYS','GLN','GLU','GLY','HIS','ILE',
-                       'LEU','LYS','MET','PHE','PRO','SER','THR','TRP','TYR','VAL'}
-        for res in fixer.topology.residues():
-            if res.name not in STANDARD_3 and res.name not in ION_RESIDUES and res.name not in {'ACE','NME','NHE','HOH'}:
-                # Check if it has backbone atoms (modified AA vs ligand)
-                atom_names = {a.name for a in res.atoms()}
-                if {'N','CA','C','O'} <= atom_names:
-                    unreplaced.add(res.name)
-        if unreplaced:
-            # Try to get parent from RCSB CCD
-            import urllib.request
-            for resname in unreplaced:
-                parent = None
-                try:
-                    url = f"https://files.rcsb.org/ligands/download/{resname}.cif"
-                    cif_data = urllib.request.urlopen(url, timeout=10).read().decode()
-                    for line in cif_data.split('\n'):
-                        if '_chem_comp.mon_nstd_parent_comp_id' in line:
-                            parts = line.strip().split()
-                            if len(parts) >= 2 and parts[1] != '?':
-                                parent = parts[1]
-                                break
-                except Exception:
-                    pass
-                if parent and parent in STANDARD_3:
-                    for res in fixer.topology.residues():
-                        if res.name == resname:
-                            res.name = parent
-                    print(f"Replaced unreplaced NCAA {resname} → {parent} (from RCSB CCD)")
-                else:
-                    print(f"Warning: could not determine parent for {resname}, keeping as-is")
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
 
