@@ -499,6 +499,16 @@ protlaterkeep2 = [(prot2_resname[i], prot2_atomname[i], prot2_coords[i])
 lenlk1 = len(protlaterkeep1)
 lenlk2 = len(protlaterkeep2)
 
+def fmt_pdb_atom(serial, atomname, res3, chain, resnum, x, y, z):
+  """Format a PDB ATOM line with correct column alignment."""
+  name_fmt = f" {atomname:<3s}" if len(atomname) < 4 else f"{atomname:<4s}"
+  if len(res3) <= 3:
+    return (f"ATOM  {serial:5d} {name_fmt} {res3:>3s} {chain}{resnum:4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {atomname[0]:>2s}\n")
+  else:
+    return (f"ATOM  {serial:5d} {name_fmt}{res3:>4s} {chain}{resnum:4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {atomname[0]:>2s}\n")
+
 # Write cutout PDB file
 with open("cutout.pdb", "w") as pdbfile:
   atom_num = 0
@@ -521,9 +531,8 @@ with open("cutout.pdb", "w") as pdbfile:
         pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} A{prev_resnum:>4}\n")
 
     atom_num += 1
-    pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} A{resnum:>4}    "
-                  f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
-                  f"  1.00  0.00          {atomname[0]:>2}\n")
+    pdbfile.write(fmt_pdb_atom(atom_num, atomname, res3, 'A', resnum,
+                              coords[0]*10, coords[1]*10, coords[2]*10))
     prev_resnum = resnum
     prev_res3 = res3
 
@@ -551,8 +560,7 @@ with open("cutout.pdb", "w") as pdbfile:
         pdbfile.write(f"TER  {atom_num:>6}       {' ':>2} B{prev_resnum:>4}\n")
 
     atom_num += 1
-    pdbfile.write(f"ATOM {atom_num:>6}  {atomname:<3} {res3:>2} B{resnum:>4}    "
-                  f"{coords[0]*10:8.3f}{coords[1]*10:8.3f}{coords[2]*10:8.3f}"
-                  f"  1.00  0.00          {atomname[0]:>2}\n")
+    pdbfile.write(fmt_pdb_atom(atom_num, atomname, res3, 'B', resnum,
+                              coords[0]*10, coords[1]*10, coords[2]*10))
     prev_resnum = resnum
     prev_res3 = res3
