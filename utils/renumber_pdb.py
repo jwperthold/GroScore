@@ -10,7 +10,13 @@ import math
 import argparse
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
+ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
+
+# Metal clusters that cannot be parametrized with OpenFF — split into individual ion atoms
+# Each atom becomes its own single-atom residue with distance restraints
+METAL_CLUSTERS = {"FES", "SF4"}
+# Element-to-ion mapping: PDB element -> (ion resname, charge description)
+CLUSTER_ELEMENT_MAP = {"FE": "FE2", "S": "SD"}
 
 # HETATM residues to skip entirely (handled separately or irrelevant)
 # HOH = crystal waters (extracted to crystal_waters.pdb)
@@ -56,12 +62,12 @@ if MODIFIED_AA_RESIDUES:
     print(f"Detected modified amino acids (HETATM with backbone): {', '.join(sorted(MODIFIED_AA_RESIDUES))}")
 
 def is_atom_or_ion(line):
-    """Check if line is an ATOM record or a HETATM record for a supported ion or modified amino acid."""
+    """Check if line is an ATOM record or a HETATM record for a supported ion, modified AA, or metal cluster."""
     if line.startswith("ATOM"):
         return True
     if line.startswith("HETATM"):
         resname = line[17:20].strip()
-        if resname in ION_RESIDUES or resname in MODIFIED_AA_RESIDUES:
+        if resname in ION_RESIDUES or resname in MODIFIED_AA_RESIDUES or resname in METAL_CLUSTERS:
             return True
     return False
 
@@ -97,10 +103,17 @@ with open(args.pdbfile, "r") as f:
             chain_id = line[21]
             resname = get_resname(line)
             is_ion = resname in ION_RESIDUES
+            is_cluster = resname in METAL_CLUSTERS
             try:
                 orig_resnum = int(line[22:26].strip())
                 atomname = line[12:16].strip()
                 key = (chain_id, orig_resnum)
+
+                # Metal clusters: each atom becomes its own ion residue
+                if is_cluster:
+                    # Use a unique key per atom (not per residue)
+                    key = (chain_id, orig_resnum, atomname)
+                    is_ion = True
 
                 # Collect backbone C and N coordinates (skip for ions)
                 if not is_ion:
@@ -142,7 +155,11 @@ chain_breaks = set()
 
 # Build per-chain sorted residue lists for efficient lookup
 chain_resnums = {}
-for (c, r) in seen_residues.keys():
+for key in seen_residues.keys():
+    if len(key) == 2:
+        c, r = key
+    else:
+        c, r, _ = key  # cluster atoms have 3-tuple keys
     chain_resnums.setdefault(c, []).append(r)
 for c in chain_resnums:
     chain_resnums[c].sort()
@@ -184,9 +201,17 @@ with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
             chain_id = line[21]
             resname = get_resname(line)
             is_ion = resname in ION_RESIDUES
+            is_cluster = resname in METAL_CLUSTERS
+            atomname = line[12:16].strip()
             try:
                 orig_resnum = int(line[22:26].strip())
-                key = (chain_id, orig_resnum)
+
+                # Metal clusters: each atom has its own key and mapped resname
+                if is_cluster:
+                    key = (chain_id, orig_resnum, atomname)
+                    is_ion = True
+                else:
+                    key = (chain_id, orig_resnum)
                 new_resnum = seen_residues.get(key, orig_resnum)
 
                 # Add TER before chain breaks
@@ -205,7 +230,16 @@ with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
                         fout.write("TER\n")
 
                 # Write as ATOM record (convert HETATM to ATOM for ions)
-                new_line = "ATOM  " + line[6:22] + f"{new_resnum:4d}" + line[26:]
+                if is_cluster:
+                    # Metal cluster atom: write as individual ion with mapped resname
+                    elem = atomname[:2].strip() if atomname[:2].strip() in ('FE',) else atomname[0]
+                    ion_resname = CLUSTER_ELEMENT_MAP.get(elem, elem)
+                    # Write single-atom ion: atom name = element symbol for the ion
+                    ion_atomname = elem
+                    name_fmt = f" {ion_atomname:<3s}" if len(ion_atomname) < 4 else f"{ion_atomname:<4s}"
+                    new_line = f"ATOM  {line[6:11]} {name_fmt} {ion_resname:>3s} {chain_id}{new_resnum:4d}" + line[26:]
+                else:
+                    new_line = "ATOM  " + line[6:22] + f"{new_resnum:4d}" + line[26:]
                 fout.write(new_line)
                 last_key = key
                 last_was_ion = is_ion
@@ -246,8 +280,8 @@ with open(args.pdbfile, "r") as f:
             resname = get_resname(line)
             chain_id = line[21]
 
-            if resname in ION_RESIDUES or resname in MODIFIED_AA_RESIDUES:
-                continue  # Already handled above (ions and modified AAs are part of protein)
+            if resname in ION_RESIDUES or resname in MODIFIED_AA_RESIDUES or resname in METAL_CLUSTERS:
+                continue  # Already handled above (ions, modified AAs, metal clusters are part of protein)
             elif resname in SKIP_HETATM:
                 if resname == "HOH":
                     water_lines.append(line)

@@ -18,7 +18,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
+ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
 
 # Coordination detection cutoff (nm)
 # Captures bonds at 0.20-0.24 nm with margin; excludes non-coordinating
@@ -59,6 +59,15 @@ OPTIMAL_DISTANCES = {
     # Copper(I) (tetrahedral/linear)
     ("CU1", "S"): 0.221,  # Cu(I)-S(Cys/Met)
     ("CU1", "N"): 0.202,  # Cu(I)-N(His)
+    # Iron (Fe2+/Fe3+ in [2Fe-2S] / [4Fe-4S] clusters)
+    ("FE", "S"): 0.230,   # Fe-S(Cys/bridging sulfide): ~2.3 Å
+    ("FE", "N"): 0.220,   # Fe-N(His)
+    ("FE", "O"): 0.210,   # Fe-O(Asp/Glu)
+    ("FE2", "S"): 0.230,  # Fe2+-S
+    ("FE2", "N"): 0.220,  # Fe2+-N
+    ("FE2", "O"): 0.210,  # Fe2+-O
+    # Sulfide ions in FeS clusters (restrain to Fe)
+    ("SD", "FE"): 0.226,  # S(bridge)-Fe: ~2.26 Å in [2Fe-2S]
 }
 # Fallback distance if a specific pair is not parametrized
 DEFAULT_DISTANCE = 0.215
@@ -153,6 +162,22 @@ for i in range(len(ion_atoms)):
             optimal_dist = OPTIMAL_DISTANCES.get((ion_res3, coord_element), DEFAULT_DISTANCE)
             coord_pairs.append((ion_atomnum, prot_atomnum, dist, optimal_dist,
                                 ion_res3, ion_name, prot_resname, prot_atomname))
+
+# Also detect intra-cluster ion-ion coordination (e.g., Fe-S in [2Fe-2S])
+if len(ion_atoms) > 1:
+    ion_ion_dists = cdist(ion_coords, ion_coords)
+    for i in range(len(ion_atoms)):
+        ion_i_res3 = re.sub(r'\d+', '', ion_atoms[i][1])
+        for j in range(i + 1, len(ion_atoms)):
+            dist = ion_ion_dists[i, j]
+            if dist <= COORD_CUTOFF:
+                ion_j_res3 = re.sub(r'\d+', '', ion_atoms[j][1])
+                # Look up optimal distance (try both orderings)
+                opt = OPTIMAL_DISTANCES.get((ion_i_res3, ion_j_res3),
+                      OPTIMAL_DISTANCES.get((ion_j_res3, ion_i_res3), DEFAULT_DISTANCE))
+                coord_pairs.append((ion_atoms[i][0], ion_atoms[j][0], dist, opt,
+                                    ion_i_res3, ion_atoms[i][2],
+                                    ion_j_res3, ion_atoms[j][2]))
 
 if not coord_pairs:
     print("No ion coordination pairs detected within cutoff, skipping restraints.")

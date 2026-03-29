@@ -6,7 +6,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
+ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
 
 # Standard amino acid residue names — anything else is a ligand/ion/heteroatom
 STANDARD_RESIDUES = {

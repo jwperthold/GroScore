@@ -249,3 +249,8 @@
 ; Silver +1 ion
  [ atoms ]
   AG     AG1P   1.000    1
+
+[ SD ]
+; Sulfide ion (from [2Fe-2S] / [4Fe-4S] cluster, charge -1.0 for oxidized state)
+ [ atoms ]
+  SD     S     -1.000    1

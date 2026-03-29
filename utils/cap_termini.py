@@ -13,7 +13,7 @@ from pdbfixer import PDBFixer
 from openmm import unit
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL"}
+ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
 
 parser = argparse.ArgumentParser(description="Add ACE/NME caps to fragment termini using PDBFixer")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file")
