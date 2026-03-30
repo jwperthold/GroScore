@@ -30,10 +30,13 @@ if not os.path.isfile(args.file):
 
 # Read original chain_map.gs before modifying anything
 original_b_resnums = set()
+original_chain_header = ""  # preserve "chain(s): B,C" line for merge_ligand.py
 if args.chainmap and os.path.isfile(args.chainmap):
     with open(args.chainmap, "r") as f:
         for line in f:
-            if not line.strip().startswith("#"):
+            if "chain(s):" in line:
+                original_chain_header = line.rstrip()
+            elif not line.strip().startswith("#"):
                 try:
                     original_b_resnums.add(int(line.strip()))
                 except (ValueError, IndexError):
@@ -365,6 +368,8 @@ if protein_only_path:
 if args.chainmap:
     with open(args.chainmap, "w") as f:
         f.write("# Sequential residue numbers belonging to protein B\n")
+        if original_chain_header:
+            f.write(f"{original_chain_header}\n")
         cap_label = "ACE caps" if args.ace_only else "ACE/NME caps"
         f.write(f"# Updated by cap_termini.py with {cap_label}\n")
         for resnum in sorted(new_b_resnums):
