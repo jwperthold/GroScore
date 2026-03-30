@@ -147,6 +147,21 @@ if [[ ! -f conf.gro ]]; then
       fi
     fi
   fi
+  # Strip H from NCAA residues — PDBFixer/cap_termini may add wrong H (e.g., HG1 on
+  # phosphorylated OG1 in TPO). pdb2gmx with -ignh re-adds correct H from HDB.
+  if [[ -n "$NCAA_FLAG" ]]; then
+    python3 -c "
+import sys
+ncaas = set('$NCAA_LIST'.split(','))
+with open('$PDB2GMX_INPUT') as f:
+    lines = f.readlines()
+with open('$PDB2GMX_INPUT', 'w') as f:
+    for line in lines:
+        if line.startswith('ATOM') and line[17:20].strip() in ncaas and line[12:16].strip().startswith('H'):
+            continue
+        f.write(line)
+"
+  fi
   # Fix protonation states for ion-coordinating CYS/HIS residues
   python3 ../../utils/fix_ion_protonation.py -f $PDB2GMX_INPUT -m ion_residues.gs --ff $FORCEFIELD
   # Ion residue names for pdb2gmx chain handling
@@ -228,6 +243,20 @@ if [[ $bl -eq 0 ]]; then
       # GROMOS 54A8: Remove OXT atoms - RTP doesn't define OXT, COOH patch handles C-termini
       if [[ "$FORCEFIELD" == "gromos54a8" ]]; then
         sed -i '/ OXT /d' $CUTOUT_PDB
+      fi
+      # Strip H from NCAA residues in cutout (same issue as full protein)
+      if [[ -n "$NCAA_FLAG" ]]; then
+        python3 -c "
+import sys
+ncaas = set('$NCAA_LIST'.split(','))
+with open('$CUTOUT_PDB') as f:
+    lines = f.readlines()
+with open('$CUTOUT_PDB', 'w') as f:
+    for line in lines:
+        if line.startswith('ATOM') and line[17:20].strip() in ncaas and line[12:16].strip().startswith('H'):
+            continue
+        f.write(line)
+"
       fi
       # Fix protonation states for ion-coordinating CYS/HIS in cutout
       python3 ../../utils/fix_ion_protonation.py -f $CUTOUT_PDB -m ion_residues.gs --ff $FORCEFIELD
