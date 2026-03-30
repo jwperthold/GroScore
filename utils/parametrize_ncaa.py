@@ -269,7 +269,41 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
             except Exception as e:
                 print(f"  Template matching failed ({e})")
                 # Fallback: use template directly with ideal coords
+                # Assign PDB atom names from CCD CIF (SDF doesn't preserve them)
                 mol_assigned = template_clean
+                try:
+                    cif_url = f"https://files.rcsb.org/ligands/download/{ncaa_resname}.cif"
+                    cif_data = urllib.request.urlopen(cif_url, timeout=10).read().decode()
+                    ccd_names = []
+                    in_atom_block = False
+                    for cif_line in cif_data.split('\n'):
+                        if '_chem_comp_atom.atom_id' in cif_line:
+                            in_atom_block = True
+                            continue
+                        if in_atom_block and cif_line.startswith('_chem_comp'):
+                            continue
+                        if in_atom_block and (cif_line.startswith('#') or cif_line.startswith('_') or cif_line.startswith('loop')):
+                            in_atom_block = False
+                            continue
+                        if in_atom_block and cif_line.strip():
+                            parts = cif_line.split()
+                            if len(parts) >= 2 and parts[0] == ncaa_resname:
+                                ccd_names.append(parts[1])
+                    # Filter to heavy atoms only (matching template_clean which has removeHs)
+                    heavy_names = [n for n in ccd_names if not n.startswith('H') and n != 'OXT']
+                    if len(heavy_names) == mol_assigned.GetNumAtoms():
+                        for i, name in enumerate(heavy_names):
+                            info = Chem.AtomPDBResidueInfo()
+                            info.SetName(f" {name:<3s}" if len(name) < 4 else name)
+                            info.SetResidueName(ncaa_resname)
+                            info.SetResidueNumber(1)
+                            info.SetIsHeteroAtom(False)
+                            mol_assigned.GetAtomWithIdx(i).SetPDBResidueInfo(info)
+                        print(f"  Assigned {len(heavy_names)} atom names from CCD CIF")
+                    else:
+                        print(f"  Warning: CCD has {len(heavy_names)} heavy atoms vs {mol_assigned.GetNumAtoms()} in template")
+                except Exception as cif_err:
+                    print(f"  Warning: could not get CCD atom names ({cif_err})")
                 print("  Using template with ideal coordinates")
 
             # Build capped molecule: ACE-NCAA-NME
