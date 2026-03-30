@@ -30,39 +30,41 @@ args = parser.parse_args()
 # Format: (PDB_ID, protein_B_chains, description, E3_ligase)
 # protein_B = target protein (pulled away from E3)
 GLUE_PROTAC_STRUCTURES = [
-    # (PDB_ID, protein_B_chains, protein_B_name, E3_ligase)
+    # (PDB_ID, protein_B_chains, protein_B_name, E3_ligase, keep_chains)
     # protein_B = target protein (pulled away from E3/receptor)
-    # CRBN/DDB1-based molecular glues (one per unique target)
-    ("5FQD", "C",      "CK1alpha",                                "CRBN"),
-    ("6H0F", "D",      "GSPT1",                                   "CRBN"),
-    ("8U16", "C",      "SALL4",                                   "CRBN"),
-    ("9SAI", "C",      "BRD4",                                    "CRBN"),
-    ("8BU1", "B,C",    "CDK12-CyclinK",                           "DDB1"),
+    # keep_chains = chains for one complex copy (empty = all chains)
+    # CRBN/DDB-based molecular glues (one per unique target)
+    ("5FQD", "C",      "CK1alpha",       "CRBN",   "A,B,C"),
+    ("6H0F", "D",      "GSPT1",          "CRBN",   "A,B,D"),
+    ("8U16", "C",      "SALL4",          "CRBN",   "A,B,C"),
+    ("9SAI", "C",      "BRD4",           "CRBN",   "A,B,C"),
+    # DDB1-based molecular glues
+    ("8BU1", "B,C",    "CDK12-CyclinK",  "DDB1",   "A,B,C"),
     # VHL/ElonginBC-based PROTACs (one per unique target)
-    ("5T35", "E",      "BRD4-BD2",                                "VHL"),
-    ("6HAX", "E",      "SMARCA2",                                 "VHL"),
-    ("6SIS", "E",      "BRD9",                                    "VHL"),
+    ("5T35", "E",      "BRD4-BD2",       "VHL",    "A,B,C,E"),
+    ("6HAX", "E",      "SMARCA2",        "VHL",    "A,B,C,E"),
+    ("6SIS", "E",      "BRD9",           "VHL",    ""),
     # DCAF-based molecular glues
-    ("6UD7", "C",      "RBM39",                                   "DCAF15"),
-    ("6PAI", "D",      "RBM39",                                   "DCAF15"),
-    ("7S4E", "D",      "WDR5",                                    "DCAF1"),
+    ("6UD7", "C",      "RBM39",          "DCAF15", "A,B,C,D"),
+    ("6PAI", "D",      "RBM39",          "DCAF15", "A,C,D,E"),
+    ("7S4E", "D",      "WDR5",           "DCAF1",  "A,B,C,D"),
     # GID4-based PROTACs
-    ("8X7H", "B",      "BRD4-BD1",                                "GID4"),
-    # User-specified structures (auto-detect protein B)
-    ("8G46", "C",      "DCAF1",                                   "DDB1"),
-    ("8OV6", "C",      "BRD4",                                    "DCAF16"),
+    ("8X7H", "B",      "BRD4-BD1",       "GID4",   "A,B"),
+    # User-specified structures
+    ("8G46", "C",      "DCAF1",          "DDB1",   "A,B,C,E"),
+    ("8OV6", "C",      "BRD4",           "DCAF16", "A,B,C"),
     # FKBP12-based molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("1FAP", "B",      "FRAP/mTOR",                               "FKBP12"),
-    ("1TCO", "B,C",    "calcineurin",                              "FKBP12"),
+    ("1FAP", "B",      "FRAP/mTOR",      "FKBP12", "A,B"),
+    ("1TCO", "B,C",    "calcineurin",    "FKBP12", "A,B,C"),
     # 14-3-3 molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("4IHL", "P",      "RAF1-peptide",                             "14-3-3"),
-    ("4JDD", "B",      "ERalpha-peptide",                          "14-3-3"),
+    ("4IHL", "P",      "RAF1-peptide",   "14-3-3", "A,B,P"),
+    ("4JDD", "B",      "ERalpha-peptide","14-3-3", "A,B"),
     # Plant hormone receptor molecular glue
-    ("2P1O", "C",      "IAA7",                                    "TIR1"),
+    ("2P1O", "C",      "IAA7",           "TIR1",   "A,B,C"),
     # Other diverse molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("1S9D", "E",      "ARNO",                                    "ARF1"),
-    ("4J9Z", "R",      "calmodulin",                              "Kcnn2"),
-    ("3QEL", "",       "GluN2B",                                  "GluN1"),
+    ("1S9D", "E",      "ARNO",           "ARF1",   "A,E"),
+    ("4J9Z", "R",      "calmodulin",     "Kcnn2",  "B,R"),
+    ("3QEL", "",       "GluN2B",         "GluN1",  ""),
 ]
 
 # ---- NCAA structures ----
@@ -136,7 +138,9 @@ structures = {}  # pdb_id -> {chains_b, description, source, resolution}
 
 if args.subset in ("all", "glue"):
     print("=== Molecular Glue / PROTAC Structures ===")
-    for pdb_id, chains_b, desc, e3 in GLUE_PROTAC_STRUCTURES:
+    for entry in GLUE_PROTAC_STRUCTURES:
+        pdb_id, chains_b, desc, e3 = entry[:4]
+        keep_chains = entry[4] if len(entry) > 4 else ""
         resolution, method = get_entry_info(pdb_id)
         if resolution is not None and resolution > args.max_resolution_glue:
             print(f"  {pdb_id}: skipped (resolution {resolution:.1f} Å > {args.max_resolution_glue})")
@@ -145,6 +149,7 @@ if args.subset in ("all", "glue"):
             'chains_b': chains_b,
             'description': desc,
             'source': f"glue/{e3}",
+            'keep_chains': keep_chains,
             'resolution': resolution,
             'method': method or '',
         }
@@ -310,10 +315,15 @@ for pdb_id, info in structures.items():
 
     # Determine chains to keep
     chains_b_str = info['chains_b']
+    keep_chains_str = info.get('keep_chains', '')
     if chains_b_str:
         # Predefined chains (molecular glue/PROTAC)
         chains_b = set(c.strip() for c in chains_b_str.split(','))
-        chains_to_keep = pdb_chains  # keep all chains
+        if keep_chains_str:
+            # Explicit chain list for one complex copy (avoids duplicate ASU copies)
+            chains_to_keep = set(c.strip() for c in keep_chains_str.split(',') if c.strip())
+        else:
+            chains_to_keep = pdb_chains  # keep all chains
         actual_b_chains = chains_b & pdb_chains
         if not actual_b_chains:
             print(f"FAILED: protein B chains {chains_b} not in PDB {pdb_chains}")
@@ -347,10 +357,39 @@ for pdb_id, info in structures.items():
             fail_details.append((pdb_id, "fewer than 2 protein chains"))
             continue
 
-        # Protein B = smallest protein chain
-        sorted_chains = sorted(chain_res_counts.items(), key=lambda x: x[1])
+        # Deduplicate chains with identical residue counts (multiple ASU copies)
+        # Build per-chain sequences for duplicate detection
+        chain_seqs = {}
+        for rec in atom_records:
+            fields = rec.split()
+            if len(fields) <= max(auth_chain_col, comp_col or 0, seq_col or 0):
+                continue
+            if model_col is not None and len(fields) > model_col and fields[model_col] != '1':
+                continue
+            ch = fields[auth_chain_col]
+            if ch not in chain_res_counts:
+                continue
+            atom_name = fields[atom_name_col].strip('"') if atom_name_col and len(fields) > atom_name_col else ''
+            if atom_name != 'CA':
+                continue
+            comp = fields[comp_col].strip('"') if comp_col and len(fields) > comp_col else ''
+            chain_seqs.setdefault(ch, '')
+            chain_seqs[ch] += aa3to1.get(comp, 'X')
+
+        # Keep only the first chain per unique sequence (remove ASU duplicates)
+        seen_seqs = {}
+        unique_chains = set()
+        for ch in sorted(chain_seqs.keys()):
+            seq = chain_seqs[ch]
+            if seq not in seen_seqs:
+                seen_seqs[seq] = ch
+                unique_chains.add(ch)
+
+        # Protein B = smallest unique protein chain
+        unique_counts = {ch: chain_res_counts[ch] for ch in unique_chains}
+        sorted_chains = sorted(unique_counts.items(), key=lambda x: x[1])
         actual_b_chains = {sorted_chains[0][0]}
-        chains_to_keep = pdb_chains
+        chains_to_keep = unique_chains | (pdb_chains - set(chain_res_counts.keys()))  # unique proteins + non-protein chains
         chains_b_str = ','.join(sorted(actual_b_chains))
 
     # Write PDB from mmCIF
