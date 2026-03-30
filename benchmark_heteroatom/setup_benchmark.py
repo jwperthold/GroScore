@@ -37,7 +37,7 @@ GLUE_PROTAC_STRUCTURES = [
     ("6H0F", "D",      "GSPT1",                                   "CRBN"),
     ("8U16", "C",      "SALL4",                                   "CRBN"),
     ("9SAI", "C",      "BRD4",                                    "CRBN"),
-    ("8BU1", "C",      "Cyclin-K",                                "CRBN"),
+    ("8BU1", "B,C",    "CDK12-CyclinK",                           "DDB1"),
     # VHL/ElonginBC-based PROTACs (one per unique target)
     ("5T35", "E",      "BRD4-BD2",                                "VHL"),
     ("6HAX", "E",      "SMARCA2",                                 "VHL"),
