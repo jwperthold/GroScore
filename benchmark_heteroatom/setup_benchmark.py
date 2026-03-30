@@ -30,39 +30,39 @@ args = parser.parse_args()
 # Format: (PDB_ID, protein_B_chains, description, E3_ligase)
 # protein_B = target protein (pulled away from E3)
 GLUE_PROTAC_STRUCTURES = [
+    # (PDB_ID, protein_B_chains, protein_B_name, E3_ligase)
+    # protein_B = target protein (pulled away from E3/receptor)
     # CRBN/DDB1-based molecular glues (one per unique target)
-    ("5FQD", "C",      "DDB1-CRBN-lenalidomide-CK1alpha",         "CRBN"),
-    ("6H0F", "D",      "DDB1-CRBN-CC-885-GSPT1",                  "CRBN"),
-    ("8U16", "C",      "DDB1-CRBN-molecular-glue-IKZF1",           "CRBN"),
-    ("9SAI", "C",      "DDB1-CRBN-BRD4-BD1-JQ1-AcN",              "CRBN"),
+    ("5FQD", "C",      "CK1alpha",                                "CRBN"),
+    ("6H0F", "D",      "GSPT1",                                   "CRBN"),
+    ("8U16", "C",      "SALL4",                                   "CRBN"),
+    ("9SAI", "C",      "BRD4",                                    "CRBN"),
+    ("8BU1", "C",      "Cyclin-K",                                "CRBN"),
     # VHL/ElonginBC-based PROTACs (one per unique target)
-    ("5T35", "E",      "VHL-ElonginBC-MZ1-BRD4-BD2",              "VHL"),
-    ("6HAX", "E",      "VHL-ElonginBC-PROTAC-SMARCA2",             "VHL"),
-    ("6SIS", "E",      "VHL-ElonginBC-PROTAC-BRD9",                "VHL"),
-    ("8BDT", "D",      "VHL-ElonginBC-PROTAC51-BRD4-BD2",          "VHL"),
+    ("5T35", "E",      "BRD4-BD2",                                "VHL"),
+    ("6HAX", "E",      "SMARCA2",                                 "VHL"),
+    ("6SIS", "E",      "BRD9",                                    "VHL"),
     # DCAF-based molecular glues
-    ("6UD7", "D",      "DCAF15-DDB1-indisulam-RBM39",             "DCAF15"),
-    ("6PAI", "C",      "DCAF15-DDB1-E7820-RBM39",                 "DCAF15"),
-    ("7S4E", "C",      "DCAF1-DDB1-WDR5-molecular-glue",           "DCAF1"),
+    ("6UD7", "C",      "RBM39",                                   "DCAF15"),
+    ("6PAI", "D",      "RBM39",                                   "DCAF15"),
+    ("7S4E", "D",      "WDR5",                                    "DCAF1"),
     # GID4-based PROTACs
-    ("8X7H", "B",      "GID4-NEP162-BRD4-BD1",                    "GID4"),
+    ("8X7H", "B",      "BRD4-BD1",                                "GID4"),
     # User-specified structures (auto-detect protein B)
-    ("8G46", "",       "user-specified-ternary",                    "other"),
-    ("8OV6", "",       "user-specified-ternary",                    "other"),
-    ("8BU1", "",       "user-specified-ternary",                    "other"),
+    ("8G46", "C",      "DCAF1",                                   "DDB1"),
+    ("8OV6", "",       "auto-detect",                              "other"),
     # FKBP12-based molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("1FAP", "B",      "FKBP12-rapamycin-FRAP",                   "FKBP12"),
-    ("1TCO", "B,C",    "FKBP12-FK506-calcineurin",                "FKBP12"),
+    ("1FAP", "B",      "FRAP/mTOR",                               "FKBP12"),
+    ("1TCO", "B,C",    "calcineurin",                              "FKBP12"),
     # 14-3-3 molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("3M51", "P",      "14-3-3-pyrrolidone1-PMA2",                "14-3-3"),
-    ("4IHL", "P",      "14-3-3-cotylenin-A-RAF1",                  "14-3-3"),
-    ("4JDD", "B",      "14-3-3-fusicoccin-ERalpha",                "14-3-3"),
+    ("4IHL", "P",      "RAF1-peptide",                             "14-3-3"),
+    ("4JDD", "B",      "ERalpha-peptide",                          "14-3-3"),
     # Plant hormone receptor molecular glue
-    ("2P1O", "C",      "TIR1-auxin-IAA7",                         "TIR1"),
+    ("2P1O", "C",      "IAA7",                                    "TIR1"),
     # Other diverse molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("1S9D", "E",      "ARF1-brefeldinA-ARNO",                    "other"),
-    ("4J9Z", "R",      "calmodulin-NS309-Kcnn2",                  "other"),
-    ("3QEL", "",       "GluN2B-ifenprodil-GluN1",                  "other"),
+    ("1S9D", "E",      "ARNO",                                    "ARF1"),
+    ("4J9Z", "R",      "calmodulin",                              "Kcnn2"),
+    ("3QEL", "",       "GluN2B",                                  "GluN1"),
 ]
 
 # ---- NCAA structures ----
@@ -236,7 +236,7 @@ fail_details = []
 
 # Write benchmark.csv
 with open('benchmark.csv', 'w') as csvf:
-    csvf.write("pdb_id,chain_id_b,description,source,resolution,method\n")
+    csvf.write("pdb_id,chain_id_b,protein_b,source,resolution,method\n")
     for pdb_id, info in structures.items():
         csvf.write(f"{pdb_id},{info['chains_b']},{info['description']},"
                    f"{info['source']},{info['resolution']},{info['method']}\n")
