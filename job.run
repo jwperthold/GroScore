@@ -157,8 +157,11 @@ with open('$PDB2GMX_INPUT') as f:
     lines = f.readlines()
 with open('$PDB2GMX_INPUT', 'w') as f:
     for line in lines:
-        if line.startswith('ATOM') and line[17:20].strip() in ncaas and line[12:16].strip().startswith('H'):
-            continue
+        if line.startswith(('ATOM','HETATM')) and line[17:20].strip() in ncaas:
+            if line[12:16].strip().startswith('H'):
+                continue  # strip wrong H from NCAA
+            if line.startswith('HETATM'):
+                line = 'ATOM  ' + line[6:]  # ensure NCAA is ATOM
         f.write(line)
 "
   fi
@@ -253,8 +256,11 @@ with open('$CUTOUT_PDB') as f:
     lines = f.readlines()
 with open('$CUTOUT_PDB', 'w') as f:
     for line in lines:
-        if line.startswith('ATOM') and line[17:20].strip() in ncaas and line[12:16].strip().startswith('H'):
-            continue
+        if line.startswith(('ATOM','HETATM')) and line[17:20].strip() in ncaas:
+            if line[12:16].strip().startswith('H'):
+                continue  # strip wrong H from NCAA
+            if line.startswith('HETATM'):
+                line = 'ATOM  ' + line[6:]  # ensure NCAA is ATOM
         f.write(line)
 "
       fi
