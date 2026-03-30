@@ -45,9 +45,11 @@ GLUE_PROTAC_STRUCTURES = [
     ("5T35", "A",      "BRD4",           "VHL",         "A,B,C,D"),    # A=BRD4, B=ElonginB, C=ElonginC, D=VHL
     ("6HAX", "A",      "SMARCA2",        "VHL",         "A,B,C,D"),    # A=SMARCA2, B=VHL, C=ElonginC, D=ElonginB
     ("6SIS", "A",      "BRD9",           "VHL",         "A,B,C,D"),    # A=BRD9, B=ElonginB, C=ElonginC, D=VHL
-    # DCAF-based molecular glues
+    # DCAF15-based molecular glues
     ("6UD7", "C",      "RBM39",          "DCAF15",      "A,B,C,D"),    # A=DCAF15, B=DDB1, C=RBM39, D=DDA1
     ("6PAI", "D",      "RBM39",          "DCAF15",      "A,C,D,E"),    # A=DDB1, C=DCAF15, D=RBM39, E=DDA1
+    # DCAF1-based PROTACs
+    ("9DLW", "A",      "WDR5",           "DCAF1",       "A,B"),        # A=WDR5, B=DCAF1
     # GID4-based PROTACs
     ("8X7H", "B",      "BRD4-BD1",       "GID4",        "A,B"),        # A=GID4, B=BRD4
     # DCAF16-based molecular glues
