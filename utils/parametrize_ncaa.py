@@ -868,6 +868,15 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
             hdb_lines.append(f"1\t5\tHA\tCA\t" + "\t".join(refs))
         elif n_h == 3:
             refs = heavy_neighbors[:2]
+            # Type 4 (methyl) needs 2 reference atoms; if only 1 neighbor, go one level deeper
+            if len(refs) < 2 and len(refs) == 1:
+                grandparent_idx = next((i for i, n in ncaa_atom_map.items() if n == refs[0]), None)
+                if grandparent_idx is not None:
+                    for gp_nb in sorted(adj.get(grandparent_idx, set())):
+                        gp_name = ncaa_atom_map.get(gp_nb)
+                        if gp_name and gp_name != parent_name and gp_name not in refs:
+                            refs.append(gp_name)
+                            break
             hdb_lines.append(f"3\t4\t{base_name}\t{parent_name}\t" + "\t".join(refs))
         elif n_h == 2:
             refs = heavy_neighbors[:2]
