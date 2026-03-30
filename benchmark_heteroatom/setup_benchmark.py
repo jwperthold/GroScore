@@ -50,7 +50,7 @@ GLUE_PROTAC_STRUCTURES = [
     ("8X7H", "B",      "BRD4-BD1",                                "GID4"),
     # User-specified structures (auto-detect protein B)
     ("8G46", "C",      "DCAF1",                                   "DDB1"),
-    ("8OV6", "",       "auto-detect",                              "other"),
+    ("8OV6", "C",      "BRD4",                                    "DCAF16"),
     # FKBP12-based molecular glues (Rui et al. RSC Chem Biol 2023)
     ("1FAP", "B",      "FRAP/mTOR",                               "FKBP12"),
     ("1TCO", "B,C",    "calcineurin",                              "FKBP12"),
