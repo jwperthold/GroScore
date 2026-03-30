@@ -134,15 +134,17 @@ def build_capped_pdb(atoms, chain, resnum):
         for name, xyz, elem in [('CH3', ch3_xyz, 'C'), ('C', c_xyz, 'C'), ('O', o_xyz, 'O')]:
             lines.append(pdb_line(serial, name, 'ACE', chain, resnum - 1, xyz, elem))
 
-    # NCAA atoms (all heavy atoms from PDB)
+    # NCAA atoms from PDB (heavy atoms tracked separately for matching)
     ncaa_heavy_coords = {}
     ncaa_atom_names = []
     for a in ncaa_atoms:
         elem = a['name'][0]
         lines.append(pdb_line(serial, a['name'], a['resname'], chain, resnum,
                               coord(a), elem))
-        ncaa_heavy_coords[a['name']] = coord(a)
-        ncaa_atom_names.append(a['name'])
+        # Only track heavy atoms for coordinate matching (skip H)
+        if not a['name'].strip().startswith('H'):
+            ncaa_heavy_coords[a['name']] = coord(a)
+            ncaa_atom_names.append(a['name'])
 
     # NME cap: N(H)-CH3 from next residue backbone
     if ncaa_C and next_N:
@@ -450,9 +452,11 @@ def parse_gro_coords(content):
 
 # ---- Atom matching and type/charge assignment ----
 
-def match_ncaa_atoms(gro_coords, ncaa_heavy_coords):
+def match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content=None):
     """Match GRO atom indices to NCAA PDB atom names by coordinate proximity.
-    PDB coords are in Angstrom, GRO in nm."""
+    PDB coords are in Angstrom, GRO in nm.
+    Falls back to atom-name matching from GRO residue names if coordinate matching fails
+    (e.g., when ideal template coordinates were used instead of PDB coordinates)."""
     mapping = {}
     for gro_idx, gc in enumerate(gro_coords):
         for name, pc in ncaa_heavy_coords.items():
@@ -461,6 +465,18 @@ def match_ncaa_atoms(gro_coords, ncaa_heavy_coords):
             if np.linalg.norm(gc - pc / 10.0) < 0.005:  # 0.05 Angstrom
                 mapping[gro_idx] = name
                 break
+
+    # Fallback: match by atom name from GRO file if coordinate matching failed
+    if len(mapping) == 0 and gro_content is not None:
+        gro_lines = gro_content.strip().split('\n')
+        n = int(gro_lines[1].strip())
+        ncaa_names_set = set(ncaa_heavy_coords.keys())
+        for i, line in enumerate(gro_lines[2:2+n]):
+            if len(line) < 15:
+                continue
+            atom_name = line[10:15].strip()
+            if atom_name in ncaa_names_set and atom_name not in mapping.values():
+                mapping[i] = atom_name
     return mapping
 
 
@@ -942,7 +958,7 @@ for resname, instances in ncaa_types.items():
     gro_coords = parse_gro_coords(gro_content)
 
     # Match NCAA atoms by coordinates
-    ncaa_atom_map = match_ncaa_atoms(gro_coords, ncaa_heavy_coords)
+    ncaa_atom_map = match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content)
     print(f"  Matched {len(ncaa_atom_map)}/{len(ncaa_heavy_coords)} NCAA heavy atoms")
     for name in ncaa_heavy_coords:
         if name not in ncaa_atom_map.values():
