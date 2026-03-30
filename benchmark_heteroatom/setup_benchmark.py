@@ -33,38 +33,40 @@ GLUE_PROTAC_STRUCTURES = [
     # (PDB_ID, protein_B_chains, protein_B_name, E3_ligase, keep_chains)
     # protein_B = target protein (pulled away from E3/receptor)
     # keep_chains = chains for one complex copy (empty = all chains)
-    # CRBN/DDB-based molecular glues (one per unique target)
-    ("5FQD", "C",      "CK1alpha",       "CRBN",   "A,B,C"),
-    ("6H0F", "D",      "GSPT1",          "CRBN",   "A,B,D"),
-    ("8U16", "C",      "SALL4",          "CRBN",   "A,B,C"),
-    ("9SAI", "C",      "BRD4",           "CRBN",   "A,B,C"),
-    # DDB1-based molecular glues
-    ("8BU1", "B,C",    "CDK12-CyclinK",  "DDB1",   "A,B,C"),
+    # CRBN/DDB1-based molecular glues (one per unique target)
+    # DDB1=large scaffold, CRBN=substrate receptor, target=neosubstrate
+    ("5FQD", "C",      "CK1alpha",       "DDB1-CRBN",  "A,B,C"),      # A=DDB1, B=CRBN, C=CK1a
+    ("6H0F", "C",      "IKZF1",          "DDB1-CRBN",  "A,B,C"),      # A=DDB1, B=CRBN, C=IKZF1
+    ("8U16", "C",      "SALL4",          "DDB1-CRBN",  "A,B,C"),      # A=CRBN, B=DDB1, C=SALL4
+    ("9SAI", "C",      "BRD4",           "DDB1-CRBN",  "A,B,C"),      # A=DDB1, B=CRBN, C=BRD4
+    ("8BU1", "B,C",    "CDK12-CyclinK",  "DDB1",       "A,B,C"),      # A=DDB1, B=CDK12, C=CyclinK
     # VHL/ElonginBC-based PROTACs (one per unique target)
-    ("5T35", "E",      "BRD4-BD2",       "VHL",    "A,B,C,E"),
-    ("6HAX", "E",      "SMARCA2",        "VHL",    "A,B,C,E"),
-    ("6SIS", "E",      "BRD9",           "VHL",    ""),
+    # VHL+ElonginB+ElonginC = E3 complex, target = recruited protein
+    ("5T35", "A",      "BRD4",           "VHL",         "A,B,C,D"),    # A=BRD4, B=ElonginB, C=ElonginC, D=VHL
+    ("6HAX", "A",      "SMARCA2",        "VHL",         "A,B,C,D"),    # A=SMARCA2, B=VHL, C=ElonginC, D=ElonginB
+    ("6SIS", "A",      "BRD9",           "VHL",         "A,B,C,D"),    # A=BRD9, B=ElonginB, C=ElonginC, D=VHL
     # DCAF-based molecular glues
-    ("6UD7", "C",      "RBM39",          "DCAF15", "A,B,C,D"),
-    ("6PAI", "D",      "RBM39",          "DCAF15", "A,C,D,E"),
-    ("7S4E", "D",      "WDR5",           "DCAF1",  "A,B,C,D"),
+    ("6UD7", "C",      "RBM39",          "DCAF15",      "A,B,C,D"),    # A=DCAF15, B=DDB1, C=RBM39, D=DDA1
+    ("6PAI", "D",      "RBM39",          "DCAF15",      "A,C,D,E"),    # A=DDB1, C=DCAF15, D=RBM39, E=DDA1
     # GID4-based PROTACs
-    ("8X7H", "B",      "BRD4-BD1",       "GID4",   "A,B"),
-    # User-specified structures
-    ("8G46", "C",      "DCAF1",          "DDB1",   "A,B,C,E"),
-    ("8OV6", "C",      "BRD4",           "DCAF16", "A,B,C"),
+    ("8X7H", "B",      "BRD4-BD1",       "GID4",        "A,B"),        # A=GID4, B=BRD4
+    # DCAF16-based molecular glues
+    ("8G46", "C",      "BRD4",           "DCAF16",      "A,B,C,E"),    # A=DDB1, B=DCAF16, C=BRD4, E=DDA1
+    ("8OV6", "C",      "BRD4",           "DCAF16",      "A,B,C"),      # A=DDB1deltaBPB, B=DCAF16, C=BRD4
+    # VHL-based PROTAC (SMARCA2, different from 6HAX — different paper)
+    ("7S4E", "A",      "SMARCA2",        "VHL",         "A,B,C,D"),    # A=SMARCA2, B=VHL, C=ElonginC, D=ElonginB
     # FKBP12-based molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("1FAP", "B",      "FRAP/mTOR",      "FKBP12", "A,B"),
-    ("1TCO", "B,C",    "calcineurin",    "FKBP12", "A,B,C"),
+    ("1FAP", "B",      "FRAP/mTOR",      "FKBP12",      "A,B"),        # A=FKBP12, B=FRAP
+    ("1TCO", "A,B",    "calcineurin",    "FKBP12",      "A,B,C"),      # A=calcineurinA, B=calcineurinB, C=FKBP12
     # 14-3-3 molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("4IHL", "P",      "RAF1-peptide",   "14-3-3", "A,B,P"),
-    ("4JDD", "B",      "ERalpha-peptide","14-3-3", "A,B"),
+    ("4IHL", "P",      "RAF1-peptide",   "14-3-3",      "A,B,P"),      # A,B=14-3-3 dimer, P=RAF1
+    ("4JDD", "B",      "ERalpha-peptide","14-3-3",      "A,B"),        # A=14-3-3, B=ERa
     # Plant hormone receptor molecular glue
-    ("2P1O", "C",      "IAA7",           "TIR1",   "A,B,C"),
+    ("2P1O", "C",      "IAA7",           "TIR1",        "A,B,C"),      # A=SKP1, B=TIR1, C=IAA7
     # Other diverse molecular glues (Rui et al. RSC Chem Biol 2023)
-    ("1S9D", "E",      "ARNO",           "ARF1",   "A,E"),
-    ("4J9Z", "R",      "calmodulin",     "Kcnn2",  "B,R"),
-    ("3QEL", "",       "GluN2B",         "GluN1",  ""),
+    ("1S9D", "E",      "ARNO",           "ARF1",        "A,E"),        # A=ARF1, E=ARNO
+    ("4J9Z", "R",      "calmodulin",     "Kcnn2",       "B,R"),        # B=Kcnn2, R=calmodulin
+    ("3QEL", "B",      "GluN2B",         "GluN1",       "A,B"),        # A=GluN1, B=GluN2B
 ]
 
 # ---- NCAA structures ----
