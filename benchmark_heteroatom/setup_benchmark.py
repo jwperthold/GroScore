@@ -30,27 +30,39 @@ args = parser.parse_args()
 # Format: (PDB_ID, protein_B_chains, description, E3_ligase)
 # protein_B = target protein (pulled away from E3)
 GLUE_PROTAC_STRUCTURES = [
-    # CRBN/DDB1-based molecular glues and PROTACs
+    # CRBN/DDB1-based molecular glues (one per unique target)
     ("5FQD", "C",      "DDB1-CRBN-lenalidomide-CK1alpha",         "CRBN"),
     ("6H0F", "D",      "DDB1-CRBN-CC-885-GSPT1",                  "CRBN"),
-    ("6UML", "E",      "DDB1-CRBN-dBET6-BRD4",                    "CRBN"),
-    ("7ZNT", "C",      "DDB1-CRBN-BRD4-MZ1-analog",               "CRBN"),
-    ("8U15", "C",      "DDB1-CRBN-molecular-glue-neosubstrate",    "CRBN"),
     ("8U16", "C",      "DDB1-CRBN-molecular-glue-IKZF1",           "CRBN"),
     ("9SAI", "C",      "DDB1-CRBN-BRD4-BD1-JQ1-AcN",              "CRBN"),
-    ("9DJT", "C",      "DDB1-CRBN-molecular-glue-ternary",         "CRBN"),
-    # VHL/ElonginBC-based PROTACs
+    # VHL/ElonginBC-based PROTACs (one per unique target)
     ("5T35", "E",      "VHL-ElonginBC-MZ1-BRD4-BD2",              "VHL"),
     ("6HAX", "E",      "VHL-ElonginBC-PROTAC-SMARCA2",             "VHL"),
-    ("6HAY", "E",      "VHL-ElonginBC-PROTAC1-SMARCA2",            "VHL"),
     ("6SIS", "E",      "VHL-ElonginBC-PROTAC-BRD9",                "VHL"),
     ("8BDT", "D",      "VHL-ElonginBC-PROTAC51-BRD4-BD2",          "VHL"),
     # DCAF-based molecular glues
-    ("6Q0R", "B",      "DCAF15-DDB1-indisulam-RBM39",             "DCAF15"),
+    ("6UD7", "D",      "DCAF15-DDB1-indisulam-RBM39",             "DCAF15"),
+    ("6PAI", "C",      "DCAF15-DDB1-E7820-RBM39",                 "DCAF15"),
     ("7S4E", "C",      "DCAF1-DDB1-WDR5-molecular-glue",           "DCAF1"),
     # GID4-based PROTACs
     ("8X7H", "B",      "GID4-NEP162-BRD4-BD1",                    "GID4"),
-    ("8X7G", "B",      "GID4-NEP108-BRD4-BD1",                    "GID4"),
+    # User-specified structures (auto-detect protein B)
+    ("8G46", "",       "user-specified-ternary",                    "other"),
+    ("8OV6", "",       "user-specified-ternary",                    "other"),
+    ("8BU1", "",       "user-specified-ternary",                    "other"),
+    # FKBP12-based molecular glues (Rui et al. RSC Chem Biol 2023)
+    ("1FAP", "B",      "FKBP12-rapamycin-FRAP",                   "FKBP12"),
+    ("1TCO", "B,C",    "FKBP12-FK506-calcineurin",                "FKBP12"),
+    # 14-3-3 molecular glues (Rui et al. RSC Chem Biol 2023)
+    ("3M51", "P",      "14-3-3-pyrrolidone1-PMA2",                "14-3-3"),
+    ("4IHL", "P",      "14-3-3-cotylenin-A-RAF1",                  "14-3-3"),
+    ("4JDD", "B",      "14-3-3-fusicoccin-ERalpha",                "14-3-3"),
+    # Plant hormone receptor molecular glue
+    ("2P1O", "C",      "TIR1-auxin-IAA7",                         "TIR1"),
+    # Other diverse molecular glues (Rui et al. RSC Chem Biol 2023)
+    ("1S9D", "E",      "ARF1-brefeldinA-ARNO",                    "other"),
+    ("4J9Z", "R",      "calmodulin-NS309-Kcnn2",                  "other"),
+    ("3QEL", "",       "GluN2B-ifenprodil-GluN1",                  "other"),
 ]
 
 # ---- NCAA structures ----
