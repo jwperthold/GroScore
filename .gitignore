@@ -17,3 +17,6 @@ benchmark_gromos_54a8/
 benchmark_ppb/*/
 !benchmark_ppb/setup_benchmark.py
 bm_*/
+benchmark_heteroatom/*/
+benchmark_heteroatom/sp.gs
+benchmark_heteroatom/benchmark.csv
