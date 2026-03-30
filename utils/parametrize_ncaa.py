@@ -878,7 +878,16 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
 
         # Get H names for this parent
         parent_h_names = sorted(h_names[i] for i, p in h_atoms.items() if p == parent_name)
-        base_name = parent_h_names[0].rstrip('0123456789') if parent_h_names else 'H'
+        # Base name for HDB: strip only the last digit (instance number)
+        # e.g., HG21 → HG2 (not HG), HB1 → HB, HO2P → HO2P (single H, no stripping)
+        if parent_h_names:
+            if n_h > 1:
+                # Multi-H group: strip last char (instance digit) from first H name
+                base_name = parent_h_names[0][:-1] if parent_h_names[0][-1].isdigit() else parent_h_names[0]
+            else:
+                base_name = parent_h_names[0]
+        else:
+            base_name = 'H'
 
         # Determine parent element
         parent_elem = type_elem.get(top['atoms'][parent_idx]['type'], 6)
