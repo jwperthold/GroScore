@@ -837,6 +837,28 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
     hdb_lines = []
 
     # Process parents in NCAA atom order
+    def get_refs(parent_name, heavy_neighbors, n_needed):
+        """Get n_needed reference atoms; traverse grandparents if not enough direct neighbors."""
+        refs = heavy_neighbors[:n_needed]
+        while len(refs) < n_needed:
+            # Go one level deeper: find neighbors of the last ref atom
+            last_ref = refs[-1] if refs else None
+            if last_ref is None:
+                break
+            last_idx = next((i for i, n in ncaa_atom_map.items() if n == last_ref), None)
+            if last_idx is None:
+                break
+            found = False
+            for gp_nb in sorted(adj.get(last_idx, set())):
+                gp_name = ncaa_atom_map.get(gp_nb)
+                if gp_name and gp_name != parent_name and gp_name not in refs:
+                    refs.append(gp_name)
+                    found = True
+                    break
+            if not found:
+                break
+        return refs
+
     ordered_parents = ['N', 'CA', 'CB'] + [n for n in ncaa_atom_names
                                             if n not in BACKBONE_NAMES and n != 'CB']
     for parent_name in ordered_parents:
@@ -867,27 +889,18 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
             refs = [n for n in heavy_neighbors if n not in ('H', 'HA')][:3]
             hdb_lines.append(f"1\t5\tHA\tCA\t" + "\t".join(refs))
         elif n_h == 3:
-            refs = heavy_neighbors[:2]
-            # Type 4 (methyl) needs 2 reference atoms; if only 1 neighbor, go one level deeper
-            if len(refs) < 2 and len(refs) == 1:
-                grandparent_idx = next((i for i, n in ncaa_atom_map.items() if n == refs[0]), None)
-                if grandparent_idx is not None:
-                    for gp_nb in sorted(adj.get(grandparent_idx, set())):
-                        gp_name = ncaa_atom_map.get(gp_nb)
-                        if gp_name and gp_name != parent_name and gp_name not in refs:
-                            refs.append(gp_name)
-                            break
+            refs = get_refs(parent_name, heavy_neighbors, 2)
             hdb_lines.append(f"3\t4\t{base_name}\t{parent_name}\t" + "\t".join(refs))
         elif n_h == 2:
-            refs = heavy_neighbors[:2]
+            refs = get_refs(parent_name, heavy_neighbors, 2)
             hdb_lines.append(f"2\t6\t{base_name}\t{parent_name}\t" + "\t".join(refs))
         elif n_h == 1:
             h_name = parent_h_names[0]
             if parent_elem == 8:  # oxygen → hydroxyl
-                refs = heavy_neighbors[:2]
+                refs = get_refs(parent_name, heavy_neighbors, 2)
                 hdb_lines.append(f"1\t2\t{h_name}\t{parent_name}\t" + "\t".join(refs))
             elif parent_elem == 7:  # nitrogen
-                refs = heavy_neighbors[:2]
+                refs = get_refs(parent_name, heavy_neighbors, 2)
                 hdb_lines.append(f"1\t1\t{h_name}\t{parent_name}\t" + "\t".join(refs))
             else:  # carbon
                 n_total = len(adj.get(parent_idx, set()))
@@ -895,7 +908,7 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
                     refs = heavy_neighbors[:2]
                     hdb_lines.append(f"1\t1\t{h_name}\t{parent_name}\t" + "\t".join(refs))
                 else:  # sp3
-                    refs = heavy_neighbors[:3]
+                    refs = get_refs(parent_name, heavy_neighbors, 3)
                     hdb_lines.append(f"1\t5\t{h_name}\t{parent_name}\t" + "\t".join(refs))
 
     return f"{resname}\t{len(hdb_lines)}\n" + '\n'.join(hdb_lines)
