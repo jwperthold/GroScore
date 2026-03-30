@@ -416,7 +416,8 @@ for pdb_id, info in structures.items():
 
         group = fields[group_col] if group_col is not None and len(fields) > group_col else 'ATOM'
         atom_name = fields[atom_name_col].strip('"') if atom_name_col and len(fields) > atom_name_col else 'X'
-        comp = fields[comp_col].strip('"') if comp_col and len(fields) > comp_col else 'UNK'
+        comp_full = fields[comp_col].strip('"') if comp_col and len(fields) > comp_col else 'UNK'
+        comp = comp_full[:3] if len(comp_full) > 3 else comp_full  # PDB format: max 3-char residue name
         seq_id = fields[seq_col] if seq_col and len(fields) > seq_col else '1'
         try:
             x = float(fields[x_col])
