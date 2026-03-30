@@ -46,18 +46,61 @@ if not os.path.isfile(args.pdbfile):
     print(f"Error: PDB file '{args.pdbfile}' not found.", file=sys.stderr)
     sys.exit(1)
 
-# Pre-scan: identify HETATM residues that have backbone atoms (N, CA, C, O)
-# These are modified amino acids (e.g., TRQ, TPO, SEP, MSE, HYP, MLY, CSO, PTR)
-# and should be treated as protein, not ligands
+# Pre-scan: identify HETATM residues that are covalently bonded to the protein chain
+# via peptide bonds. These are modified amino acids (e.g., TRQ, TPO, SEP, MSE)
+# and should be treated as protein, not ligands.
+# A real NCAA has its backbone N within peptide bond distance (~1.3 Å) of the
+# previous residue's C, or its C within peptide bond distance of the next residue's N.
+import math as _math
 MODIFIED_AA_RESIDUES = set()
+_hetatm_candidates = {}  # resname -> {(chain, resnum): {'N': (x,y,z), 'C': (x,y,z)}}
+_protein_backbone = {}   # (chain, resnum) -> {'N': (x,y,z), 'C': (x,y,z)}
 with open(args.pdbfile) as f:
     for line in f:
-        if line.startswith("HETATM"):
+        if line.startswith(("ATOM", "HETATM")) and len(line) >= 54:
             resname = line[17:20].strip()
             atomname = line[12:16].strip()
-            if resname not in ION_RESIDUES and resname not in SKIP_HETATM:
-                if atomname == 'CA':
-                    MODIFIED_AA_RESIDUES.add(resname)
+            chain = line[21]
+            try:
+                resnum = int(line[22:26].strip())
+                x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
+            except (ValueError, IndexError):
+                continue
+            if line.startswith("HETATM") and resname not in ION_RESIDUES and resname not in SKIP_HETATM:
+                if atomname in ('N', 'CA', 'C', 'O'):
+                    _hetatm_candidates.setdefault(resname, {}).setdefault((chain, resnum), {})[atomname] = (x, y, z)
+            elif line.startswith("ATOM") and atomname in ('N', 'C'):
+                _protein_backbone.setdefault((chain, resnum), {})[atomname] = (x, y, z)
+
+PEPTIDE_BOND_MAX = 2.0  # Angstrom
+for resname, instances in _hetatm_candidates.items():
+    for (chain, resnum), atoms in instances.items():
+        if 'N' not in atoms or 'CA' not in atoms:
+            continue
+        # Check if this HETATM residue has a peptide bond to a neighboring ATOM residue
+        has_peptide_bond = False
+        het_n = atoms.get('N')
+        het_c = atoms.get('C')
+        # Check previous residue C -> this N
+        for dr in range(-1, -5, -1):
+            prev = _protein_backbone.get((chain, resnum + dr))
+            if prev and 'C' in prev and het_n:
+                dist = _math.sqrt(sum((a - b) ** 2 for a, b in zip(prev['C'], het_n)))
+                if dist < PEPTIDE_BOND_MAX:
+                    has_peptide_bond = True
+                    break
+        # Check this C -> next residue N
+        if not has_peptide_bond and het_c:
+            for dr in range(1, 5):
+                nxt = _protein_backbone.get((chain, resnum + dr))
+                if nxt and 'N' in nxt:
+                    dist = _math.sqrt(sum((a - b) ** 2 for a, b in zip(het_c, nxt['N'])))
+                    if dist < PEPTIDE_BOND_MAX:
+                        has_peptide_bond = True
+                        break
+        if has_peptide_bond:
+            MODIFIED_AA_RESIDUES.add(resname)
+            break  # one instance is enough
 if MODIFIED_AA_RESIDUES:
     print(f"Detected modified amino acids (HETATM with backbone): {', '.join(sorted(MODIFIED_AA_RESIDUES))}")
 
