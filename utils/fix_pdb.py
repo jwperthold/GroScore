@@ -125,16 +125,25 @@ try:
     with open(args.output, "w") as out:
         PDBFile.writeFile(fixer.topology, fixer.positions, out, keepIds=True)
 
-    # Convert NCAA HETATM back to ATOM (PDBFixer outputs non-standard residues as HETATM)
+    # Convert NCAA HETATM back to ATOM and strip PDBFixer-added H atoms
+    # PDBFixer's addMissingAtoms() may add wrong H to NCAAs (e.g., HG1 on
+    # phosphorylated OG1 in TPO). These will be re-added correctly by pdb2gmx
+    # via the HDB from parametrize_ncaa.py.
     if ncaa_keep:
         with open(args.output) as f:
             content = f.read()
         with open(args.output, 'w') as f:
             for line in content.split('\n'):
-                if line.startswith('HETATM'):
+                if line.startswith(('ATOM', 'HETATM')):
                     resname = line[17:20].strip()
                     if resname in ncaa_keep:
-                        line = 'ATOM  ' + line[6:]
+                        # Convert HETATM to ATOM
+                        if line.startswith('HETATM'):
+                            line = 'ATOM  ' + line[6:]
+                        # Strip H atoms — pdb2gmx with -ignh re-adds from HDB
+                        atomname = line[12:16].strip()
+                        if atomname.startswith('H'):
+                            continue
                 f.write(line + '\n')
 
     # Append ion lines before END record
