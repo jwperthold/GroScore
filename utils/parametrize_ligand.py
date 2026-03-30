@@ -14,6 +14,7 @@
 import os
 import sys
 import argparse
+import json
 import tempfile
 
 parser = argparse.ArgumentParser(description="Parametrize a small molecule with OpenFF for GROMACS.")
@@ -77,23 +78,69 @@ if mol_rdkit is None or not kekulization_ok:
     # Fixes tautomer issues by using the deposited bond orders
     print("Trying RCSB template for correct bond orders...")
     pdb_mol = Chem.MolFromPDBBlock(pdb_content, removeHs=True, sanitize=True)
-    try:
-        url = f"https://files.rcsb.org/ligands/download/{args.resname}_ideal.sdf"
+
+    def try_rcsb_template(ccd_id, pdb_mol):
+        """Download RCSB ideal SDF and assign bond orders to PDB mol."""
+        url = f"https://files.rcsb.org/ligands/download/{ccd_id}_ideal.sdf"
         sdf_data = urllib.request.urlopen(url, timeout=15).read().decode()
         template = Chem.MolFromMolBlock(sdf_data, removeHs=True)
         if template is not None and pdb_mol is not None:
-            mol_assigned = AllChem.AssignBondOrdersFromTemplate(template, pdb_mol)
-            mol_rdkit = Chem.AddHs(mol_assigned, addCoords=True)
+            mol = AllChem.AssignBondOrdersFromTemplate(template, pdb_mol)
+            return Chem.AddHs(mol, addCoords=True)
+        return None
+
+    def search_rcsb_prefix(prefix):
+        """Search RCSB for CCD IDs starting with a 3-char prefix."""
+        query = {"query": {"type": "terminal", "service": "text", "parameters": {
+            "attribute": "rcsb_chem_comp_container_identifiers.comp_id",
+            "operator": "starts_with", "value": prefix}},
+            "return_type": "non_polymer_entity",
+            "request_options": {"paginate": {"start": 0, "rows": 10}}}
+        req = urllib.request.Request("https://search.rcsb.org/rcsbsearch/v2/query",
+            data=json.dumps(query).encode(), headers={"Content-Type": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=15)
+        results = json.loads(resp.read())
+        ids = []
+        for hit in results.get("result_set", []):
+            ccd_id = hit["identifier"].split("_")[-1] if "_" in hit["identifier"] else hit["identifier"]
+            if ccd_id != prefix:  # skip the exact match (already tried)
+                ids.append(ccd_id)
+        return ids
+
+    try:
+        # Try exact CCD ID
+        mol_rdkit = try_rcsb_template(args.resname, pdb_mol)
+        if mol_rdkit is not None:
             total_charge = Chem.GetFormalCharge(mol_rdkit)
-            print(f"RCSB template: {mol_rdkit.GetNumAtoms()} atoms, charge={total_charge}, "
+            print(f"RCSB template ({args.resname}): {mol_rdkit.GetNumAtoms()} atoms, charge={total_charge}, "
                   f"SMILES: {Chem.MolToSmiles(mol_rdkit)}")
     except Exception as e:
-        print(f"RCSB template failed: {e}")
+        # Exact match failed or wrong compound (atom count mismatch) — try prefix search
+        # PDB format truncates >3 char CCD IDs (e.g., A1JM3 → A1J)
+        print(f"RCSB template {args.resname} failed ({e}), searching by prefix...")
+        mol_rdkit = None
+        if len(args.resname) <= 3:
+            try:
+                for ccd_id in search_rcsb_prefix(args.resname):
+                    try:
+                        mol_rdkit = try_rcsb_template(ccd_id, pdb_mol)
+                        if mol_rdkit is not None:
+                            total_charge = Chem.GetFormalCharge(mol_rdkit)
+                            print(f"RCSB template {ccd_id} (from prefix {args.resname}): "
+                                  f"{mol_rdkit.GetNumAtoms()} atoms, charge={total_charge}, "
+                                  f"SMILES: {Chem.MolToSmiles(mol_rdkit)}")
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
         if mol_rdkit is None:
-            print("Error: could not determine bond orders.", file=sys.stderr)
-            sys.exit(1)
-        else:
-            print("Warning: using OpenBabel result despite kekulization issue")
+            print(f"RCSB template failed: {e}")
+            if not kekulization_ok:
+                print("Error: could not determine bond orders.", file=sys.stderr)
+                sys.exit(1)
+            else:
+                print("Warning: using OpenBabel result despite kekulization issue")
 
 # Strip PDB residue metadata (OpenFF requires all-or-none residue info)
 # Round-trip through SDF to get a clean mol without PDB annotations
