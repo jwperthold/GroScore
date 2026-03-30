@@ -76,23 +76,15 @@ The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umar
 
 ## Heteroatom Support
 
+### Crystal Waters
+
+Crystal water molecules (HOH) from PDB structures are preserved and included as SOL in the simulation. They are placed at crystallographic positions before bulk solvation.
+
 ### Structural Ions
 
-Metal ions (ZN, CA, MG, CU, CU1, NA, CL) are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain.
+Metal ions (ZN, CA, MG, CU, CU1, FE, FE2, NA, CL) are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain.
 
 **Ion coordination protonation**: Residues coordinating metal ions are automatically assigned correct protonation states before topology generation. Cysteine thiolates (CYS → CYM) are deprotonated to expose the lone pair on sulfur. Histidine residues are set so the coordinating nitrogen is deprotonated (ND1 coordinates → HIE; NE2 coordinates → HID). Detection uses a 3.0 Å distance cutoff. This is supported for all force fields (AMBER19SB, CHARMM36, GROMOS 54A8) with the appropriate residue naming conventions.
-
-### Non-Standard Amino Acids (AMBER19SB only)
-
-Modified amino acids (e.g., TRQ, TPO, SEP, MSE, HYP, MLY, CSO, PTR) are automatically detected from HETATM records that contain backbone atoms. Instead of replacing them with their parent residue, GroScore parametrizes them with OpenFF while keeping AMBER19SB backbone parameters:
-
-1. **Detection**: HETATM residues with backbone atoms (N, CA, C, O) are identified as modified amino acids
-2. **Capped tripeptide**: An ACE-NCAA-NME fragment is built from the PDB coordinates for charge consistency
-3. **Bond orders**: OpenBabel 3D perception with RCSB Chemical Component Dictionary fallback for complex ring systems
-4. **Parametrization**: OpenFF Sage assigns charges and bonded parameters for the sidechain; backbone atoms retain AMBER19SB types and charges
-5. **Force field injection**: Custom RTP, HDB, atom types, bonded parameters, and CMAP (from parent residue) are injected into a local force field copy
-
-This is only active when using AMBER19SB force fields with ligand parametrization enabled (default). Use `--no-ligand-param` to disable.
 
 ### Small Molecules (AMBER19SB only)
 
@@ -105,9 +97,17 @@ Ligands and cofactors are automatically extracted from PDB HETATM records and pa
 
 For best results with novel (non-PDB) ligands, provide input structures with explicit hydrogen coordinates. To skip ligand parametrization entirely, use `--no-ligand-param`.
 
-### Crystal Waters
+### Non-Standard Amino Acids (AMBER19SB only)
 
-Crystal water molecules (HOH) from PDB structures are preserved and included as SOL in the simulation. They are placed at crystallographic positions before bulk solvation.
+Modified amino acids (e.g., TRQ, TPO, SEP, MSE, HYP, MLY, CSO, PTR) are automatically detected from HETATM records that contain backbone atoms. Instead of replacing them with their parent residue, GroScore parametrizes them with OpenFF while keeping AMBER19SB backbone parameters:
+
+1. **Detection**: HETATM residues with backbone atoms (N, CA, C, O) are identified as modified amino acids
+2. **Capped tripeptide**: An ACE-NCAA-NME fragment is built from the PDB coordinates for charge consistency
+3. **Bond orders**: OpenBabel 3D perception with RCSB Chemical Component Dictionary fallback for complex ring systems
+4. **Parametrization**: OpenFF Sage assigns charges and bonded parameters for the sidechain; backbone atoms retain AMBER19SB types and charges
+5. **Force field injection**: Custom RTP, HDB, atom types, bonded parameters, and CMAP (from parent residue) are injected into a local force field copy
+
+This is only active when using AMBER19SB force fields with ligand parametrization enabled (default). Use `--no-ligand-param` to disable.
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
