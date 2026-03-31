@@ -1147,7 +1147,7 @@ with open(atp_path) as f:
     atp_content = f.read()
 with open(atp_path, 'a') as f:
     for type_name, at in sorted(all_atomtypes.items()):
-        if type_name not in atp_content:
+        if type_name not in set(line.split()[0] for line in atp_content.split('\n') if line.strip() and not line.startswith(';')):
             f.write(f"{type_name:<14s} {at['mass']:.2f}\n")
 print(f"Appended {len(all_atomtypes)} types to {atp_path}")
 
@@ -1189,9 +1189,10 @@ if os.path.isfile(restypes_src) and not os.path.isfile(restypes_local):
 if os.path.isfile(restypes_local):
     with open(restypes_local) as f:
         rt_content = f.read()
+    existing = set(line.split()[0] for line in rt_content.split('\n') if line.strip() and not line.startswith(';'))
     with open(restypes_local, 'a') as f:
         for resname in ncaa_types:
-            if resname not in rt_content:
+            if resname not in existing:
                 f.write(f"{resname}\tProtein\n")
     print(f"Updated {restypes_local} with NCAA residues as Protein type")
 
