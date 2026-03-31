@@ -57,8 +57,9 @@ for line in lines:
     # Bond lines start with spaces + digit; molecule lines start with a word
     if in_bonds and stripped and not stripped.startswith(';') and not stripped.startswith('['):
         parts = stripped.split()
-        if len(parts) == 2 and not parts[0][0].isdigit():
-            # This looks like a molecule entry (e.g., "SOL  19184")
+        if len(parts) == 2 and not parts[0].isdigit():
+            # This looks like a molecule entry (e.g., "SOL  19184", "1KP  1")
+            # Bond entries have pure-digit atom indices; molecule names contain letters
             stray_mol_lines.append(stripped)
             continue
 
