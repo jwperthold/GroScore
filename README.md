@@ -186,7 +186,7 @@ python ../groscore.py
 ```
 
 **Options:**
-- `-n, --numruns` - Number of independent pull/push cycles (default: 3)
+- `-n, --numruns` - Number of independent pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
