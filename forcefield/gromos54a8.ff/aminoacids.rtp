@@ -10493,104 +10493,104 @@ AO3PB   APG AO3PG AH3PG     gd_22
   PC2   PC1    PO    PH     gd_23   
 
 ; [ BA ] — commented out to avoid conflict with barium ion in ions.rtp
- [ atoms ]
-   C3     C    -0.10000     0
-   H3    HC     0.10000     0
-   C2     C    -0.10000     1
-   H2    HC     0.10000     1
-   C4     C    -0.10000     2
-   H4    HC     0.10000     2
-   C1     C    -0.10000     3
-   H1    HC     0.10000     3
-   C5     C    -0.10000     4
-   H5    HC     0.10000     4
-   C6     C     0.00000     5
-   C7     C     0.53000     6
-   O8     O    -0.38000     6
-   O9    OA    -0.54800     6
-   H9     H     0.39800     6
- [ bonds ]
-   C3    H3    gb_3    
-   C3    C2    gb_16   
-   C3    C4    gb_16   
-   C2    H2    gb_3    
-   C2    C1    gb_16   
-   C4    H4    gb_3    
-   C4    C5    gb_16   
-   C1    H1    gb_3    
-   C1    C6    gb_16   
-   C5    H5    gb_3    
-   C5    C6    gb_16   
-   C6    C7    gb_23   
-   C7    O8    gb_5    
-   C7    O9    gb_13   
-   O9    H9    gb_1    
- [ exclusions ]
-;  ai    aj
-   C3    H1
-   C3    H5
-   C3    C6
-   H3    H2
-   H3    H4
-   H3    C1
-   H3    C5
-   C2    H4
-   C2    C5
-   C2    C7
-   H2    C4
-   H2    H1
-   H2    C6
-   C4    C1
-   C4    C7
-   H4    H5
-   H4    C6
-   C1    H5
-   H1    C5
-   H1    C7
-   H5    C7
- [ angles ]
-;  ai    aj    ak   gromos type
-   H3    C3    C2     ga_25   
-   H3    C3    C4     ga_25   
-   C2    C3    C4     ga_27   
-   C3    C2    H2     ga_25   
-   C3    C2    C1     ga_27   
-   H2    C2    C1     ga_25   
-   C3    C4    H4     ga_25   
-   C3    C4    C5     ga_27   
-   H4    C4    C5     ga_25   
-   C2    C1    H1     ga_25   
-   C2    C1    C6     ga_27   
-   H1    C1    C6     ga_25   
-   C4    C5    H5     ga_25   
-   C4    C5    C6     ga_27   
-   H5    C5    C6     ga_25   
-   C1    C6    C5     ga_27   
-   C1    C6    C7     ga_27   
-   C5    C6    C7     ga_27   
-   C6    C7    O8     ga_30   
-   C6    C7    O9     ga_19   
-   O8    C7    O9     ga_33   
-   C7    O9    H9     ga_12   
- [ impropers ]
-;  ai    aj    ak    al   gromos type
-   C3    C2    C4    H3     gi_1    
-   C3    C2    C1    C6     gi_1    
-   C3    C4    C5    C6     gi_1    
-   C2    C3    C4    C5     gi_1    
-   C2    C1    C6    C5     gi_1    
-   H2    C3    C1    C2     gi_1    
-   C4    C3    C2    C1     gi_1    
-   C4    C5    C6    C1     gi_1    
-   H4    C3    C5    C4     gi_1    
-   C1    C2    C6    H1     gi_1    
-   C5    C4    C6    H5     gi_1    
-   C6    C1    C5    C7     gi_1    
-   C7    O8    O9    C6     gi_1    
- [ dihedrals ]
-;  ai    aj    ak    al   gromos type
-   C1    C6    C7    O9     gd_10   
-   C6    C7    O9    H9     gd_12   
+;  [ atoms ]
+;    C3     C    -0.10000     0
+;    H3    HC     0.10000     0
+;    C2     C    -0.10000     1
+;    H2    HC     0.10000     1
+;    C4     C    -0.10000     2
+;    H4    HC     0.10000     2
+;    C1     C    -0.10000     3
+;    H1    HC     0.10000     3
+;    C5     C    -0.10000     4
+;    H5    HC     0.10000     4
+;    C6     C     0.00000     5
+;    C7     C     0.53000     6
+;    O8     O    -0.38000     6
+;    O9    OA    -0.54800     6
+;    H9     H     0.39800     6
+;  [ bonds ]
+;    C3    H3    gb_3    
+;    C3    C2    gb_16   
+;    C3    C4    gb_16   
+;    C2    H2    gb_3    
+;    C2    C1    gb_16   
+;    C4    H4    gb_3    
+;    C4    C5    gb_16   
+;    C1    H1    gb_3    
+;    C1    C6    gb_16   
+;    C5    H5    gb_3    
+;    C5    C6    gb_16   
+;    C6    C7    gb_23   
+;    C7    O8    gb_5    
+;    C7    O9    gb_13   
+;    O9    H9    gb_1    
+;  [ exclusions ]
+; ;  ai    aj
+;    C3    H1
+;    C3    H5
+;    C3    C6
+;    H3    H2
+;    H3    H4
+;    H3    C1
+;    H3    C5
+;    C2    H4
+;    C2    C5
+;    C2    C7
+;    H2    C4
+;    H2    H1
+;    H2    C6
+;    C4    C1
+;    C4    C7
+;    H4    H5
+;    H4    C6
+;    C1    H5
+;    H1    C5
+;    H1    C7
+;    H5    C7
+;  [ angles ]
+; ;  ai    aj    ak   gromos type
+;    H3    C3    C2     ga_25   
+;    H3    C3    C4     ga_25   
+;    C2    C3    C4     ga_27   
+;    C3    C2    H2     ga_25   
+;    C3    C2    C1     ga_27   
+;    H2    C2    C1     ga_25   
+;    C3    C4    H4     ga_25   
+;    C3    C4    C5     ga_27   
+;    H4    C4    C5     ga_25   
+;    C2    C1    H1     ga_25   
+;    C2    C1    C6     ga_27   
+;    H1    C1    C6     ga_25   
+;    C4    C5    H5     ga_25   
+;    C4    C5    C6     ga_27   
+;    H5    C5    C6     ga_25   
+;    C1    C6    C5     ga_27   
+;    C1    C6    C7     ga_27   
+;    C5    C6    C7     ga_27   
+;    C6    C7    O8     ga_30   
+;    C6    C7    O9     ga_19   
+;    O8    C7    O9     ga_33   
+;    C7    O9    H9     ga_12   
+;  [ impropers ]
+; ;  ai    aj    ak    al   gromos type
+;    C3    C2    C4    H3     gi_1    
+;    C3    C2    C1    C6     gi_1    
+;    C3    C4    C5    C6     gi_1    
+;    C2    C3    C4    C5     gi_1    
+;    C2    C1    C6    C5     gi_1    
+;    H2    C3    C1    C2     gi_1    
+;    C4    C3    C2    C1     gi_1    
+;    C4    C5    C6    C1     gi_1    
+;    H4    C3    C5    C4     gi_1    
+;    C1    C2    C6    H1     gi_1    
+;    C5    C4    C6    H5     gi_1    
+;    C6    C1    C5    C7     gi_1    
+;    C7    O8    O9    C6     gi_1    
+;  [ dihedrals ]
+; ;  ai    aj    ak    al   gromos type
+;    C1    C6    C7    O9     gd_10   
+;    C6    C7    O9    H9     gd_12   
 
 [ RTOL ]
  [ atoms ]
