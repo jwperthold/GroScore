@@ -1063,8 +1063,17 @@ for resname, instances in ncaa_types.items():
 
 # ---- Create local force field copy ----
 gmx_ff_src = None
-for search_dir in ['/usr/local/gromacs/share/gromacs/top',
-                   '/usr/share/gromacs/top']:
+import subprocess as _sp
+_gmx_search_dirs = ['/usr/local/gromacs/share/gromacs/top', '/usr/share/gromacs/top']
+try:
+    _gmx_ver = _sp.run(['gmx', '--version'], capture_output=True, text=True, timeout=10)
+    for _line in _gmx_ver.stdout.split('\n'):
+        if 'Data prefix' in _line:
+            _gmx_search_dirs.insert(0, _line.split()[-1] + '/share/gromacs/top')
+            break
+except Exception:
+    pass
+for search_dir in _gmx_search_dirs:
     candidate = os.path.join(search_dir, f'{args.gmx_ff}.ff')
     if os.path.isdir(candidate):
         gmx_ff_src = candidate
