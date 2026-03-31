@@ -173,7 +173,7 @@ with open('$PDB2GMX_INPUT', 'w') as f:
   # Fix protonation states for ion-coordinating CYS/HIS residues
   python3 ../../utils/fix_ion_protonation.py -f $PDB2GMX_INPUT -m ion_residues.gs --ff $FORCEFIELD
   # Ion residue names for pdb2gmx chain handling
-  ION_RESIDUES="ZN|CA|MG|CU|CU1|NA|CL|FE|FE2|SD"
+  ION_RESIDUES="BA|CA|CD|CL|CO|CS|CU|CU1|FE|FE2|HG|K|LI|MG|MN|NA|NI|PB|SD|SR|ZN"
   # Get chain ID and residue name of first atom in each segment
   # Format: "chain_id resname" per line
   CHAIN_DATA=$(awk 'BEGIN{first=1} /^TER/{first=1; next} /^ATOM/ && first{chain=substr($0,22,1); res=substr($0,18,3); gsub(/ /,"",res); print chain, res; first=0}' $PDB2GMX_INPUT)

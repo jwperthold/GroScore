@@ -51,3 +51,58 @@
 ; Sulfide ion (from [2Fe-2S] / [4Fe-4S] cluster, charge -1.0 for oxidized state)
  [ atoms ]
   S      S     -1.000    1
+
+[ MN ]
+; Manganese 2+ ion (LJ from FE2+)
+ [ atoms ]
+  MN     FE2+   2.000    1
+
+[ CO ]
+; Cobalt 2+ ion (LJ from ZN2+)
+ [ atoms ]
+  CO     ZN2+   2.000    1
+
+[ NI ]
+; Nickel 2+ ion (LJ from MG2+)
+ [ atoms ]
+  NI     MG2+   2.000    1
+
+[ K ]
+; Potassium 1+ ion (LJ from NA+)
+ [ atoms ]
+  K      NA+    1.000    1
+
+[ CD ]
+; Cadmium 2+ ion (LJ from CA2+)
+ [ atoms ]
+  CD     CA2+   2.000    1
+
+[ SR ]
+; Strontium 2+ ion (LJ from CA2+)
+ [ atoms ]
+  SR     CA2+   2.000    1
+
+[ BA ]
+; Barium 2+ ion (LJ from CA2+)
+ [ atoms ]
+  BA     CA2+   2.000    1
+
+[ CS ]
+; Cesium 1+ ion (LJ from NA+)
+ [ atoms ]
+  CS     NA+    1.000    1
+
+[ LI ]
+; Lithium 1+ ion (LJ from CU1+)
+ [ atoms ]
+  LI     CU1+   1.000    1
+
+[ HG ]
+; Mercury 2+ ion (LJ from CA2+)
+ [ atoms ]
+  HG     CA2+   2.000    1
+
+[ PB ]
+; Lead 2+ ion (LJ from CA2+)
+ [ atoms ]
+  PB     CA2+   2.000    1

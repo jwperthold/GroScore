@@ -77,3 +77,102 @@ SD		1
 [ atoms ]
 ; id	at type	res nr 	residu name	at name  cg nr	charge   mass
 1	S	1	SD		S	 1	-1	 32.06000
+
+[ moleculetype ]
+; Manganese 2+ (LJ from FE2+)
+; molname	nrexcl
+MN		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	FE2+	1	MN		MN	 1	2	 54.93800
+
+[ moleculetype ]
+; Cobalt 2+ (LJ from ZN2+)
+; molname	nrexcl
+CO		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	ZN2+	1	CO		CO	 1	2	 58.93300
+
+[ moleculetype ]
+; Nickel 2+ (LJ from MG2+)
+; molname	nrexcl
+NI		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	MG2+	1	NI		NI	 1	2	 58.69300
+
+[ moleculetype ]
+; Potassium 1+ (LJ from NA+)
+; molname	nrexcl
+K		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	NA+	1	K		K	 1	1	 39.09800
+
+[ moleculetype ]
+; Cadmium 2+ (LJ from CA2+)
+; molname	nrexcl
+CD		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	CA2+	1	CD		CD	 1	2	 112.41000
+
+[ moleculetype ]
+; Strontium 2+ (LJ from CA2+)
+; molname	nrexcl
+SR		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	CA2+	1	SR		SR	 1	2	 87.62000
+
+[ moleculetype ]
+; Barium 2+ (LJ from CA2+)
+; molname	nrexcl
+BA		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	CA2+	1	BA		BA	 1	2	 137.33000
+
+[ moleculetype ]
+; Cesium 1+ (LJ from NA+)
+; molname	nrexcl
+CS		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	NA+	1	CS		CS	 1	1	 132.91000
+
+[ moleculetype ]
+; Lithium 1+ (LJ from CU1+)
+; molname	nrexcl
+LI		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	CU1+	1	LI		LI	 1	1	 6.94100
+
+[ moleculetype ]
+; Mercury 2+ (LJ from CA2+)
+; molname	nrexcl
+HG		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	CA2+	1	HG		HG	 1	2	 200.59000
+
+[ moleculetype ]
+; Lead 2+ (LJ from CA2+)
+; molname	nrexcl
+PB		1
+
+[ atoms ]
+; id	at type	res nr 	residu name	at name  cg nr	charge   mass
+1	CA2+	1	PB		PB	 1	2	 207.20000

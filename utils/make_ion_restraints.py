@@ -18,7 +18,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
+ION_RESIDUES = {"BA", "CA", "CD", "CL", "CO", "CS", "CU", "CU1", "FE", "FE2", "HG", "K", "LI", "MG", "MN", "NA", "NI", "PB", "SD", "SR", "ZN"}
 
 # Coordination detection cutoff (nm)
 # Captures bonds at 0.20-0.24 nm with margin; excludes non-coordinating
@@ -68,6 +68,32 @@ OPTIMAL_DISTANCES = {
     ("FE2", "O"): 0.210,  # Fe2+-O
     # Sulfide ions in FeS clusters (restrain to Fe)
     ("SD", "FE"): 0.226,  # S(bridge)-Fe: ~2.26 Å in [2Fe-2S]
+    # Manganese (similar coordination geometry to Zn/Fe)
+    ("MN", "S"): 0.240,   # Mn-S(Cys)
+    ("MN", "N"): 0.220,   # Mn-N(His)
+    ("MN", "O"): 0.215,   # Mn-O(Asp/Glu/water)
+    # Cobalt (similar to Zn)
+    ("CO", "S"): 0.230,   # Co-S(Cys)
+    ("CO", "N"): 0.210,   # Co-N(His)
+    ("CO", "O"): 0.210,   # Co-O(Asp/Glu)
+    # Nickel (similar to Mg/Zn)
+    ("NI", "S"): 0.225,   # Ni-S(Cys)
+    ("NI", "N"): 0.210,   # Ni-N(His)
+    ("NI", "O"): 0.205,   # Ni-O(Asp/Glu)
+    # Cadmium (similar to Ca, slightly larger)
+    ("CD", "S"): 0.255,   # Cd-S(Cys)
+    ("CD", "N"): 0.230,   # Cd-N(His)
+    ("CD", "O"): 0.230,   # Cd-O(Asp/Glu)
+    # Strontium (similar to Ca)
+    ("SR", "O"): 0.250,   # Sr-O
+    # Barium (larger than Ca)
+    ("BA", "O"): 0.270,   # Ba-O
+    # Mercury
+    ("HG", "S"): 0.240,   # Hg-S(Cys)
+    ("HG", "N"): 0.220,   # Hg-N(His)
+    # Lead
+    ("PB", "S"): 0.260,   # Pb-S(Cys)
+    ("PB", "O"): 0.250,   # Pb-O
 }
 # Fallback distance if a specific pair is not parametrized
 DEFAULT_DISTANCE = 0.215
@@ -147,7 +173,8 @@ distances = cdist(ion_coords, prot_coords)
 coord_pairs = []  # [(ion_atomnum, prot_atomnum, measured_dist, optimal_dist, ion_resname, ion_name, prot_resname, prot_atomname), ...]
 
 # Only metal ions coordinate protein atoms (lone pair donation from S, N, O)
-METAL_IONS = {"ZN", "CA", "MG", "CU", "CU1", "FE", "FE2"}
+METAL_IONS = {"ZN", "CA", "MG", "CU", "CU1", "FE", "FE2",
+              "MN", "CO", "NI", "CD", "SR", "BA", "HG", "PB"}
 
 for i in range(len(ion_atoms)):
     ion_resname_field = ion_atoms[i][1]

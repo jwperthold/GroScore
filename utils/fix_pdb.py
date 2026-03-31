@@ -12,7 +12,7 @@ from pdbfixer import PDBFixer
 from openmm.app import PDBFile
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
+ION_RESIDUES = {"BA", "CA", "CD", "CL", "CO", "CS", "CU", "CU1", "FE", "FE2", "HG", "K", "LI", "MG", "MN", "NA", "NI", "PB", "SD", "SR", "ZN"}
 
 parser = argparse.ArgumentParser(description="Fix PDB file with PDBFixer")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file")

@@ -10,7 +10,7 @@ import math
 import argparse
 
 # Ion residue names supported by all GroScore force fields
-ION_RESIDUES = {"ZN", "CA", "MG", "CU", "CU1", "NA", "CL", "FE", "FE2", "SD"}
+ION_RESIDUES = {"BA", "CA", "CD", "CL", "CO", "CS", "CU", "CU1", "FE", "FE2", "HG", "K", "LI", "MG", "MN", "NA", "NI", "PB", "SD", "SR", "ZN"}
 
 # Metal clusters that cannot be parametrized with OpenFF — split into individual ion atoms
 # Each atom becomes its own single-atom residue with distance restraints
