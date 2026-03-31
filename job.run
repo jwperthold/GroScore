@@ -17,6 +17,26 @@ elif [[ $RECENT_FILES -gt 2 ]]; then
 fi
 
 export GMX_MAXBACKUP=-1
+
+# Restart recovery: detect and clean up stale intermediate files from failed runs.
+# If conf.gro exists but emin_solv.gro doesn't, a previous setup attempt failed
+# partway through. Clean up ALL setup files and start from scratch to avoid
+# stale topology/coordinate mismatches.
+if [[ -f conf.gro && ! -f emin_solv.gro ]]; then
+  echo "Restart recovery: setup incomplete (conf.gro exists but emin_solv.gro missing)"
+  echo "Cleaning all setup files for fresh re-run..."
+  rm -f renumbered.pdb chain_map.gs ion_residues.gs ligand_info.gs ligand_residues.gs
+  rm -f ncaa_residues.gs ncaa_failed.gs residuetypes.dat
+  rm -f fixed.pdb fixed_capped.pdb cutout.pdb cutout_capped.pdb
+  rm -f conf.gro conf_cutout.gro conf_vacbox.gro topol.top topol_*.itp posre*.itp
+  rm -f emin_vac.tpr emin_vac.gro emin_vac.edr emin_vac.log emin_vac.trr
+  rm -f box.gro box_solv.gro ions.tpr solv_ions.gro
+  rm -f emin_solv.tpr emin_solv.edr emin_solv.log emin_solv.trr
+  rm -f index.ndx numpertres.gs bind.mdp nptrev.mdp bindrev.mdp
+  rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
+  rm -rf amber19sb.ff
+fi
+
 # Get structure ID from current directory name
 STRUCT_ID=$(basename $(pwd))
 MAXRUNS=0
