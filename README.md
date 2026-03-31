@@ -19,7 +19,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Automated MD Pipeline** - Complete workflow from structure preparation to final scoring
 - **SLURM Integration** - Efficient HPC execution via job arrays
 - **Multiple Force Fields** - Support for AMBER19SB (all-atom), CHARMM36 (all-atom), and GROMOS 54A8 (united-atom)
-- **Structural Ion Support** - Automatic handling of metal ions (ZN, CA, MG, CU, CU1, NA, CL) with coordination restraints
+- **Structural Ion Support** - Automatic handling of 21 ion types (ZN, CA, MG, CU, FE, MN, CO, NI, K, CD, SR, BA, etc.) with coordination restraints
 - **Small Molecule Support** - OpenFF-based parametrization of ligands and cofactors (AMBER19SB only), with OpenBabel bond perception and RCSB template fallback
 - **Crystal Water Preservation** - Crystal waters from PDB structures are retained and included in simulations
 - **Cutout Mode** - Choose between interface-only (faster, default) or full-protein simulations
@@ -82,7 +82,7 @@ Crystal water molecules (HOH) from PDB structures are preserved and included as 
 
 ### Structural Ions
 
-Metal ions (ZN, CA, MG, CU, CU1, FE, FE2, NA, CL) are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain.
+21 ion types are supported: ZN, CA, MG, CU, CU1, FE, FE2, NA, CL, MN, CO, NI, K, CD, SR, BA, CS, LI, HG, PB, and SD (sulfide from FeS clusters). Ions are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain. Metal clusters ([2Fe-2S], [4Fe-4S]) are automatically split into individual ion atoms with intra-cluster distance restraints.
 
 **Ion coordination protonation**: Residues coordinating metal ions are automatically assigned correct protonation states before topology generation. Cysteine thiolates (CYS → CYM) are deprotonated to expose the lone pair on sulfur. Histidine residues are set so the coordinating nitrogen is deprotonated (ND1 coordinates → HIE; NE2 coordinates → HID). Detection uses a 3.0 Å distance cutoff. This is supported for all force fields (AMBER19SB, CHARMM36, GROMOS 54A8) with the appropriate residue naming conventions.
 
