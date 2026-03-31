@@ -17,6 +17,7 @@ parser.add_argument('--include-mutants', action='store_true', help="Include muta
 parser.add_argument('--max-entries', type=int, default=0, help="Limit number of structures (0 = all)")
 parser.add_argument('--max-resolution', type=float, default=0, help="Filter by resolution in Angstrom (0 = no filter)")
 parser.add_argument('--source', type=str, default="", help="Filter by source dataset (e.g., 'SAbDab', 'PDBbind v2020')")
+parser.add_argument('--skip-duplicate-filter', action='store_true', help="Skip duplicate entity filtering (faster but may include problematic structures)")
 args = parser.parse_args()
 
 # Read PPB-Affinity.xlsx
@@ -101,6 +102,136 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         break
 
 print(f"Found {len(structures)} structures in PPB-Affinity dataset")
+
+# ---- Filter duplicate entity structures ----
+# Case 1: Same protein entity in both A and B → wrong chain assignment → REMOVE
+# Case 2: Duplicate entity on one side:
+#   - If duplicate chains have inter-chain contacts → functional homodimer → KEEP
+#   - If no contacts → independent copies → REMOVE
+import json
+import math
+
+CONTACT_CUTOFF = 5.0   # Angstrom for CA-CA inter-chain contacts
+MIN_CONTACTS = 10      # minimum contacts to consider a functional dimer
+
+def get_entity_info(pdb_id):
+    """Get chain->entity name mapping from RCSB GraphQL API."""
+    gql = ('{ entry(entry_id: "%s") { polymer_entities { '
+           'rcsb_polymer_entity { pdbx_description } '
+           'rcsb_polymer_entity_container_identifiers { auth_asym_ids } } } }' % pdb_id)
+    req = urllib.request.Request("https://data.rcsb.org/graphql",
+        data=json.dumps({"query": gql}).encode(),
+        headers={"Content-Type": "application/json"})
+    resp = urllib.request.urlopen(req, timeout=15)
+    data = json.loads(resp.read())
+    chain_entity = {}
+    for ent in data["data"]["entry"]["polymer_entities"]:
+        name = ent["rcsb_polymer_entity"]["pdbx_description"]
+        for ch in ent["rcsb_polymer_entity_container_identifiers"]["auth_asym_ids"]:
+            chain_entity[ch] = name
+    return chain_entity
+
+def check_interchain_contacts(pdb_id, chain1, chain2):
+    """Check if two chains have CA-CA contacts within cutoff. Downloads mmCIF."""
+    url = "https://files.rcsb.org/download/%s.cif" % pdb_id
+    try:
+        resp = urllib.request.urlopen(url, timeout=30)
+        cif = resp.read().decode()
+    except Exception:
+        return True  # assume contacts if can't download
+
+    lines = cif.split('\n')
+    cols = [l.strip() for l in lines if l.startswith('_atom_site.')]
+    idx = {}
+    for i, c in enumerate(cols):
+        if c == '_atom_site.auth_asym_id': idx['chain'] = i
+        elif c == '_atom_site.label_atom_id': idx['atom'] = i
+        elif c == '_atom_site.Cartn_x': idx['x'] = i
+        elif c == '_atom_site.Cartn_y': idx['y'] = i
+        elif c == '_atom_site.Cartn_z': idx['z'] = i
+        elif c == '_atom_site.pdbx_PDB_model_num': idx['model'] = i
+
+    if not all(k in idx for k in ['chain', 'atom', 'x', 'y', 'z']):
+        return True
+
+    coords1, coords2 = [], []
+    in_atoms = False
+    for line in lines:
+        if line.startswith('_atom_site.'): in_atoms = True
+        elif in_atoms:
+            if line.startswith('_') or line.startswith('#') or line.startswith('loop_'): break
+            fields = line.split()
+            max_i = max(idx.values())
+            if len(fields) <= max_i: continue
+            if 'model' in idx and fields[idx['model']] != '1': continue
+            if fields[idx['atom']].strip('"') != 'CA': continue
+            ch = fields[idx['chain']]
+            try:
+                xyz = (float(fields[idx['x']]), float(fields[idx['y']]), float(fields[idx['z']]))
+            except ValueError:
+                continue
+            if ch == chain1: coords1.append(xyz)
+            elif ch == chain2: coords2.append(xyz)
+
+    n = 0
+    for x1, y1, z1 in coords1:
+        for x2, y2, z2 in coords2:
+            if math.sqrt((x1-x2)**2 + (y1-y2)**2 + (z1-z2)**2) < CONTACT_CUTOFF:
+                n += 1
+                if n >= MIN_CONTACTS: return True
+    return n >= MIN_CONTACTS
+
+if not args.skip_duplicate_filter:
+    print("\nFiltering duplicate entity structures...")
+    n_case1 = 0
+    n_case2_removed = 0
+    n_case2_kept = 0
+    to_remove = set()
+
+    for pdb_id, info in list(structures.items()):
+        c1 = set(info['ligand_chains'])
+        c2 = set(info['receptor_chains'])
+        if len(c1) <= 1 and len(c2) <= 1:
+            continue
+
+        try:
+            chain_entity = get_entity_info(pdb_id)
+        except Exception:
+            continue
+
+        a_entities = {c: chain_entity.get(c, "?") for c in c1}
+        b_entities = {c: chain_entity.get(c, "?") for c in c2}
+
+        # Case 1: same entity in both A and B
+        cross = set(a_entities.values()) & set(b_entities.values()) - {"?"}
+        if cross:
+            to_remove.add(pdb_id)
+            n_case1 += 1
+            print(f"  REMOVE (case 1) {pdb_id}: same entity in A+B: {cross}")
+            continue
+
+        # Case 2: duplicate entity on one side — check contacts
+        for side, entities in [("A", a_entities), ("B", b_entities)]:
+            seen = {}
+            for ch, name in entities.items():
+                if name in seen:
+                    has_contacts = check_interchain_contacts(pdb_id, seen[name], ch)
+                    if not has_contacts:
+                        to_remove.add(pdb_id)
+                        n_case2_removed += 1
+                        print(f"  REMOVE (case 2) {pdb_id}: {side} chains {seen[name]},{ch} ({name}) — no contacts")
+                    else:
+                        n_case2_kept += 1
+                else:
+                    seen[name] = ch
+
+    for pdb_id in to_remove:
+        del structures[pdb_id]
+
+    print(f"\nDuplicate filter: removed {n_case1} (case 1) + {len(to_remove) - n_case1} (case 2), "
+          f"kept {n_case2_kept} homodimers, {len(structures)} structures remain")
+else:
+    print("Skipping duplicate entity filter (--skip-duplicate-filter)")
 
 # Statistics tracking
 stats = {'direct_match': 0, 'dropped_lowercase': 0, 'failed_missing_uppercase': 0,
