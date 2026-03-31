@@ -1007,16 +1007,19 @@ all_impropers = []
 all_rtp = []
 all_hdb = []
 
+failed_ncaas = []  # NCAAs that couldn't be parametrized → fall back to PDBFixer replacement
+
 for resname, instances in ncaa_types.items():
     chain, resnum = instances[0]
     print(f"\n=== Parametrizing {resname} (chain {chain}, residue {resnum}) ===")
 
-    # Build capped tripeptide
-    pdb_text, ncaa_heavy_coords, ncaa_atom_names = build_capped_pdb(pdb_atoms, chain, resnum)
+    try:
+        # Build capped tripeptide
+        pdb_text, ncaa_heavy_coords, ncaa_atom_names = build_capped_pdb(pdb_atoms, chain, resnum)
 
-    # Parametrize with OpenFF
-    top_content, gro_content, mol_rdkit, formal_charge = parametrize_capped(
-        pdb_text, ncaa_heavy_coords, resname, args.ff, args.ph)
+        # Parametrize with OpenFF
+        top_content, gro_content, mol_rdkit, formal_charge = parametrize_capped(
+            pdb_text, ncaa_heavy_coords, resname, args.ff, args.ph)
 
     # Parse topology and coordinates
     top = parse_top(top_content)
@@ -1060,6 +1063,24 @@ for resname, instances in ncaa_types.items():
     hdb = generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj, top)
     all_rtp.append(rtp)
     all_hdb.append(hdb)
+
+    except Exception as e:
+        print(f"\n  WARNING: Failed to parametrize {resname}: {e}")
+        print(f"  Will fall back to PDBFixer parent-residue replacement for {resname}")
+        failed_ncaas.append(resname)
+        continue
+
+if failed_ncaas:
+    print(f"\nNCAAs that will be replaced by parent residue: {', '.join(failed_ncaas)}")
+
+if not all_rtp:
+    print("No NCAA residues were successfully parametrized.")
+    # Write failed NCAAs to file so fix_pdb.py can handle them
+    if failed_ncaas:
+        with open('ncaa_failed.gs', 'w') as f:
+            for rn in failed_ncaas:
+                f.write(f"{rn}\n")
+    sys.exit(0)
 
 # ---- Create local force field copy ----
 gmx_ff_src = None
