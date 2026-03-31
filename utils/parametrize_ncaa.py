@@ -1021,48 +1021,48 @@ for resname, instances in ncaa_types.items():
         top_content, gro_content, mol_rdkit, formal_charge = parametrize_capped(
             pdb_text, ncaa_heavy_coords, resname, args.ff, args.ph)
 
-    # Parse topology and coordinates
-    top = parse_top(top_content)
-    gro_coords = parse_gro_coords(gro_content)
+        # Parse topology and coordinates
+        top = parse_top(top_content)
+        gro_coords = parse_gro_coords(gro_content)
 
-    # Match NCAA atoms by coordinates
-    ncaa_atom_map = match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content)
-    print(f"  Matched {len(ncaa_atom_map)}/{len(ncaa_heavy_coords)} NCAA heavy atoms")
-    for name in ncaa_heavy_coords:
-        if name not in ncaa_atom_map.values():
-            print(f"    WARNING: unmatched atom {name}")
+        # Match NCAA atoms by coordinates
+        ncaa_atom_map = match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content)
+        print(f"  Matched {len(ncaa_atom_map)}/{len(ncaa_heavy_coords)} NCAA heavy atoms")
+        for name in ncaa_heavy_coords:
+            if name not in ncaa_atom_map.values():
+                print(f"    WARNING: unmatched atom {name}")
 
-    # Build adjacency and find H atoms
-    adj = build_adjacency(top)
-    h_atoms = find_ncaa_h_atoms(adj, ncaa_atom_map, top)
-    h_names = assign_h_names(h_atoms)
-    all_ncaa = set(ncaa_atom_map.keys()) | set(h_atoms.keys())
+        # Build adjacency and find H atoms
+        adj = build_adjacency(top)
+        h_atoms = find_ncaa_h_atoms(adj, ncaa_atom_map, top)
+        h_names = assign_h_names(h_atoms)
+        all_ncaa = set(ncaa_atom_map.keys()) | set(h_atoms.keys())
 
-    print(f"  NCAA atoms: {len(ncaa_atom_map)} heavy + {len(h_atoms)} H = {len(all_ncaa)} total")
+        print(f"  NCAA atoms: {len(ncaa_atom_map)} heavy + {len(h_atoms)} H = {len(all_ncaa)} total")
 
-    # Assign types and charges
-    type_map, charge_map, prefix = assign_types_and_charges(
-        ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge)
+        # Assign types and charges
+        type_map, charge_map, prefix = assign_types_and_charges(
+            ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge)
 
-    # Collect new parameters
-    atomtypes, bonds, angles, dihedrals, impropers = collect_new_params(
-        top, all_ncaa, type_map, prefix)
-    all_atomtypes.update(atomtypes)
-    all_bonds.update(bonds)
-    all_angles.update(angles)
-    all_dihedrals.extend(dihedrals)
-    all_impropers.extend(impropers)
+        # Collect new parameters
+        atomtypes, bonds, angles, dihedrals, impropers = collect_new_params(
+            top, all_ncaa, type_map, prefix)
+        all_atomtypes.update(atomtypes)
+        all_bonds.update(bonds)
+        all_angles.update(angles)
+        all_dihedrals.extend(dihedrals)
+        all_impropers.extend(impropers)
 
-    print(f"  New atom types: {len(atomtypes)}")
-    print(f"  New bonded params: {len(bonds)} bonds, {len(angles)} angles, "
-          f"{len(dihedrals)} dihedrals, {len(impropers)} impropers")
+        print(f"  New atom types: {len(atomtypes)}")
+        print(f"  New bonded params: {len(bonds)} bonds, {len(angles)} angles, "
+              f"{len(dihedrals)} dihedrals, {len(impropers)} impropers")
 
-    # Generate RTP and HDB
-    rtp = generate_rtp(resname, ncaa_atom_map, h_atoms, h_names, ncaa_atom_names,
-                       type_map, charge_map, top, all_ncaa, adj)
-    hdb = generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj, top)
-    all_rtp.append(rtp)
-    all_hdb.append(hdb)
+        # Generate RTP and HDB
+        rtp = generate_rtp(resname, ncaa_atom_map, h_atoms, h_names, ncaa_atom_names,
+                           type_map, charge_map, top, all_ncaa, adj)
+        hdb = generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj, top)
+        all_rtp.append(rtp)
+        all_hdb.append(hdb)
 
     except Exception as e:
         print(f"\n  WARNING: Failed to parametrize {resname}: {e}")
