@@ -75,7 +75,9 @@ elif [[ "$FORCEFIELD" == "gromos54a8" ]]; then
 fi
 
 # Renumber PDB to have unique sequential residue numbers across chains
-if [[ ! -f chain_map.gs ]]; then
+# Always re-run if conf.gro doesn't exist (restart safety: cap_termini overwrites
+# chain_map.gs with post-cap numbers that become stale if setup is re-run)
+if [[ ! -f conf.gro ]]; then
   python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
 fi
 if [[ ! -f conf.gro ]]; then
