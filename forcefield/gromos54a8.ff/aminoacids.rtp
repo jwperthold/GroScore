@@ -10492,7 +10492,7 @@ AO3PB   APG AO3PG AH3PG     gd_22
   PC3   PC2   PC1    PO     gd_40   
   PC2   PC1    PO    PH     gd_23   
 
-[ BA ]
+; [ BA ] — commented out to avoid conflict with barium ion in ions.rtp
  [ atoms ]
    C3     C    -0.10000     0
    H3    HC     0.10000     0
