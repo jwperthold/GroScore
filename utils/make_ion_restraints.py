@@ -139,31 +139,27 @@ if not os.path.isfile(args.input):
     sys.exit(1)
 
 with open(args.input) as f:
-    for line in f:
-        if not line.strip().startswith("#"):
-            left = line[:15]
-            right = line[15:]
-            tmp = left.split() + right.split()
-            try:
-                s = re.search(r"\d+(\.\d+)?", tmp[0])
-                resnum = int(s.group(0))
-                atomname = tmp[1]
-                atomnum = int(tmp[2])
-                x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
+    gro_lines = f.readlines()
+n_atoms = int(gro_lines[1].strip())
+for line in gro_lines[2:2+n_atoms]:
+    try:
+        # GRO fixed-width format: resnum(5) resname(5) atomname(5) atomnum(5) x(8) y(8) z(8)
+        resnum = int(line[0:5])
+        res3 = line[5:10].strip()
+        atomname = line[10:15].strip()
+        atomnum = int(line[15:20])
+        x, y, z = float(line[20:28]), float(line[28:36]), float(line[36:44])
 
-                # Extract residue name (strip digits from GRO resname field)
-                res3 = re.sub(r'\d+', '', tmp[0])
-
-                # Collect ion atoms (by residue name) and coordinating atoms (S, N, O)
-                # Crystal waters (SOL) are included — at this pipeline stage, the only
-                # SOL in the GRO are crystal waters (bulk solvent not yet added).
-                # Track residue number for same-protein filtering.
-                if res3 in ION_RESIDUES:
-                    ion_atoms.append((atomnum, tmp[0], atomname, x, y, z, resnum))
-                elif atomname[0] in ("S", "N", "O"):
-                    prot_atoms.append((atomnum, tmp[0], atomname, x, y, z, resnum))
-            except (ValueError, IndexError, AttributeError):
-                pass
+        # Collect ion atoms (by residue name) and coordinating atoms (S, N, O)
+        # Crystal waters (SOL) are included — at this pipeline stage, the only
+        # SOL in the GRO are crystal waters (bulk solvent not yet added).
+        # Track residue number for same-protein filtering.
+        if res3 in ION_RESIDUES:
+            ion_atoms.append((atomnum, "%d%s" % (resnum, res3), atomname, x, y, z, resnum))
+        elif atomname[0] in ("S", "N", "O"):
+            prot_atoms.append((atomnum, "%d%s" % (resnum, res3), atomname, x, y, z, resnum))
+    except (ValueError, IndexError):
+        pass
 
 if not ion_atoms:
     print("No ion atoms found in coordinate file, skipping coordination restraints.")
