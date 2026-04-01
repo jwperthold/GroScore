@@ -8,7 +8,7 @@
 
 [![Version](https://img.shields.io/badge/version-0.98-blue.svg)](https://github.com/jwperthold/GroScore)
 [![Python](https://img.shields.io/badge/python-3.10-green.svg)](https://www.python.org/)
-[![GROMACS](https://img.shields.io/badge/GROMACS-2026.0-orange.svg)](https://www.gromacs.org/)
+[![GROMACS](https://img.shields.io/badge/GROMACS-2026-orange.svg)](https://www.gromacs.org/)
 
 GroScore estimates binding affinities between protein pairs using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
 
@@ -40,7 +40,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 | OpenBabel | 3.1 | Bond order perception from 3D coordinates |
 | OpenFF Toolkit | 0.16 | Small molecule parametrization |
 | Interchange | 0.4 | OpenFF → GROMACS topology export |
-| GROMACS | 2026.0 | Molecular dynamics engine |
+| GROMACS | 2026 | Molecular dynamics engine |
 | SLURM | 23.11 | HPC job scheduler |
 
 **Conda environment:**
