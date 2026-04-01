@@ -369,6 +369,8 @@ For the improved method (Chapter 3 included in `theory/`), see:
 
 J.W.P. has been a recipient of a DOC Fellowship of the Austrian Academy of Sciences (ÖAW) at the Institute for Molecular Modeling and Simulation at the University of Natural Resources and Life Sciences, Vienna (Grant No. 24987).
 
+The computational results presented have been achieved using the Austrian Scientific Computing (ASC) infrastructure.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
