@@ -895,7 +895,8 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
         if parent_name == 'N':
             hdb_lines.append(f"1\t1\tH\tN\t-C\tCA")
         elif parent_name == 'CA':
-            refs = [n for n in heavy_neighbors if n not in ('H', 'HA')][:3]
+            refs = [n for n in heavy_neighbors if n not in ('H', 'HA')]
+            refs = get_refs(parent_name, refs, 3)
             hdb_lines.append(f"1\t5\tHA\tCA\t" + "\t".join(refs))
         elif n_h == 3:
             refs = get_refs(parent_name, heavy_neighbors, 2)
