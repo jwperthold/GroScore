@@ -154,12 +154,10 @@ with open(args.input) as f:
                 # Extract residue name (strip digits from GRO resname field)
                 res3 = re.sub(r'\d+', '', tmp[0])
 
-                # Skip solvent
-                if res3 == "SOL":
-                    continue
-
-                # Collect ion atoms (by residue name) and coordinating protein atoms (S, N, O only)
-                # Also track residue number for same-protein filtering
+                # Collect ion atoms (by residue name) and coordinating atoms (S, N, O)
+                # Crystal waters (SOL) are included — at this pipeline stage, the only
+                # SOL in the GRO are crystal waters (bulk solvent not yet added).
+                # Track residue number for same-protein filtering.
                 if res3 in ION_RESIDUES:
                     ion_atoms.append((atomnum, tmp[0], atomname, x, y, z, resnum))
                 elif atomname[0] in ("S", "N", "O"):
@@ -199,11 +197,14 @@ for i in range(len(ion_atoms)):
         dist = distances[i, j]
         if dist <= COORD_CUTOFF:
             prot_resnum = prot_atoms[j][6]
-            prot_is_b = prot_resnum in residues_b
-            # Only restrain ion to atoms on the SAME protein side
-            # Cross-protein restraints would resist pulling separation
-            if ion_is_b != prot_is_b:
-                continue
+            prot_resname_field = prot_atoms[j][1]
+            prot_res3 = re.sub(r'\d+', '', prot_resname_field)
+            # Crystal waters (SOL) can coordinate any ion regardless of protein side
+            # For protein/ligand atoms: only restrain to atoms on the SAME protein side
+            if prot_res3 != "SOL":
+                prot_is_b = prot_resnum in residues_b
+                if ion_is_b != prot_is_b:
+                    continue
             ion_atomnum = ion_atoms[i][0]
             ion_name = ion_atoms[i][2]
             prot_atomnum = prot_atoms[j][0]
