@@ -17,8 +17,8 @@ import json
 
 parser = argparse.ArgumentParser(description="Setup heteroatom benchmark structures.")
 parser.add_argument('--max-entries', type=int, default=0, help="Limit number of structures (0 = all)")
-parser.add_argument('--subset', type=str, default="all", choices=["all", "glue", "ncaa"],
-                    help="Which subset to include")
+parser.add_argument('--subset', type=str, default="glue", choices=["all", "glue", "ncaa"],
+                    help="Which subset to include (default: glue)")
 parser.add_argument('--max-resolution-glue', type=float, default=3.0,
                     help="Resolution cutoff for molecular glue/PROTAC (default: 3.0 Å)")
 parser.add_argument('--max-resolution-ncaa', type=float, default=2.5,
