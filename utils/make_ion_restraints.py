@@ -103,6 +103,17 @@ parser.add_argument('-f', '--input', type=str, required=True, help="Input coordi
 parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map file (chain_map.gs)")
 args = parser.parse_args()
 
+# Read protein B residue numbers from chain_map.gs
+residues_b = set()
+with open(args.chainmap) as f:
+    for line in f:
+        s = line.strip()
+        if s and not s.startswith("#"):
+            try:
+                residues_b.add(int(s))
+            except (ValueError, IndexError):
+                pass
+
 # Read ion residue numbers
 ion_residues = set()
 ion_map_path = os.path.join(os.path.dirname(args.chainmap), "ion_residues.gs")
@@ -148,10 +159,11 @@ with open(args.input) as f:
                     continue
 
                 # Collect ion atoms (by residue name) and coordinating protein atoms (S, N, O only)
+                # Also track residue number for same-protein filtering
                 if res3 in ION_RESIDUES:
-                    ion_atoms.append((atomnum, tmp[0], atomname, x, y, z))
+                    ion_atoms.append((atomnum, tmp[0], atomname, x, y, z, resnum))
                 elif atomname[0] in ("S", "N", "O"):
-                    prot_atoms.append((atomnum, tmp[0], atomname, x, y, z))
+                    prot_atoms.append((atomnum, tmp[0], atomname, x, y, z, resnum))
             except (ValueError, IndexError, AttributeError):
                 pass
 
@@ -181,9 +193,17 @@ for i in range(len(ion_atoms)):
     ion_res3 = re.sub(r'\d+', '', ion_resname_field)
     if ion_res3 not in METAL_IONS:
         continue  # non-metal ions (SD, CL, NA) don't coordinate protein atoms
+    ion_resnum = ion_atoms[i][6]
+    ion_is_b = ion_resnum in residues_b
     for j in range(len(prot_atoms)):
         dist = distances[i, j]
         if dist <= COORD_CUTOFF:
+            prot_resnum = prot_atoms[j][6]
+            prot_is_b = prot_resnum in residues_b
+            # Only restrain ion to atoms on the SAME protein side
+            # Cross-protein restraints would resist pulling separation
+            if ion_is_b != prot_is_b:
+                continue
             ion_atomnum = ion_atoms[i][0]
             ion_name = ion_atoms[i][2]
             prot_atomnum = prot_atoms[j][0]
@@ -203,6 +223,9 @@ if len(ion_atoms) > 1:
         for j in range(i + 1, len(ion_atoms)):
             dist = ion_ion_dists[i, j]
             if dist <= COORD_CUTOFF:
+                # Only restrain ions on the same protein side
+                if (ion_atoms[i][6] in residues_b) != (ion_atoms[j][6] in residues_b):
+                    continue
                 ion_j_res3 = re.sub(r'\d+', '', ion_atoms[j][1])
                 # Look up optimal distance (try both orderings)
                 opt = OPTIMAL_DISTANCES.get((ion_i_res3, ion_j_res3),
