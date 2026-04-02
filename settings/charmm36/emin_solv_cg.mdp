@@ -1,4 +1,4 @@
-define                   = -DPOSRES
+define                   = -DPOSRES -DFLEXIBLE
 
 integrator               = cg
 emtol                    = 10.0
