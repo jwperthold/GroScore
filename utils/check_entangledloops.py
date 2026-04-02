@@ -89,7 +89,7 @@ if len1 > 0 and len2 > 0:
   ca_distances_cross = cdist(coords1, coords2)
 else:
   # No entanglement possible with empty protein group
-  print("after equilibration no entangled loops were found.")
+  print("0")
   sys.exit(0)
 
 outeroutermax = 0.0
