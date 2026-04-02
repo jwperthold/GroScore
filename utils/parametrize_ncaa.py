@@ -1226,7 +1226,25 @@ if os.path.isfile(cmap_path):
         print(f"NCAA {resname}: parent residue = {parent}")
 
         # Copy parent's CMAP entry with NCAA residue name
-        parent_marker = f'N-{parent} XC-{parent} C-{parent}'
+        # AMBER19SB uses protonation-specific names that differ from RCSB CCD parent:
+        # HIS → HID/HIE/HIP, CYS → CYX/CYM, ASP → ASH, GLU → GLH, LYS → LYN
+        # Try exact parent first, then AMBER-specific fallback names
+        AMBER_PARENT_FALLBACKS = {
+            'HIS': ['HID', 'HIE', 'HIP'],
+            'CYS': ['CYX', 'CYM'],
+            'ASP': ['ASH'],
+            'GLU': ['GLH'],
+            'LYS': ['LYN'],
+        }
+        cmap_parent = parent
+        parent_marker = f'N-{cmap_parent} XC-{cmap_parent} C-{cmap_parent}'
+        if parent_marker not in cmap_content and parent in AMBER_PARENT_FALLBACKS:
+            for fallback in AMBER_PARENT_FALLBACKS[parent]:
+                candidate = f'N-{fallback} XC-{fallback} C-{fallback}'
+                if candidate in cmap_content:
+                    cmap_parent = fallback
+                    parent_marker = candidate
+                    break
         if parent_marker in cmap_content:
             # Extract the full CMAP block for parent
             idx = cmap_content.index(parent_marker)
@@ -1242,11 +1260,12 @@ if os.path.isfile(cmap_path):
                     break
             parent_block = '\n'.join(block_lines)
             # Replace parent name with NCAA name
-            ncaa_block = parent_block.replace(f'N-{parent}', f'N-{resname}')
-            ncaa_block = ncaa_block.replace(f'XC-{parent}', f'XC-{resname}')
-            ncaa_block = ncaa_block.replace(f'C-{parent}', f'C-{resname}')
+            ncaa_block = parent_block.replace(f'N-{cmap_parent}', f'N-{resname}')
+            ncaa_block = ncaa_block.replace(f'XC-{cmap_parent}', f'XC-{resname}')
+            ncaa_block = ncaa_block.replace(f'C-{cmap_parent}', f'C-{resname}')
             cmap_additions.append(ncaa_block)
-            print(f"Added CMAP for {resname} (copied from {parent})")
+            src = f"{cmap_parent} (AMBER name for {parent})" if cmap_parent != parent else parent
+            print(f"Added CMAP for {resname} (copied from {src})")
 
     if cmap_additions:
         with open(cmap_path, 'a') as f:

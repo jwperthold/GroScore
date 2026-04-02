@@ -31,6 +31,7 @@ if [[ -f conf.gro && ! -f emin_solv.gro ]]; then
   rm -f conf.gro conf_cutout.gro conf_vacbox.gro topol.top topol_*.itp posre*.itp
   rm -f emin_vac.tpr emin_vac.gro emin_vac.edr emin_vac.log emin_vac.trr
   rm -f box.gro box_solv.gro ions.tpr solv_ions.gro
+  rm -f emin_solv_sd.tpr emin_solv_sd.gro emin_solv_sd.edr emin_solv_sd.log emin_solv_sd.trr
   rm -f emin_solv.tpr emin_solv.edr emin_solv.log emin_solv.trr
   rm -f index.ndx numpertres.gs bind.mdp nptrev.mdp bindrev.mdp
   rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
@@ -147,6 +148,10 @@ if [[ ! -f conf.gro ]]; then
       else
         python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
       fi
+      # Regenerate chain_map.gs and ion_residues.gs with pre-cap residue numbers
+      # (cap_termini.py overwrites these with post-cap sequential numbers that
+      # won't match the new fixed.pdb generated from renumbered.pdb)
+      python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
       # Re-run cap_termini
       if [[ "$FORCEFIELD" == "charmm36" ]]; then
         python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only
@@ -384,8 +389,15 @@ with open('$CUTOUT_PDB', 'w') as f:
         # gmx genion modifies [ molecules ] — fix topology ordering again
         python3 ../../utils/fix_topol_intermolecular.py -p topol.top
       fi
+      if [[ ! -f emin_solv_sd.tpr ]]; then
+        gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv_sd -maxwarn 2
+      fi
+      if [[ ! -f emin_solv_sd.gro ]]; then
+        gmx mdrun -nt $nt -deffnm emin_solv_sd
+      fi
+      # Conjugate gradient refinement (resolves clashes that SD can't escape)
       if [[ ! -f emin_solv.tpr ]]; then
-        gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv -maxwarn 2
+        gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv_cg.mdp -c emin_solv_sd.gro -o emin_solv -maxwarn 2
       fi
       if [[ ! -f emin_solv.gro ]]; then
         gmx mdrun -nt $nt -deffnm emin_solv
@@ -455,7 +467,8 @@ with open('$CUTOUT_PDB', 'w') as f:
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
   fi
   if [[ ! -f npt_init_cluster.gro ]]; then
-    echo -e "Protein_Struct\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
+    # Output full system (0) to preserve atom numbering for pull group indices
+    echo -e "Protein_Struct\n0\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
   fi
   if [[ ! -f npt_init_cluster.pdb ]]; then
     echo -e "Protein_Struct\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
