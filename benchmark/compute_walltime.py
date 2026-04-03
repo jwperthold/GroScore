@@ -152,14 +152,14 @@ has_flops = len(flops_per_struct) > 0
 
 # Print results
 if has_flops:
-    print(f"{'Structure':<12} {'Wall time':>12} {'GMX steps':>10} {'TFLOP':>10}")
+    print(f"{'Structure':<12} {'Wall time':>12} {'GMX steps':>10} {'PFLOP':>10}")
     print("-" * 48)
     for struct_id, wall, n_steps in results:
         h = wall / 3600
         mflops = flops_per_struct.get(struct_id, 0)
-        tflops = mflops / 1e6  # M-Flops -> TFLOP
-        if tflops > 0:
-            print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d} {tflops:>10.1f}")
+        pflops = mflops / 1e9  # M-Flops -> PFLOP
+        if pflops > 0:
+            print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d} {pflops:>10.2f}")
         else:
             print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d} {'n/a':>10}")
 else:
@@ -174,13 +174,11 @@ sep_len = 48 if has_flops else 36
 print("-" * sep_len)
 n_structures = len(results)
 total_h = total_wall / 3600
-total_tflops = sum(v / 1e6 for v in flops_per_struct.values())
+total_pflops = sum(v / 1e9 for v in flops_per_struct.values())
 
 if has_flops:
-    print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d} {total_tflops:>10.1f}")
+    print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d} {total_pflops:>10.2f}")
 else:
     print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d}")
 print(f"{'Structures':<12} {n_structures:>10d}")
 print(f"{'Avg/struct':<12} {total_h / n_structures:>10.2f} h")
-if has_flops:
-    print(f"{'Total PFLOP':<12} {total_tflops / 1e3:>10.2f}")
