@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 #
-# compute_walltime.py - Calculate total wall-clock time from SLURM output files
+# compute_walltime.py - Calculate total wall-clock time and FLOPS from SLURM output files
 #
-# Sums GROMACS wall times from all slurm-*.out files in the current directory.
-# Reports per-structure and total wall time.
+# Sums GROMACS wall times from slurm-*.out files and total FLOPS from .log files
+# inside tar.gz archives. Reports per-structure and total statistics.
 #
 # Usage: python compute_walltime.py [-d directory]
 #
@@ -13,8 +13,9 @@ import sys
 import glob
 import argparse
 import re
+import tarfile
 
-parser = argparse.ArgumentParser(description="Calculate total wall-clock time from SLURM output files.")
+parser = argparse.ArgumentParser(description="Calculate total wall-clock time and FLOPS from SLURM output files.")
 parser.add_argument('-d', '--directory', type=str, default='.', help="Directory containing slurm-*.out files (default: current)")
 args = parser.parse_args()
 
@@ -41,10 +42,8 @@ if os.path.isfile(struct_map_path):
 
 # Extract wall times per slurm file
 results = []  # [(structure_id, wall_seconds, n_steps)]
-total_wall = 0.0
 
 for filepath in slurm_files:
-    # Extract array index from filename: slurm-JOBID_INDEX.out
     basename = os.path.basename(filepath)
     m = re.search(r'_(\d+)\.out$', basename)
     array_idx = int(m.group(1)) if m else -1
@@ -55,7 +54,6 @@ for filepath in slurm_files:
     with open(filepath) as f:
         in_timing = False
         for line in f:
-            # Extract structure ID from first "Working dir:" if not in struct_map
             if struct_id is None and "Working dir:" in line:
                 struct_id = line.strip().rstrip('/').rsplit('/', 1)[-1]
             if "Core t (s)   Wall t (s)" in line:
@@ -74,7 +72,67 @@ for filepath in slurm_files:
     if struct_id is None:
         struct_id = basename
     results.append((struct_id, wall_sum, n_steps))
-    total_wall += wall_sum
+
+# Extract FLOPS from .log files inside tar.gz archives and unarchived directories
+# GROMACS logs contain a table with "M-Number  M-Flops  % Flops" header,
+# followed by per-category rows, ending with a "Total" row containing the
+# total M-Flops (millions of floating point operations) for that mdrun.
+flops_per_struct = {}  # struct_id -> total M-Flops
+
+def extract_mflops_from_lines(line_iter):
+    """Extract total M-Flops from GROMACS log lines (str iterator)."""
+    total = 0.0
+    in_table = False
+    for line in line_iter:
+        if 'M-Number' in line and 'M-Flops' in line:
+            in_table = True
+            continue
+        if in_table and 'Total' in line:
+            # Extract large number (M-Flops > 1e6) from the Total line
+            for val in re.findall(r'[\d.]+', line):
+                v = float(val)
+                if v > 1e6:
+                    total += v
+                    break
+            in_table = False
+    return total
+
+tar_files = sorted(glob.glob(os.path.join(args.directory, "*.tar.gz")))
+if tar_files:
+    print(f"Reading FLOPS from {len(tar_files)} archive(s)...", file=sys.stderr)
+for tar_path in tar_files:
+    struct_id = os.path.basename(tar_path).replace('.tar.gz', '')
+    total_mflops = 0.0
+    try:
+        with tarfile.open(tar_path, 'r:gz') as tar:
+            for member in tar.getmembers():
+                if not member.name.endswith('.log'):
+                    continue
+                f = tar.extractfile(member)
+                if f is None:
+                    continue
+                lines = (raw.decode('utf-8', errors='replace') for raw in f)
+                total_mflops += extract_mflops_from_lines(lines)
+    except Exception:
+        pass
+    if total_mflops > 0:
+        flops_per_struct[struct_id] = total_mflops
+
+# Also check unarchived structure directories for .log files
+struct_dirs = [d for d in glob.glob(os.path.join(args.directory, "*")) if os.path.isdir(d)]
+for struct_dir in struct_dirs:
+    struct_id = os.path.basename(struct_dir)
+    if struct_id in flops_per_struct:
+        continue
+    total_mflops = 0.0
+    for log_path in glob.glob(os.path.join(struct_dir, "*.log")):
+        try:
+            with open(log_path) as f:
+                total_mflops += extract_mflops_from_lines(f)
+        except Exception:
+            pass
+    if total_mflops > 0:
+        flops_per_struct[struct_id] = total_mflops
 
 # Merge duplicate structures (multiple SLURM submissions/restarts)
 merged = {}
@@ -90,16 +148,39 @@ total_wall = sum(w for _, w, _ in results)
 # Sort by wall time descending
 results.sort(key=lambda x: -x[1])
 
-# Print results
-print(f"{'Structure':<12} {'Wall time':>12} {'GMX steps':>10}")
-print("-" * 36)
-for struct_id, wall, n_steps in results:
-    h = wall / 3600
-    print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d}")
+has_flops = len(flops_per_struct) > 0
 
-print("-" * 36)
+# Print results
+if has_flops:
+    print(f"{'Structure':<12} {'Wall time':>12} {'GMX steps':>10} {'TFLOP':>10}")
+    print("-" * 48)
+    for struct_id, wall, n_steps in results:
+        h = wall / 3600
+        mflops = flops_per_struct.get(struct_id, 0)
+        tflops = mflops / 1e6  # M-Flops -> TFLOP
+        if tflops > 0:
+            print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d} {tflops:>10.1f}")
+        else:
+            print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d} {'n/a':>10}")
+else:
+    print(f"{'Structure':<12} {'Wall time':>12} {'GMX steps':>10}")
+    print("-" * 36)
+    for struct_id, wall, n_steps in results:
+        h = wall / 3600
+        print(f"{struct_id:<12} {h:>10.2f} h {n_steps:>9d}")
+
+# Summary
+sep_len = 48 if has_flops else 36
+print("-" * sep_len)
 n_structures = len(results)
 total_h = total_wall / 3600
-print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d}")
+total_tflops = sum(v / 1e6 for v in flops_per_struct.values())
+
+if has_flops:
+    print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d} {total_tflops:>10.1f}")
+else:
+    print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d}")
 print(f"{'Structures':<12} {n_structures:>10d}")
 print(f"{'Avg/struct':<12} {total_h / n_structures:>10.2f} h")
+if has_flops:
+    print(f"{'Total PFLOP':<12} {total_tflops / 1e3:>10.2f}")
