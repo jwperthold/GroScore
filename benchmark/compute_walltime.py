@@ -182,3 +182,5 @@ else:
     print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d}")
 print(f"{'Structures':<12} {n_structures:>10d}")
 print(f"{'Avg/struct':<12} {total_h / n_structures:>10.2f} h")
+if has_flops:
+    print(f"{'Avg PFLOP':<12} {total_pflops / n_structures:>10.2f}")
