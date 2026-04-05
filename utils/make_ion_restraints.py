@@ -231,6 +231,38 @@ if len(ion_atoms) > 1:
                                     ion_i_res3, ion_atoms[i][2],
                                     ion_j_res3, ion_atoms[j][2]))
 
+# Deduplicate: each coordinating atom gets at most one restraint (the closest ion),
+# except S atoms which can bridge two metals in FeS clusters (max 2 restraints).
+# This prevents a single O/N being pulled toward multiple ions simultaneously.
+MAX_RESTRAINTS_PER_ATOM = {"S": 2, "N": 1, "O": 1}
+
+# Group by coordinating (non-ion) atom number, sorted by distance
+from collections import defaultdict
+prot_atom_restraints = defaultdict(list)  # prot_atomnum -> [(dist, pair_tuple), ...]
+ion_ion_pairs = []  # ion-ion pairs don't need deduplication
+
+for pair in coord_pairs:
+    ion_num, prot_num, meas_dist, opt_dist, ion_res, ion_name, prot_resname, prot_atomname = pair
+    # Ion-ion pairs: both atoms are ions (ion_res and prot_resname are both ion types)
+    prot_res3 = re.sub(r'\d+', '', prot_resname)
+    if prot_res3 in METAL_IONS or prot_res3 == "SD":
+        ion_ion_pairs.append(pair)
+    else:
+        prot_atom_restraints[prot_num].append((meas_dist, pair))
+
+filtered_pairs = list(ion_ion_pairs)
+n_removed = 0
+for prot_num, candidates in prot_atom_restraints.items():
+    candidates.sort(key=lambda x: x[0])  # sort by measured distance
+    element = candidates[0][1][7][0]  # first char of prot_atomname
+    max_r = MAX_RESTRAINTS_PER_ATOM.get(element, 1)
+    filtered_pairs.extend(pair for _, pair in candidates[:max_r])
+    n_removed += len(candidates) - min(len(candidates), max_r)
+
+if n_removed > 0:
+    print(f"Removed {n_removed} duplicate restraint(s) (same atom coordinating multiple ions)")
+coord_pairs = filtered_pairs
+
 if not coord_pairs:
     print("No ion coordination pairs detected within cutoff, skipping restraints.")
     sys.exit(0)
