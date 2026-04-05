@@ -231,10 +231,11 @@ if len(ion_atoms) > 1:
                                     ion_i_res3, ion_atoms[i][2],
                                     ion_j_res3, ion_atoms[j][2]))
 
-# Deduplicate: each coordinating atom gets at most one restraint (the closest ion),
-# except S atoms which can bridge two metals in FeS clusters (max 2 restraints).
-# This prevents a single O/N being pulled toward multiple ions simultaneously.
-MAX_RESTRAINTS_PER_ATOM = {"S": 2, "N": 1, "O": 1}
+# Deduplicate: each coordinating protein atom (S, N, O) gets at most one restraint
+# (the closest ion). This prevents atoms shared between multiple metals from being
+# pulled in competing directions. FeS cluster bridging sulfides (SD) are handled
+# separately as ion-ion pairs and are not subject to this limit.
+MAX_RESTRAINTS_PER_ATOM = {"S": 1, "N": 1, "O": 1}
 
 # Group by coordinating (non-ion) atom number, sorted by distance
 from collections import defaultdict
