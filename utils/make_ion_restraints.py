@@ -259,50 +259,44 @@ if len(ion_atoms) > 1:
                 if (ion_atoms[i][6] in residues_b) != (ion_atoms[j][6] in residues_b):
                     continue
                 ion_j_res3 = re.sub(r'\d+', '', ion_atoms[j][1])
-                # Look up optimal distance — only create ion-ion restraints for
-                # known pairs (e.g. Fe-SD in FeS clusters). Unknown pairs (e.g.
-                # ZN-FE in binuclear sites) are held by their protein ligands
-                # and should not get a direct metal-metal restraint.
+                # Look up optimal distance; use crystal distance for unknown ion-ion pairs
                 opt = OPTIMAL_DISTANCES.get((ion_i_res3, ion_j_res3),
                       OPTIMAL_DISTANCES.get((ion_j_res3, ion_i_res3), None))
                 if opt is None:
-                    continue
+                    opt = dist  # use measured crystal distance
                 coord_pairs.append((ion_atoms[i][0], ion_atoms[j][0], dist, opt,
                                     ion_i_res3, ion_atoms[i][2],
                                     ion_j_res3, ion_atoms[j][2]))
 
-# Deduplicate: each coordinating protein atom (S, N, O) gets at most one restraint
-# (the closest ion). This prevents atoms shared between multiple metals from being
-# pulled in competing directions. FeS cluster bridging sulfides (SD) are handled
-# separately as ion-ion pairs and are not subject to this limit.
-MAX_RESTRAINTS_PER_ATOM = {"S": 1, "N": 1, "O": 1}
-
-# Group by coordinating (non-ion) atom number, sorted by distance
-from collections import defaultdict
-prot_atom_restraints = defaultdict(list)  # prot_atomnum -> [(dist, pair_tuple), ...]
-ion_ion_pairs = []  # ion-ion pairs don't need deduplication
-
-for pair in coord_pairs:
-    ion_num, prot_num, meas_dist, opt_dist, ion_res, ion_name, prot_resname, prot_atomname = pair
-    # Ion-ion pairs: both atoms are ions (ion_res and prot_resname are both ion types)
+# For coordinating atoms that interact with multiple ions (e.g. bridging ASP
+# between ZN and FE), use max(optimal, measured) to avoid compressing below
+# the crystal geometry. Single-coordination atoms keep the optimal distance.
+from collections import Counter
+prot_atom_counts = Counter()
+for ion_num, prot_num, meas_dist, opt_dist, ion_res, ion_name, prot_resname, prot_atomname in coord_pairs:
+    # Only count protein/ligand/water atoms, not ion-ion pairs
     prot_res3 = re.sub(r'\d+', '', prot_resname)
-    if prot_res3 in METAL_IONS or prot_res3 == "SD":
-        ion_ion_pairs.append(pair)
+    if prot_res3 not in METAL_IONS and prot_res3 != "SD":
+        prot_atom_counts[prot_num] += 1
+
+n_adjusted = 0
+adjusted_pairs = []
+for ion_num, prot_num, meas_dist, opt_dist, ion_res, ion_name, prot_resname, prot_atomname in coord_pairs:
+    prot_res3 = re.sub(r'\d+', '', prot_resname)
+    if prot_res3 not in METAL_IONS and prot_res3 != "SD" and prot_atom_counts[prot_num] > 1:
+        # Bridging atom — use max(optimal, measured) to avoid compression
+        new_dist = max(opt_dist, meas_dist)
+        if new_dist != opt_dist:
+            n_adjusted += 1
+        adjusted_pairs.append((ion_num, prot_num, meas_dist, new_dist,
+                               ion_res, ion_name, prot_resname, prot_atomname))
     else:
-        prot_atom_restraints[prot_num].append((meas_dist, pair))
+        adjusted_pairs.append((ion_num, prot_num, meas_dist, opt_dist,
+                               ion_res, ion_name, prot_resname, prot_atomname))
 
-filtered_pairs = list(ion_ion_pairs)
-n_removed = 0
-for prot_num, candidates in prot_atom_restraints.items():
-    candidates.sort(key=lambda x: x[0])  # sort by measured distance
-    element = candidates[0][1][7][0]  # first char of prot_atomname
-    max_r = MAX_RESTRAINTS_PER_ATOM.get(element, 1)
-    filtered_pairs.extend(pair for _, pair in candidates[:max_r])
-    n_removed += len(candidates) - min(len(candidates), max_r)
-
-if n_removed > 0:
-    print(f"Removed {n_removed} duplicate restraint(s) (same atom coordinating multiple ions)")
-coord_pairs = filtered_pairs
+if n_adjusted > 0:
+    print(f"Adjusted {n_adjusted} restraint(s) for bridging atoms (using crystal distance)")
+coord_pairs = adjusted_pairs
 
 if not coord_pairs:
     print("No ion coordination pairs detected within cutoff, skipping restraints.")
