@@ -114,9 +114,44 @@ with open(args.chainmap) as f:
             except (ValueError, IndexError):
                 pass
 
+# Add ligand residue numbers to residues_b if their chain is part of protein B
+# ligand_residues.gs lists residue numbers in the same order as ligand_manifest.gs
+# ligand_manifest.gs GRO column encodes the chain: ligand_NAME_CHAIN.gro
+base_dir = os.path.dirname(args.chainmap) or "."
+ligand_res_path = os.path.join(base_dir, "ligand_residues.gs")
+manifest_path = os.path.join(base_dir, "ligand_manifest.gs")
+
+# Get protein B chains from chain_map header
+b_chains = set()
+with open(args.chainmap) as f:
+    for line in f:
+        if "chain(s):" in line:
+            b_chains = set(c.strip() for c in line.split("chain(s):")[1].strip().split(",") if c.strip())
+            break
+
+if b_chains and os.path.isfile(ligand_res_path) and os.path.isfile(manifest_path):
+    lig_resnums = []
+    with open(ligand_res_path) as f:
+        for line in f:
+            if not line.strip().startswith("#"):
+                try:
+                    lig_resnums.append(int(line.strip()))
+                except (ValueError, IndexError):
+                    pass
+    lig_chains = []
+    with open(manifest_path) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 4:
+                # Extract chain from GRO filename: ligand_NAME_CHAIN.gro
+                lig_chains.append(parts[3].replace(".gro", "").rsplit("_", 1)[-1])
+    for resnum, chain in zip(lig_resnums, lig_chains):
+        if chain in b_chains:
+            residues_b.add(resnum)
+
 # Read ion residue numbers
 ion_residues = set()
-ion_map_path = os.path.join(os.path.dirname(args.chainmap), "ion_residues.gs")
+ion_map_path = os.path.join(os.path.dirname(args.chainmap) or ".", "ion_residues.gs")
 if os.path.isfile(ion_map_path):
     with open(ion_map_path) as f:
         for line in f:
@@ -224,9 +259,14 @@ if len(ion_atoms) > 1:
                 if (ion_atoms[i][6] in residues_b) != (ion_atoms[j][6] in residues_b):
                     continue
                 ion_j_res3 = re.sub(r'\d+', '', ion_atoms[j][1])
-                # Look up optimal distance (try both orderings)
+                # Look up optimal distance — only create ion-ion restraints for
+                # known pairs (e.g. Fe-SD in FeS clusters). Unknown pairs (e.g.
+                # ZN-FE in binuclear sites) are held by their protein ligands
+                # and should not get a direct metal-metal restraint.
                 opt = OPTIMAL_DISTANCES.get((ion_i_res3, ion_j_res3),
-                      OPTIMAL_DISTANCES.get((ion_j_res3, ion_i_res3), DEFAULT_DISTANCE))
+                      OPTIMAL_DISTANCES.get((ion_j_res3, ion_i_res3), None))
+                if opt is None:
+                    continue
                 coord_pairs.append((ion_atoms[i][0], ion_atoms[j][0], dist, opt,
                                     ion_i_res3, ion_atoms[i][2],
                                     ion_j_res3, ion_atoms[j][2]))
