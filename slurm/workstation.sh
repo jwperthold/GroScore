@@ -2,4 +2,4 @@
 #SBATCH -J GroScore
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=4G
+#SBATCH --mem=8G
