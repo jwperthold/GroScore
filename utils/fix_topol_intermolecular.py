@@ -76,12 +76,47 @@ if not stray_mol_lines:
 # The stray molecules need to go into [ molecules ] which is in the 'before' section
 inter_block = '\n'.join(inter_lines).rstrip('\n')
 
+# Merge stray entries into 'before' section, then merge consecutive SOL blocks
+merged_before = before + '\n'
+for mol_line in stray_mol_lines:
+    merged_before += mol_line + '\n'
+
+# Merge consecutive SOL/NA/CL blocks in the [ molecules ] section
+# GROMACS SETTLE requires all SOL to be in a single contiguous block
+merged_lines = merged_before.split('\n')
+final_lines = []
+i = 0
+while i < len(merged_lines):
+    line = merged_lines[i]
+    parts = line.strip().split()
+    if len(parts) == 2 and not parts[0].startswith(';') and not parts[0].startswith('['):
+        mol_name = parts[0]
+        try:
+            count = int(parts[1])
+            # Look ahead for consecutive entries with same molecule name
+            while i + 1 < len(merged_lines):
+                next_parts = merged_lines[i + 1].strip().split()
+                if len(next_parts) == 2 and next_parts[0] == mol_name:
+                    try:
+                        count += int(next_parts[1])
+                        i += 1
+                    except ValueError:
+                        break
+                else:
+                    break
+            final_lines.append(f"{mol_name:20s} {count}")
+            i += 1
+            continue
+        except ValueError:
+            pass
+    final_lines.append(line)
+    i += 1
+
+inter_block = '\n'.join(inter_lines).rstrip('\n')
+
 with open(args.topol, 'w') as f:
-    f.write(before)
-    f.write('\n')
-    for mol_line in stray_mol_lines:
-        f.write(mol_line + '\n')
-    f.write('\n')
+    f.write('\n'.join(final_lines).rstrip('\n'))
+    f.write('\n\n')
     f.write(inter_block)
     f.write('\n')
 
