@@ -88,8 +88,8 @@ def find_broken_loops(resnums, coords):
   diffs = coords[1:] - coords[:-1]
   distances = np.sqrt(np.sum(diffs**2, axis=1))
 
-  # Find where distance > 0.4
-  broken_indices = np.where(distances > 0.4)[0]
+  # Find where distance > 0.41 (normal CA-CA is 0.38-0.40 nm; united-atom FFs can reach 0.401)
+  broken_indices = np.where(distances > 0.41)[0]
   for idx in broken_indices:
     broken.append((resnums[idx], resnums[idx + 1]))
 
