@@ -292,7 +292,9 @@ for resname, chain, natoms, itp, gro, atomtypes in available_ligands:
         atom_name = old_content[10:15]
         coords_and_vel = old_content[20:]  # everything from coordinates onwards
 
-        new_line = f"{next_resnum:5d}{resname:>5s}{atom_name}{next_atomnum:5d}{coords_and_vel}\n"
+        # GRO format: residue name field is exactly 5 characters — truncate if longer
+        gro_resname = resname[:5]
+        new_line = f"{next_resnum:5d}{gro_resname:>5s}{atom_name}{next_atomnum:5d}{coords_and_vel}\n"
         ligand_atom_lines.append(new_line)
         next_atomnum += 1
 
