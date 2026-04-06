@@ -906,7 +906,7 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
             hdb_lines.append(f"2\t6\t{base_name}\t{parent_name}\t" + "\t".join(refs))
         elif n_h == 1:
             h_name = parent_h_names[0]
-            if parent_elem == 8:  # oxygen → hydroxyl
+            if parent_elem == 8 or parent_elem == 16:  # oxygen/sulfur → hydroxyl/thiol
                 refs = get_refs(parent_name, heavy_neighbors, 2)
                 hdb_lines.append(f"1\t2\t{h_name}\t{parent_name}\t" + "\t".join(refs))
             elif parent_elem == 7:  # nitrogen
