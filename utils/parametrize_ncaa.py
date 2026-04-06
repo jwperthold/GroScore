@@ -1041,6 +1041,26 @@ for resname, instances in ncaa_types.items():
 
         print(f"  NCAA atoms: {len(ncaa_atom_map)} heavy + {len(h_atoms)} H = {len(all_ncaa)} total")
 
+        # Detect cyclic NCAAs: sidechain atom bonded to backbone N
+        # (e.g. PCA/pyroglutamic acid — lactam ring connecting CD to N)
+        # The hybrid AMBER backbone + OpenFF sidechain approach can't handle
+        # ring closures between backbone and sidechain atoms.
+        backbone_n_idx = None
+        for idx, name in ncaa_atom_map.items():
+            if name == 'N':
+                backbone_n_idx = idx
+                break
+        if backbone_n_idx is not None:
+            sidechain_atoms = {idx for idx in ncaa_atom_map if ncaa_atom_map[idx] not in BACKBONE_NAMES}
+            n_neighbors = set(adj.get(backbone_n_idx, []))
+            cyclic_bond = n_neighbors & sidechain_atoms
+            if cyclic_bond:
+                sc_name = ncaa_atom_map.get(list(cyclic_bond)[0], '?')
+                print(f"  Cyclic NCAA detected: backbone N bonded to sidechain {sc_name}")
+                print(f"  Will fall back to PDBFixer parent-residue replacement for {resname}")
+                failed_ncaas.append(resname)
+                continue
+
         # Assign types and charges
         type_map, charge_map, prefix = assign_types_and_charges(
             ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge)

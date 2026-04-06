@@ -63,20 +63,14 @@ with open(args.gro) as f:
     lines = f.readlines()
 
 for line in lines[2:-1]:  # skip header, count, and box line
-    if len(line) < 15:
-        continue
-    left = line[:15]
-    tmp = left.split()
-    if len(tmp) < 2:
+    if len(line) < 20:
         continue
     try:
-        s = re.search(r"\d+", tmp[0])
-        resnum = int(s.group(0))
-        resname = re.sub(r'\d+', '', tmp[0])
-        right = line[15:]
-        parts = right.split()
-        atomnum = int(parts[0])
-    except (ValueError, IndexError, AttributeError):
+        # GRO fixed-width: resnum(0:5) resname(5:10) atomname(10:15) atomnum(15:20)
+        resnum = int(line[0:5])
+        resname = line[5:10].strip()
+        atomnum = int(line[15:20])
+    except (ValueError, IndexError):
         continue
 
     # Include if protein residue or structural ion/ligand
