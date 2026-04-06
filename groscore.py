@@ -289,6 +289,7 @@ if numstructs == 0:
   exit(1)
 calcstruct = np.zeros(shape=(numstructs))
 calcstruct[:] = 1.0
+struct_status = {}  # struct_id -> failure reason (BROKEN, ENTANGLED, NODIR) or None for OK
 frenstruct = np.zeros(shape=(numstructs,args.numruns*2))
 frenstruct[:,:] = "NaN"
 print("Reading input parameters finished.")
@@ -407,6 +408,7 @@ while j <= args.numruns*2:
         while l < numstructs:
           if structids[l] == results1[i]:
             calcstruct[l] = 0
+            struct_status[results1[i]] = results2[i]
           l += 1
       i += 1
     np.savetxt("calcstruct.gs",calcstruct,delimiter="\t")
@@ -460,7 +462,8 @@ while j <= args.numruns*2:
               else:
                 f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
             else:
-              f.write("%s\tnan\tnan\t0\n"%struct_id)
+              status = struct_status.get(struct_id, "nan")
+              f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
 
         with open("scores_cgi_c%d.gs"%cycle_threshold, "w") as f:
           f.write("# Scores using first %d cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
@@ -473,7 +476,8 @@ while j <= args.numruns*2:
               else:
                 f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
             else:
-              f.write("%s\tnan\tnan\t0\n"%struct_id)
+              status = struct_status.get(struct_id, "nan")
+              f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
 
       # Update main score files (all structures using their maximum available data)
       # Include all structures with at least 1 complete cycle, each using all its available data
@@ -497,7 +501,8 @@ while j <= args.numruns*2:
             else:
               f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
           else:
-            f.write("%s\tnan\tnan\t0\n"%struct_id)
+            status = struct_status.get(struct_id, "nan")
+            f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
 
       with open("scores_cgi.gs", "w") as f:
         f.write("# Scores for all structures (each using maximum available data)\n")
@@ -510,7 +515,8 @@ while j <= args.numruns*2:
             else:
               f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
           else:
-            f.write("%s\tnan\tnan\t0\n"%struct_id)
+            status = struct_status.get(struct_id, "nan")
+            f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
 
       print("Done!")
 
