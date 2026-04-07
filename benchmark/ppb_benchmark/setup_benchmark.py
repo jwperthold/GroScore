@@ -8,6 +8,7 @@ Reads PPB-Affinity.xlsx directly (authoritative source with proper chain assignm
 
 import os
 import sys
+import csv
 import argparse
 import urllib.request
 import openpyxl
@@ -247,13 +248,15 @@ aa3to1 = {'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','GLN':'Q','GLU':'E',
           'SEC':'C','PYL':'K','CSE':'C','TPO':'T','SEP':'S','PTR':'Y'}
 
 # Write benchmark.csv for analysis scripts
-with open('benchmark.csv', 'w') as csvf:
-    csvf.write("pdb_id,chain_id_1,chain_id_2,protein_1,protein_2,kd,pkd,source,resolution\n")
+with open('benchmark.csv', 'w', newline='') as csvf:
+    writer = csv.writer(csvf)
+    writer.writerow(["pdb_id", "chain_id_1", "chain_id_2", "protein_1", "protein_2",
+                     "kd", "pkd", "source", "resolution"])
     for pdb_id, info in structures.items():
         chain_1 = ''.join(info['ligand_chains'])
         chain_2 = ''.join(info['receptor_chains'])
-        csvf.write(f"{pdb_id},{chain_1},{chain_2},{info['ligand_name']},{info['receptor_name']},"
-                   f"{info['kd']},{info['pkd']:.2f},{info['source']},{info['resolution']}\n")
+        writer.writerow([pdb_id, chain_1, chain_2, info['ligand_name'], info['receptor_name'],
+                         info['kd'], f"{info['pkd']:.2f}", info['source'], info['resolution']])
 
 # Create sp.gs file and download structures
 n_ok = 0
