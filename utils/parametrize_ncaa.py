@@ -118,8 +118,9 @@ def build_capped_pdb(atoms, chain, resnum):
     def pdb_line(s, name, resn, ch, rn, xyz, elem):
         nonlocal serial
         name_fmt = f" {name:<3s}" if len(name) < 4 else f"{name:<4s}"
+        # PDB element column must be at cols 77-78 (10 spaces of padding after tempFactor)
         line = (f"ATOM  {serial:5d} {name_fmt} {resn:>3s} {ch}{rn:4d}    "
-                f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00           {elem:>2s}")
+                f"{xyz[0]:8.3f}{xyz[1]:8.3f}{xyz[2]:8.3f}  1.00  0.00          {elem:>2s}")
         serial += 1
         return line
 
@@ -214,8 +215,7 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
             template = Chem.RemoveHs(template_h) if template_h else None
 
             if template is None:
-                print(f"  Error: RCSB template for {ncaa_resname} failed", file=sys.stderr)
-                sys.exit(1)
+                raise RuntimeError(f"RCSB template for {ncaa_resname} failed")
 
             # Remove OXT from template (not present mid-chain)
             rwt = Chem.RWMol(template)
@@ -259,8 +259,7 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
                                                  removeHs=True, sanitize=False)
 
             if ncaa_pdb_mol is None:
-                print("  Error: RDKit could not parse NCAA PDB block", file=sys.stderr)
-                sys.exit(1)
+                raise RuntimeError("RDKit could not parse NCAA PDB block")
 
             # Assign bond orders from template
             try:
@@ -337,8 +336,7 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
                                 c_idx = atom.GetIdx()
 
             if n_idx is None or c_idx is None:
-                print(f"  Error: backbone N={n_idx} C={c_idx} not found", file=sys.stderr)
-                sys.exit(1)
+                raise RuntimeError(f"backbone N={n_idx} C={c_idx} not found")
 
             # Add ACE cap: CH3-C(=O)-N
             ace_ch3 = rwmol.AddAtom(Chem.Atom(6))
@@ -395,15 +393,13 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(f"  Error: RCSB template approach failed: {e}", file=sys.stderr)
-            sys.exit(1)
+            raise RuntimeError(f"RCSB template approach failed: {e}")
 
     # Strip PDB metadata (OpenFF requires clean mol without residue info)
     sdf_clean = Chem.MolToMolBlock(mol_rdkit)
     mol_rdkit = Chem.MolFromMolBlock(sdf_clean, removeHs=False, sanitize=True)
     if mol_rdkit is None:
-        print("Error: final SDF round-trip failed", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError("final SDF round-trip failed")
     print(f"  RDKit: {mol_rdkit.GetNumAtoms()} atoms, SMILES: {Chem.MolToSmiles(mol_rdkit)}")
 
     # OpenFF
@@ -1093,14 +1089,15 @@ for resname, instances in ncaa_types.items():
 
 if failed_ncaas:
     print(f"\nNCAAs that will be replaced by parent residue: {', '.join(failed_ncaas)}")
+    # Write failed NCAAs to file so job.run can re-run fix_pdb.py without keeping them
+    # (must write even if some other NCAAs succeeded, otherwise the failed ones remain
+    #  in the PDB and pdb2gmx fails)
+    with open('ncaa_failed.gs', 'w') as f:
+        for rn in failed_ncaas:
+            f.write(f"{rn}\n")
 
 if not all_rtp:
     print("No NCAA residues were successfully parametrized.")
-    # Write failed NCAAs to file so fix_pdb.py can handle them
-    if failed_ncaas:
-        with open('ncaa_failed.gs', 'w') as f:
-            for rn in failed_ncaas:
-                f.write(f"{rn}\n")
     sys.exit(0)
 
 # ---- Create local force field copy ----
