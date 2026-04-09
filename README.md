@@ -18,7 +18,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 - **Automated MD Pipeline** - Complete workflow from structure preparation to final scoring
 - **SLURM Integration** - Efficient HPC execution via job arrays
-- **Multiple Force Fields** - Support for AMBER19SB (all-atom), CHARMM36 (all-atom), and GROMOS 54A8 (united-atom)
+- **Multiple Force Fields** - Support for AMBER19SB (all-atom), CHARMM36m (all-atom), and GROMOS 54A8 (united-atom)
 - **Structural Ion Support** - Automatic handling of 21 ion types (ZN, CA, MG, CU, FE, MN, CO, NI, K, CD, SR, BA, etc.) with coordination restraints
 - **Small Molecule Support** - OpenFF-based parametrization of ligands and cofactors (AMBER19SB only), with OpenBabel bond perception and RCSB template fallback
 - **Crystal Water Preservation** - Crystal waters from PDB structures are retained and included in simulations
@@ -59,7 +59,7 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 |-------------|------|-------------|-------------|---------|------------------|
 | **AMBER19SB OPC3** (default) | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
 | **AMBER19SB OPC** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
-| **CHARMM36** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
+| **CHARMM36m** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
 All force fields use:
@@ -69,10 +69,10 @@ All force fields use:
 
 **Terminal Capping Details:**
 - **AMBER19SB**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
-- **CHARMM36**: Uses ACE (N-acetyl) caps at N-termini (explicit residues) and COOH patches at C-termini for improved stability.
+- **CHARMM36m**: Uses ACE (N-acetyl) caps at N-termini (explicit residues) and COOH patches at C-termini for improved stability.
 - **GROMOS 54A8**: Uses ACE caps at N-termini (explicit residues) and COOH patches at C-termini.
 
-The CHARMM36 force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`. The GROMOS 54A8 force field parameters (from [Oostenbrink group](https://boku.ac.at/en/nwnr/mmsi/research/force-field-development)) are included in `forcefield/gromos54a8.ff/`.
+The CHARMM36m force field parameters (from [MacKerell lab](https://mackerell.umaryland.edu/charmm_ff.shtml)) are included in `forcefield/charmm36-jul2022.ff/`. The GROMOS 54A8 force field parameters (from [Oostenbrink group](https://boku.ac.at/en/nwnr/mmsi/research/force-field-development)) are included in `forcefield/gromos54a8.ff/`.
 
 ## Heteroatom Support
 
@@ -84,7 +84,7 @@ Crystal water molecules (HOH) from PDB structures are preserved and included as 
 
 21 ion types are supported: ZN, CA, MG, CU, CU1, FE, FE2, NA, CL, MN, CO, NI, K, CD, SR, BA, CS, LI, HG, PB, and SD (sulfide from FeS clusters). Ions are automatically detected from PDB HETATM records and carried through the full pipeline. Ion-protein coordination is maintained via topology-level harmonic restraints using optimal distances from force field parameters and literature (e.g., Zn-S 0.232 nm, Zn-N 0.207 nm). Ions participate in the pulling restraints and are assigned to their respective protein chain. Metal clusters ([2Fe-2S], [4Fe-4S]) are modeled as individual ion atoms with intra-cluster distance restraints.
 
-**Ion coordination protonation**: Residues coordinating metal ions are automatically assigned correct protonation states before topology generation. Cysteine thiolates (CYS → CYM) are deprotonated to expose the lone pair on sulfur. Histidine residues are set so the coordinating nitrogen is deprotonated (ND1 coordinates → HIE; NE2 coordinates → HID). Detection uses a 3.0 Å distance cutoff. This is supported for all force fields (AMBER19SB, CHARMM36, GROMOS 54A8) with the appropriate residue naming conventions.
+**Ion coordination protonation**: Residues coordinating metal ions are automatically assigned correct protonation states before topology generation. Cysteine thiolates (CYS → CYM) are deprotonated to expose the lone pair on sulfur. Histidine residues are set so the coordinating nitrogen is deprotonated (ND1 coordinates → HIE; NE2 coordinates → HID). Detection uses a 3.0 Å distance cutoff. This is supported for all force fields (AMBER19SB, CHARMM36m, GROMOS 54A8) with the appropriate residue naming conventions.
 
 ### Small Molecules (AMBER19SB only)
 
@@ -121,10 +121,10 @@ This is only active when using AMBER19SB force fields with ligand parametrizatio
 | **Fit:** pKd = -0.0168 × GroScore + 3.5896 | Convergence |
 | <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB/OPC3" height="290"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB/OPC3" height="290"> |
 
-| **CHARMM36/TIP3P** | |
+| **CHARMM36m/TIP3P** | |
 |--------------------|-------------|
 | **Fit:** pKd = -0.0178 × GroScore + 3.4113 | Convergence |
-| <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36/TIP3P" height="290"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36/TIP3P" height="290"> |
+| <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36m/TIP3P" height="290"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36m/TIP3P" height="290"> |
 
 | **GROMOS 54A8/SPC** | |
 |---------------------|-------------|
@@ -263,7 +263,7 @@ groscore/
 ├── groscore.py          # Main orchestrator
 ├── job.run              # SLURM job template
 ├── forcefield/
-│   ├── charmm36-jul2022.ff/  # CHARMM36 force field parameters
+│   ├── charmm36-jul2022.ff/  # CHARMM36m force field parameters
 │   └── gromos54a8.ff/        # GROMOS 54A8 force field parameters
 ├── settings/
 │   ├── amber19sb_opc/   # AMBER19SB/OPC parameter files
@@ -273,7 +273,7 @@ groscore/
 │   │   ├── nvt_*.mdp    # NVT equilibration phases
 │   │   ├── npt*.mdp     # NPT equilibration
 │   │   └── bind*.mdp    # SMD pulling parameters
-│   └── charmm36/        # CHARMM36 parameter files
+│   └── charmm36/        # CHARMM36m parameter files
 │       └── (same files)
 └── utils/
     ├── renumber_pdb.py              # Assign sequential residue numbers, extract ligands/waters
@@ -320,7 +320,7 @@ GroScore automatically handles complex protein structures with multiple chains a
 - **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
 - **Terminal Capping** - Fragment termini are capped to provide neutral ends:
   - **AMBER19SB**: ACE/NME residues added explicitly via `cap_termini.py` before pdb2gmx
-  - **CHARMM36/GROMOS 54A8**: ACE residues (N-termini) added via `cap_termini.py`, COOH patches (C-termini) applied during pdb2gmx
+  - **CHARMM36m/GROMOS 54A8**: ACE residues (N-termini) added via `cap_termini.py`, COOH patches (C-termini) applied during pdb2gmx
 
 This ensures proper topology generation even for structures with missing loops or multi-chain complexes, while maintaining chain boundaries and avoiding artificial chain breaks.
 
