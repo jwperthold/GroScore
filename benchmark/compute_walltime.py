@@ -14,6 +14,7 @@ import glob
 import argparse
 import re
 import tarfile
+import numpy as np
 
 parser = argparse.ArgumentParser(description="Calculate total wall-clock time and FLOPS from SLURM output files.")
 parser.add_argument('-d', '--directory', type=str, default='.', help="Directory containing slurm-*.out files (default: current)")
@@ -181,6 +182,18 @@ if has_flops:
 else:
     print(f"{'Total':<12} {total_h:>10.2f} h {sum(r[2] for r in results):>9d}")
 print(f"{'Structures':<12} {n_structures:>10d}")
-print(f"{'Avg/struct':<12} {total_h / n_structures:>10.2f} h")
+
+# Bootstrap CI95 for per-structure averages (50k replicates)
+n_bootstrap = 50000
+np.random.seed(42)
+wall_hours = np.array([w / 3600 for _, w, _ in results])
+indices = np.random.randint(0, n_structures, size=(n_bootstrap, n_structures))
+boot_means = np.mean(wall_hours[indices], axis=1)
+wall_lo, wall_hi = np.percentile(boot_means, [2.5, 97.5])
+print(f"{'Avg/struct':<12} {total_h / n_structures:>10.2f} h   CI95: [{wall_lo:.2f}, {wall_hi:.2f}]")
+
 if has_flops:
-    print(f"{'Avg PFLOP':<12} {total_pflops / n_structures:>10.2f}")
+    pflop_vals = np.array([flops_per_struct.get(sid, 0) / 1e9 for sid, _, _ in results])
+    boot_pflop = np.mean(pflop_vals[indices], axis=1)
+    pflop_lo, pflop_hi = np.percentile(boot_pflop, [2.5, 97.5])
+    print(f"{'Avg PFLOP':<12} {total_pflops / n_structures:>10.2f}     CI95: [{pflop_lo:.2f}, {pflop_hi:.2f}]")
