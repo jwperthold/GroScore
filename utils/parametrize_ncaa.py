@@ -421,7 +421,45 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
         with open(f"{prefix}.gro") as f:
             gro_content = f.read()
 
-    return top_content, gro_content, mol_rdkit, formal_charge
+    # Recover PDB atom names via MCS match against the input-PDB NCAA fragment.
+    # OpenFF's GRO emits generic element labels ("C", "N", "O") and the MolBlock
+    # round-trip above drops any PDBResidueInfo set in Strategy 2's CCD-CIF path,
+    # so neither coord nor name matching can recover full atom-name assignment for
+    # NCAAs whose template coords differ from the input PDB (e.g. \u03b2-amino acids
+    # B3E, HMR where coord matching only found 3/7 and 3/12 respectively).
+    atom_names_by_idx = [None] * mol_rdkit.GetNumAtoms()
+    ref_lines = [l for l in pdb_text.split('\n')
+                 if l.startswith('ATOM') and len(l) > 20 and l[17:20].strip() == ncaa_resname]
+    ref_lines.append('END')
+    ref_mol = Chem.MolFromPDBBlock('\n'.join(ref_lines) + '\n', removeHs=True, sanitize=False)
+    if ref_mol is not None and ref_mol.GetNumAtoms() > 0:
+        try:
+            from rdkit.Chem import rdFMCS
+            mol_heavy = Chem.RemoveHs(mol_rdkit)
+            heavy_to_rdkit = [a.GetIdx() for a in mol_rdkit.GetAtoms() if a.GetAtomicNum() > 1]
+            mcs = rdFMCS.FindMCS(
+                [mol_heavy, ref_mol],
+                bondCompare=rdFMCS.BondCompare.CompareAny,
+                atomCompare=rdFMCS.AtomCompare.CompareElements,
+                ringMatchesRingOnly=False,
+                completeRingsOnly=False,
+                timeout=30,
+            )
+            if mcs.numAtoms > 0:
+                q = Chem.MolFromSmarts(mcs.smartsString)
+                m_big = mol_heavy.GetSubstructMatch(q)
+                m_ref = ref_mol.GetSubstructMatch(q)
+                for i in range(min(len(m_big), len(m_ref))):
+                    info = ref_mol.GetAtomWithIdx(m_ref[i]).GetPDBResidueInfo()
+                    if info is None:
+                        continue
+                    atom_names_by_idx[heavy_to_rdkit[m_big[i]]] = info.GetName().strip()
+                n_named = sum(1 for n in atom_names_by_idx if n is not None)
+                print(f"  MCS mapped {n_named}/{ref_mol.GetNumAtoms()} NCAA atoms to PDB names")
+        except Exception as e:
+            print(f"  MCS atom-name recovery failed ({e}); will rely on coord/name match")
+
+    return top_content, gro_content, mol_rdkit, formal_charge, atom_names_by_idx
 
 
 # ---- Topology parsing ----
@@ -483,10 +521,12 @@ def parse_gro_coords(content):
 # ---- Atom matching and type/charge assignment ----
 
 def match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content=None):
-    """Match GRO atom indices to NCAA PDB atom names by coordinate proximity.
-    PDB coords are in Angstrom, GRO in nm.
-    Falls back to atom-name matching from GRO residue names if coordinate matching fails
-    (e.g., when ideal template coordinates were used instead of PDB coordinates)."""
+    """Match GRO atom indices to NCAA PDB atom names.
+    First tries coordinate proximity (PDB Å, GRO nm), then fills remaining unmatched
+    GRO atoms by atom name from the GRO file. Previously the name-based fallback only
+    fired when coordinate matching matched nothing, which silently dropped atoms for
+    \u03b2-amino acids and other NCAAs where the PDB template coords drift from GRO
+    coords enough that only some (not all) atoms match within 0.05 \u00c5 (e.g. B3E: 3/7)."""
     mapping = {}
     for gro_idx, gc in enumerate(gro_coords):
         for name, pc in ncaa_heavy_coords.items():
@@ -496,13 +536,13 @@ def match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content=None):
                 mapping[gro_idx] = name
                 break
 
-    # Fallback: match by atom name from GRO file if coordinate matching failed
-    if len(mapping) == 0 and gro_content is not None:
+    # Fill unmatched GRO atoms by atom name from the GRO file.
+    if gro_content is not None:
         gro_lines = gro_content.strip().split('\n')
         n = int(gro_lines[1].strip())
         ncaa_names_set = set(ncaa_heavy_coords.keys())
         for i, line in enumerate(gro_lines[2:2+n]):
-            if len(line) < 15:
+            if i in mapping or len(line) < 15:
                 continue
             atom_name = line[10:15].strip()
             if atom_name in ncaa_names_set and atom_name not in mapping.values():
@@ -1007,7 +1047,16 @@ all_hdb = []
 failed_ncaas = []  # NCAAs that couldn't be parametrized → fall back to PDBFixer replacement
 
 for resname, instances in ncaa_types.items():
-    chain, resnum = instances[0]
+    # Choose the instance with the most heavy atoms as canonical: crystal structures
+    # sometimes have truncated copies of the same NCAA (missing sidechain atoms),
+    # and parametrizing the shortest version produces an rtp that pdb2gmx rejects
+    # for the complete copies (e.g. 4DZV's B3E residue 196 has 7 atoms while residue
+    # 203 has 10 — rtp must include the full sidechain to cover both).
+    def _heavy_count(ch_rn):
+        ch, rn = ch_rn
+        return sum(1 for a in pdb_atoms
+                   if a['chain'] == ch and a['resnum'] == rn and not a['name'].startswith('H'))
+    chain, resnum = max(instances, key=_heavy_count)
     print(f"\n=== Parametrizing {resname} (chain {chain}, residue {resnum}) ===")
 
     try:
@@ -1015,15 +1064,24 @@ for resname, instances in ncaa_types.items():
         pdb_text, ncaa_heavy_coords, ncaa_atom_names = build_capped_pdb(pdb_atoms, chain, resnum)
 
         # Parametrize with OpenFF
-        top_content, gro_content, mol_rdkit, formal_charge = parametrize_capped(
+        top_content, gro_content, mol_rdkit, formal_charge, atom_names_by_idx = parametrize_capped(
             pdb_text, ncaa_heavy_coords, resname, args.ff, args.ph)
 
         # Parse topology and coordinates
         top = parse_top(top_content)
         gro_coords = parse_gro_coords(gro_content)
 
-        # Match NCAA atoms by coordinates
-        ncaa_atom_map = match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content)
+        # Primary mapping: atom_names_by_idx from MCS match (robust across coord/naming
+        # drift). Augment with coord/name matching from match_ncaa_atoms as a fallback
+        # for atoms MCS could not resolve.
+        ncaa_atom_map = {}
+        for i, name in enumerate(atom_names_by_idx):
+            if name is not None and name in ncaa_heavy_coords and name not in ncaa_atom_map.values():
+                ncaa_atom_map[i] = name
+        coord_map = match_ncaa_atoms(gro_coords, ncaa_heavy_coords, gro_content)
+        for gro_idx, name in coord_map.items():
+            if gro_idx not in ncaa_atom_map and name not in ncaa_atom_map.values():
+                ncaa_atom_map[gro_idx] = name
         print(f"  Matched {len(ncaa_atom_map)}/{len(ncaa_heavy_coords)} NCAA heavy atoms")
         for name in ncaa_heavy_coords:
             if name not in ncaa_atom_map.values():
@@ -1037,10 +1095,13 @@ for resname, instances in ncaa_types.items():
 
         print(f"  NCAA atoms: {len(ncaa_atom_map)} heavy + {len(h_atoms)} H = {len(all_ncaa)} total")
 
-        # Detect cyclic NCAAs: sidechain atom bonded to backbone N
-        # (e.g. PCA/pyroglutamic acid — lactam ring connecting CD to N)
-        # The hybrid AMBER backbone + OpenFF sidechain approach can't handle
-        # ring closures between backbone and sidechain atoms.
+        # Detect cyclic NCAAs: sidechain atom bonded to backbone N that actually
+        # closes a ring back to N through other atoms (e.g. PCA/pyroglutamic acid —
+        # lactam ring N-CA-CB-CG-CD-N). The hybrid AMBER backbone + OpenFF sidechain
+        # approach can't handle ring closures between backbone and sidechain atoms.
+        # A \u03b2-amino acid (N-CB-CA-C backbone) also has N bonded to a non-standard
+        # atom (CB), but there is no ring closure — so we verify by checking whether
+        # the candidate atom has an alternate path back to N not using the direct bond.
         backbone_n_idx = None
         for idx, name in ncaa_atom_map.items():
             if name == 'N':
@@ -1049,7 +1110,25 @@ for resname, instances in ncaa_types.items():
         if backbone_n_idx is not None:
             sidechain_atoms = {idx for idx in ncaa_atom_map if ncaa_atom_map[idx] not in BACKBONE_NAMES}
             n_neighbors = set(adj.get(backbone_n_idx, []))
-            cyclic_bond = n_neighbors & sidechain_atoms
+            candidate_bonds = n_neighbors & sidechain_atoms
+            cyclic_bond = set()
+            for nb in candidate_bonds:
+                visited = {nb}
+                stack = [x for x in adj.get(nb, []) if x != backbone_n_idx]
+                for x in stack:
+                    visited.add(x)
+                reaches_n = False
+                while stack:
+                    cur = stack.pop()
+                    if cur == backbone_n_idx:
+                        reaches_n = True
+                        break
+                    for nxt in adj.get(cur, []):
+                        if nxt not in visited:
+                            visited.add(nxt)
+                            stack.append(nxt)
+                if reaches_n:
+                    cyclic_bond.add(nb)
             if cyclic_bond:
                 sc_name = ncaa_atom_map.get(list(cyclic_bond)[0], '?')
                 print(f"  Cyclic NCAA detected: backbone N bonded to sidechain {sc_name}")

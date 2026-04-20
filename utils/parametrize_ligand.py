@@ -204,20 +204,27 @@ with tempfile.TemporaryDirectory() as tmpdir:
         atomtypes_lines = top_lines[s["start"]:s["end"]]
 
     # Extract everything from [ moleculetype ] to just before [ system ]
+    # Skip [ settles ] blocks: OpenFF emits an empty one for non-water ligands,
+    # which makes GROMACS treat the ligand as a SETTLE moleculetype and fail
+    # when combined with SOL ("more than one block of a moleculetype with settles").
     moltype_lines = []
     in_moltype = False
+    in_settles = False
     for line in top_lines:
         section = line.strip().strip("[]").strip() if line.strip().startswith("[") else None
         if section == "moleculetype":
             in_moltype = True
-        elif section in ("system", "molecules", "settles", "exclusions"):
-            if section in ("settles", "exclusions") and in_moltype:
-                # These are part of the moleculetype
-                pass
-            elif section in ("system", "molecules"):
-                in_moltype = False
-                continue
-        if in_moltype:
+            in_settles = False
+        elif section == "settles":
+            in_settles = True
+            continue
+        elif section in ("system", "molecules"):
+            in_moltype = False
+            in_settles = False
+            continue
+        elif section is not None:
+            in_settles = False
+        if in_moltype and not in_settles:
             moltype_lines.append(line)
 
     # Rename molecule type from MOL0 to a per-instance name

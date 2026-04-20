@@ -122,29 +122,35 @@ prot2_coords = []
 
 if os.path.isfile("conf.gro"):
   with open("conf.gro", "r") as f:
+    # Skip title + atom count header
+    header = [next(f, ""), next(f, "")]
     for line in f:
-      if not line.strip().startswith("#"):
-        left = line[:15]
-        right = line[15:]
-        tmp = left.split() + right.split()
-        try:
-          s = re.search(r"\d+(\.\d+)?", tmp[0])
-          resnum = int(s.group(0))
-          atomname = tmp[1]
-          # Skip H* (hydrogens for distance calculations)
-          if atomname[0] == "H":
-            continue
-          coords = [float(tmp[3]), float(tmp[4]), float(tmp[5])]
-          if resnum not in residues_b:
-            prot1_resname.append(tmp[0])
-            prot1_atomname.append(atomname)
-            prot1_coords.append(coords)
-          else:
-            prot2_resname.append(tmp[0])
-            prot2_atomname.append(atomname)
-            prot2_coords.append(coords)
-        except (ValueError, IndexError, AttributeError):
-          pass
+      # GRO fixed-width: cols 0-4 resnum, 5-9 resname, 10-14 atomname, 15-19 atomnum,
+      # 20-27 x, 28-35 y, 36-43 z. Split-based parsing merges fields when the resname
+      # begins with a digit (e.g. '1OP' at residue 368 → '3681OP').
+      try:
+        resnum = int(line[0:5].strip())
+      except (ValueError, IndexError):
+        continue
+      resname_gro = line[5:10].strip()
+      atomname = line[10:15].strip()
+      if not atomname or atomname[0] == "H":
+        continue
+      try:
+        coords = [float(line[20:28]), float(line[28:36]), float(line[36:44])]
+      except (ValueError, IndexError):
+        continue
+      # Use ':' as a delimiter so get_resnum/get_res3 can split resnum from resname
+      # even when the resname starts with digits (e.g. 1OP, 9R1).
+      combined = f"{resnum}:{resname_gro}"
+      if resnum not in residues_b:
+        prot1_resname.append(combined)
+        prot1_atomname.append(atomname)
+        prot1_coords.append(coords)
+      else:
+        prot2_resname.append(combined)
+        prot2_atomname.append(atomname)
+        prot2_coords.append(coords)
 
 # Convert to numpy arrays
 prot1_coords = np.array(prot1_coords, dtype=np.float64)
@@ -216,26 +222,19 @@ if len(protkeep2_indices) > 1:
     if np.any(mask):
       laterkeep2_resnames.add(prot2_resname[protkeep2_indices[i]])
 
-# Helper function to extract residue number from resname (e.g., "123ALA" -> 123, "123CLYS" -> 123)
+# Helper functions to split stored "resnum:resname" keys.
+# Using a ':' delimiter avoids ambiguity when the resname itself starts with a digit
+# (e.g. '1OP' at residue 368 would otherwise read as resnum 3681).
 def get_resnum(resname):
-  # Extract leading digits to handle both 3-letter (ALA) and 4-letter (CLYS, NLYS) residue codes
-  digits = ''
-  for c in resname:
-    if c.isdigit():
-      digits += c
-    else:
-      break
-  return int(digits)
+  key = resname.split(":", 1)[0]
+  return int(key)
 
 def get_res3(resname):
-  """Extract residue name from GRO resname field (e.g. '219ZN' -> 'ZN', '123ALA' -> 'ALA').
-  Truncates to 3 chars for PDB compatibility — 4-char names (HISB, HISA, CYSH)
-  corrupt PDB column alignment when processed by PDBFixer/OpenMM downstream."""
-  for i, c in enumerate(resname):
-    if not c.isdigit():
-      name = resname[i:]
-      return name[:3] if len(name) > 3 else name
-  return resname
+  """Extract residue name from 'resnum:resname' key, truncating to 3 chars.
+  4-char names (HISB, HISA, CYSH) corrupt PDB column alignment downstream."""
+  parts = resname.split(":", 1)
+  name = parts[1] if len(parts) == 2 else parts[0]
+  return name[:3] if len(name) > 3 else name
 
 # Minimum fragment length (residues)
 MIN_FRAGMENT_LEN = 5
