@@ -111,24 +111,19 @@ This is only active when using AMBER19SB force fields with ligand parametrizatio
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
-| **AMBER19SB/OPC** | |
-|-------------------|-------------|
-| **Fit:** pKd = -0.0139 × GroScore + 4.5175 | Convergence |
-| <img src="/benchmark/results/correlation_plot_amber.png" alt="Correlation Plot AMBER19SB/OPC" height="290"> | <img src="/benchmark/results/convergence_plot_amber.png" alt="Convergence Plot AMBER19SB/OPC" height="290"> |
-
 | **AMBER19SB/OPC3** | |
 |--------------------|-------------|
-| **Fit:** pKd = -0.0168 × GroScore + 3.5896 | Convergence |
+| **Fit:** pKd = -0.0176 × GroScore + 3.4513 | Convergence |
 | <img src="/benchmark/results/correlation_plot_amber_opc3.png" alt="Correlation Plot AMBER19SB/OPC3" height="290"> | <img src="/benchmark/results/convergence_plot_amber_opc3.png" alt="Convergence Plot AMBER19SB/OPC3" height="290"> |
 
 | **CHARMM36m/TIP3P** | |
 |--------------------|-------------|
-| **Fit:** pKd = -0.0178 × GroScore + 3.4113 | Convergence |
+| **Fit:** pKd = -0.0209 × GroScore + 2.9054 | Convergence |
 | <img src="/benchmark/results/correlation_plot_charmm.png" alt="Correlation Plot CHARMM36m/TIP3P" height="290"> | <img src="/benchmark/results/convergence_plot_charmm.png" alt="Convergence Plot CHARMM36m/TIP3P" height="290"> |
 
 | **GROMOS 54A8/SPC** | |
 |---------------------|-------------|
-| **Fit:** pKd = -0.0178 × GroScore + 3.7654 | Convergence |
+| **Fit:** pKd = -0.0178 × GroScore + 3.7434 | Convergence |
 | <img src="/benchmark/results/correlation_plot_gromos_54a8.png" alt="Correlation Plot GROMOS 54A8/SPC" height="290"> | <img src="/benchmark/results/convergence_plot_gromos_54a8.png" alt="Convergence Plot GROMOS 54A8/SPC" height="290"> |
 
 
