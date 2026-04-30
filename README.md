@@ -46,10 +46,12 @@ GroScore estimates binding affinities between protein pairs using short steered 
 **Conda environment:**
 
 ```bash
-conda create -n groscore python=3.10
+conda create -n groscore -c conda-forge python=3.10
 conda activate groscore
-conda install numpy scipy conda-forge::openmm conda-forge::pdbfixer conda-forge::openbabel conda-forge::openff-toolkit
+conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange
 ```
+
+`openff-interchange` is required separately for the `interchange.to_gromacs()` export used by the ligand and NCAA parametrizers.
 
 ## Force Fields
 
@@ -66,6 +68,8 @@ All force fields use:
 - **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
 - **Constraints**: all-bonds for maximum stability
 - **Heavy hydrogens**: `mass-repartition-factor = 3` for stable 4 fs timesteps
+- **Timestep**: 4 fs (`dt = 0.004` ps) for all production stages
+- **SMD pulling per leg**: 1.25 × 10⁶ steps × 4 fs = 5 ns; one cycle = pull + push = 10 ns of SMD plus ~120 ps NVT/NPT equilibration
 
 **Terminal Capping Details:**
 - **AMBER19SB**: Uses ACE (N-acetyl) and NME (N-methylamide) caps added as explicit residues via PDBFixer before pdb2gmx processing. This provides proper neutral termini for fragment ends.
@@ -169,7 +173,10 @@ Create `sp.gs` specifying which PDB chain(s) to pull away as "protein B":
 1ABC              A,B
 ```
 
-Structure IDs can be alphanumeric (e.g., PDB IDs) and must match the directory names.
+The file is whitespace-separated with two columns. Lines starting with `#` are
+comments. Structure IDs can be alphanumeric (e.g., PDB IDs) and must match the
+directory names. Multi-chain protein-B groups are comma-separated with no spaces
+(`A,B`); the remaining chains in the input PDB form protein A.
 
 ### 3. Run GroScore
 
@@ -186,7 +193,7 @@ python ../groscore.py
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
 - `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields).
-- `--slurm` - SLURM template name from slurm/ directory (default: workstation)
+- `--slurm` - SLURM template name from `slurm/` directory (default: `workstation`). Templates are plain `#SBATCH`-prefixed shell scripts; ship with `slurm/workstation.sh` (single workstation) and `slurm/vsc5.sh` (VSC-5 cluster). To target a different system, drop a new `<name>.sh` template into `slurm/` and pass `--slurm <name>`.
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 - `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures (skipped by default)
 
@@ -210,46 +217,19 @@ Re-run `python ../groscore.py` periodically to check progress and collect result
 
 Results are written to two output files ranked by binding affinity:
 
-| Output File | Method |
-|-------------|--------|
-| `scores_avg.gs` | Simple average of pulls/pushes |
-| `scores_cgi.gs` | Crooks Gaussian Intersection (for $\ge$ 20 cycles) |
+| Output File | Method | Required Cycles |
+|-------------|--------|-----------------|
+| `scores_avg.gs` | Simple average of pull/push works | any (≥ 1) |
+| `scores_cgi.gs` | Crooks Gaussian Intersection of forward/reverse work distributions | ≥ 20 |
 
-## Simulation Pipeline
+Note that CGI requires at least 20 cycles to fit forward and reverse work distributions; with the default `--numruns 5` only `scores_avg.gs` is produced. Increase `-n` if you want CGI estimates.
 
-```
-Stage 0: Preparation
-├── PDB fixing (missing atoms, non-standard residues)
-├── NCAA parametrization (OpenFF sidechain + AMBER backbone)
-├── Ligand extraction & OpenFF parametrization (AMBER19SB)
-├── Ion coordination protonation (CYS/HIS)
-├── Crystal water extraction
-├── Structure validation
-├── PDB conversion (pdb2gmx)
-├── Ligand/water/ion merging into topology
-├── Ion coordination restraints (topology-level)
-├── Solvation (water + 0.15 M NaCl)
-└── Energy minimization → emin_solv.gro
+#### Interpreting the score
 
-Initial Equilibration (for distance restraints)
-└── 5-phase NVT + NPT → npt_init_cluster.gro
-
-Independent Cycles (N cycles, default 3)
-├── Cycle 1:
-│   ├── Fresh full equilibration (NVT 1-5 + NPT)
-│   ├── Pull (unbinding SMD)
-│   └── Short NPT + Push (binding SMD)
-├── Cycle 2:
-│   ├── Fresh full equilibration (NVT 1-5 + NPT)
-│   ├── Pull (unbinding SMD)
-│   └── Short NPT + Push (binding SMD)
-└── ... (each cycle independent, new random velocities)
-
-Final: Analysis
-└── Statistical scoring (2 methods)
-```
-
-Each cycle starts fresh from `emin_solv.gro` with independent equilibration, providing statistically independent samples for robust scoring.
+- **Sign convention**: more negative score ⇄ tighter binding. Predicted pKd is monotonically *decreasing* in the score.
+- **Units**: kJ·mol⁻¹. The score is the integrated pulling work along the unbinding/rebinding coordinate, averaged over cycles.
+- **Convert to pKd**: use the linear fits provided per force field in the [Benchmark Data](#benchmark-data-haddocking-protein-protein-affinity-benchmark) section, e.g. for AMBER19SB/OPC3: `pKd ≈ -0.0176 × score + 3.4513`. These coefficients are calibrated on the HADDOCKING benchmark.
+- **Uncertainty**: the `CI95` column is a 95 % confidence interval on the score from the between-cycle scatter.
 
 ## Project Structure
 
@@ -288,6 +268,50 @@ groscore/
     ├── make_disres_en.py            # Distance restraints & elastic network
     └── integrate.py                 # Force curve integration
 ```
+
+## Simulation Pipeline
+
+```
+Stage 0: Preparation
+├── PDB fixing (missing atoms, non-standard residues)
+├── NCAA parametrization (OpenFF sidechain + AMBER backbone)
+├── Ligand extraction & OpenFF parametrization (AMBER19SB)
+├── Ion coordination protonation (CYS/HIS)
+├── Crystal water extraction
+├── Structure validation
+├── PDB conversion (pdb2gmx)
+├── Ligand/water/ion merging into topology
+├── Ion coordination restraints (topology-level)
+├── Solvation (water + 0.15 M NaCl)
+└── Energy minimization → emin_solv.gro
+
+Initial Equilibration (for distance restraints)
+└── 5-phase NVT + NPT → npt_init_cluster.gro
+
+Independent Cycles (N cycles, default 5)
+├── Cycle 1:
+│   ├── Fresh full equilibration (NVT 1-5 + NPT)
+│   ├── Pull (unbinding SMD)
+│   └── Short NPT + Push (binding SMD)
+├── Cycle 2:
+│   ├── Fresh full equilibration (NVT 1-5 + NPT)
+│   ├── Pull (unbinding SMD)
+│   └── Short NPT + Push (binding SMD)
+└── ... (each cycle independent, new random velocities)
+
+Final: Analysis
+└── Statistical scoring (2 methods)
+```
+
+Each cycle starts fresh from `emin_solv.gro` with independent equilibration, providing statistically independent samples for robust scoring.
+
+### Reproducibility
+
+Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at 300 K. The initial-velocity seed in every NVT/NPT/SMD `.mdp` is set to `gen_seed = -1`, i.e. GROMACS picks a fresh seed from the wall clock at submission time. This is deliberate — independent cycles must sample independent trajectories — but it does mean that scores from a re-submitted run will not be bitwise-identical to the original. The CI95 column in `scores_avg.gs` quantifies the resulting between-cycle variance.
+
+### Throughput
+
+On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per structure for 5 cycles** (including all equilibration legs and 5 × 10 ns of SMD). Cost scales linearly with cycle count and roughly linearly with system size; the interface-cutout mode (default) keeps system size near-constant across most complexes, so per-structure walltimes are tightly clustered. The benchmark directory contains `compute_walltime.py`, which extracts realised walltimes and PFLOP counts from completed SLURM logs.
 
 ## Key SMD Pulling Parameters
 
@@ -356,7 +380,7 @@ If you use GroScore in your research, please cite:
 
 > Perthold, J. W.; Oostenbrink, C. GroScore: Accurate Scoring of Protein–Protein Binding Poses Using Explicit-Solvent Free-Energy Calculations. *J. Chem. Inf. Model.* **2019**, *59* (12), 5074–5085. https://doi.org/10.1021/acs.jcim.9b00687
 
-For the improved method (Chapter 3 included in `theory/`), see:
+For the improved method (Chapter 3 included as [theory/thesis_chapter_3.pdf](theory/thesis_chapter_3.pdf)), see:
 
 > Perthold, J. W. New developments and critical views on binding free-energy calculations using molecular mechanics. *Doctoral Dissertation*, University of Natural Resources and Life Sciences, Vienna (BOKU), **2023**. [Library catalog](https://litsearch.boku.ac.at/primo-explore/fulldisplay?docid=BOK_alma2198734100003345&vid=BOK)
 
