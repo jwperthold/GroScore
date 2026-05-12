@@ -1079,11 +1079,37 @@ if args.gmx_ff.startswith('gromos'):
     if os.path.isfile(_g_ions_rtp):
         _g_residues |= _load_ff_residues(_g_ions_rtp)
 
-    gromos_known, gromos_unknown = [], []
+    # PDB CCD codes → (GROMOS resname, {pdb_atom: gromos_atom})
+    # Covers PTMs whose RCSB names differ from GROMOS 54A8 internal names.
+    # Atom renames listed for heavy atoms only; pdb2gmx -ignh adds H from HDB.
+    _PDB_TO_GROMOS = {
+        # Phosphorylated residues (T1P/S1P/Y1P = -1 charge; T2P/S2P/Y2P = -2)
+        # Use -1 by default (one phosphate OH); pdb2gmx adds HE3/HI3 from HDB.
+        'SEP': ('S1P', {'P': 'PD', 'O1P': 'OE1', 'O2P': 'OE2', 'O3P': 'OE3'}),
+        'TPO': ('T1P', {'P': 'PD', 'O1P': 'OE1', 'O2P': 'OE2', 'O3P': 'OE3'}),
+        'PTR': ('Y1P', {'P': 'PT',  'O1P': 'OI1', 'O2P': 'OI2', 'O3P': 'OI3'}),
+        # Sulfotyrosine
+        'TYS': ('YSU', {'S': 'ST',  'O1S': 'OI1', 'O2S': 'OI2', 'O3S': 'OI3'}),
+        # D-amino acids with different PDB CCD name
+        'DAL': ('DALA', {}),
+        # Norleucine (straight-chain — same heavy atom names as GROMOS LNO)
+        'NLE': ('LNO', {}),
+        # Cysteic acid (GROMOS CSE = PDB OCS: SG, OD1, OD2, OD3 same names)
+        'OCS': ('CSE', {}),
+        # Cysteine sulfinic acid (GROMOS CSA = PDB CSO: SG, OD1, OD2 same names)
+        'CSO': ('CSA', {}),
+    }
+
+    gromos_known, gromos_unknown, gromos_renames = [], [], {}
     for resname in ncaa_types:
         if resname in _g_residues:
             gromos_known.append(resname)
             print(f"  {resname}: in {args.gmx_ff}.ff — pdb2gmx will handle directly")
+        elif resname in _PDB_TO_GROMOS:
+            gros_name, atom_map = _PDB_TO_GROMOS[resname]
+            gromos_known.append(gros_name)
+            gromos_renames[resname] = (gros_name, atom_map)
+            print(f"  {resname}: maps to {args.gmx_ff}.ff residue {gros_name} — will rename in PDB")
         else:
             gromos_unknown.append(resname)
             print(f"  {resname}: NOT in {args.gmx_ff}.ff — will be replaced with parent residue")
@@ -1096,8 +1122,16 @@ if args.gmx_ff.startswith('gromos'):
         with open('ncaa_failed.gs', 'w') as _f:
             for _rn in gromos_unknown:
                 _f.write(f"{_rn}\n")
+    if gromos_renames:
+        # ncaa_rename.gs: PDB_resname<TAB>GROMOS_resname<TAB>atom=atom,... (one per line)
+        with open('ncaa_rename.gs', 'w') as _f:
+            for _pdb_rn, (_gros_rn, _atom_map) in gromos_renames.items():
+                _atoms_str = ','.join(f"{k}={v}" for k, v in _atom_map.items())
+                _f.write(f"{_pdb_rn}\t{_gros_rn}\t{_atoms_str}\n")
+        print(f"  Renames to apply to PDB: {list(gromos_renames.keys())}")
 
-    print(f"\nGROMOS NCAA summary: {len(gromos_known)} FF-native, {len(gromos_unknown)} unknown (→ parent replacement)")
+    print(f"\nGROMOS NCAA summary: {len(gromos_known)} FF-native ({len(gromos_renames)} need PDB rename), "
+          f"{len(gromos_unknown)} unknown (→ parent replacement)")
     sys.exit(0)
 
 # Accumulate across all NCAA types

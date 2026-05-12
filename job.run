@@ -121,6 +121,37 @@ if [[ ! -f conf.gro ]]; then
     # --keep-ncaa so fix_pdb.py doesn't rename them), unknown ones go to ncaa_failed.gs
     # (fix_pdb.py will replace them with parent residues via PDBFixer).
     python3 ../../utils/parametrize_ncaa.py -f renumbered.pdb --gmx-ff gromos54a8
+    # Apply PDB CCD → GROMOS residue/atom renames (e.g. TPO→T1P, P→PD) before fix_pdb.py
+    if [[ -f ncaa_rename.gs ]]; then
+      python3 - << 'RENAME_PY'
+import sys
+renames = {}   # pdb_resname -> gromos_resname
+atom_maps = {} # pdb_resname -> {pdb_atom: gromos_atom}
+with open('ncaa_rename.gs') as f:
+    for line in f:
+        parts = line.rstrip('\n').split('\t')
+        if len(parts) >= 2:
+            pdb_rn, gros_rn = parts[0], parts[1]
+            renames[pdb_rn] = gros_rn
+            if len(parts) >= 3 and parts[2]:
+                atom_maps[pdb_rn] = dict(p.split('=') for p in parts[2].split(',') if '=' in p)
+with open('renumbered.pdb') as f:
+    lines = f.readlines()
+with open('renumbered.pdb', 'w') as f:
+    for line in lines:
+        if line.startswith(('ATOM  ', 'HETATM')):
+            res = line[17:20].strip()
+            if res in renames:
+                atom = line[12:16].strip()
+                new_atom = atom_maps.get(res, {}).get(atom, atom)
+                new_res = renames[res]
+                # Rebuild PDB line with renamed residue and atom
+                # Atom field: cols 12-15 (4 chars), residue: cols 17-19 (3 chars)
+                line = line[:12] + ('%-4s' % new_atom) + line[16:17] + ('%-3s' % new_res) + line[20:]
+        f.write(line)
+print("Applied GROMOS PTM renames to renumbered.pdb")
+RENAME_PY
+    fi
     if [[ -f ncaa_residues.gs ]]; then
       NCAA_LIST=$(cat ncaa_residues.gs | tr '\n' ',' | sed 's/,$//')
       if [[ -n "$NCAA_LIST" ]]; then
