@@ -1035,6 +1035,71 @@ if not ncaa_types:
 
 print(f"Found NCAA residues: {', '.join(f'{rn} ({len(inst)} instance(s))' for rn, inst in ncaa_types.items())}")
 
+# ---- GROMOS mode: classify NCAAs using FF's RTP; skip OpenFF entirely ----
+# Must run before the OpenFF loop below. Searches GMXLIB for custom FFs.
+if args.gmx_ff.startswith('gromos'):
+    import subprocess as _sp_g
+    _g_search_dirs = ['/usr/local/gromacs/share/gromacs/top', '/usr/share/gromacs/top']
+    try:
+        _g_ver = _sp_g.run(['gmx', '--version'], capture_output=True, text=True, timeout=10)
+        for _g_line in _g_ver.stdout.split('\n'):
+            if 'Data prefix' in _g_line:
+                _g_search_dirs.insert(0, _g_line.split()[-1] + '/share/gromacs/top')
+                break
+    except Exception:
+        pass
+    for _g_gmxlib in os.environ.get('GMXLIB', '').split(':'):
+        if _g_gmxlib:
+            _g_search_dirs.append(_g_gmxlib)
+    _g_ff_src = None
+    for _g_dir in _g_search_dirs:
+        _g_cand = os.path.join(_g_dir, f'{args.gmx_ff}.ff')
+        if os.path.isdir(_g_cand):
+            _g_ff_src = _g_cand
+            break
+    if _g_ff_src is None:
+        print(f"Error: Could not find {args.gmx_ff}.ff in GROMACS installation or GMXLIB", file=sys.stderr)
+        sys.exit(1)
+
+    def _load_ff_residues(rtp_path):
+        _section_kw = {'bondedtypes', 'atoms', 'bonds', 'impropers', 'dihedrals',
+                       'exclusions', 'settles', 'constraints', 'pairs', 'angles'}
+        names = set()
+        with open(rtp_path) as _f:
+            for _line in _f:
+                _s = _line.strip()
+                if _s.startswith('[') and _s.endswith(']'):
+                    _n = _s[1:-1].strip()
+                    if _n not in _section_kw:
+                        names.add(_n)
+        return names
+
+    _g_residues = _load_ff_residues(os.path.join(_g_ff_src, 'aminoacids.rtp'))
+    _g_ions_rtp = os.path.join(_g_ff_src, 'ions.rtp')
+    if os.path.isfile(_g_ions_rtp):
+        _g_residues |= _load_ff_residues(_g_ions_rtp)
+
+    gromos_known, gromos_unknown = [], []
+    for resname in ncaa_types:
+        if resname in _g_residues:
+            gromos_known.append(resname)
+            print(f"  {resname}: in {args.gmx_ff}.ff — pdb2gmx will handle directly")
+        else:
+            gromos_unknown.append(resname)
+            print(f"  {resname}: NOT in {args.gmx_ff}.ff — will be replaced with parent residue")
+
+    if gromos_known:
+        with open('ncaa_residues.gs', 'w') as _f:
+            for _rn in gromos_known:
+                _f.write(f"{_rn}\n")
+    if gromos_unknown:
+        with open('ncaa_failed.gs', 'w') as _f:
+            for _rn in gromos_unknown:
+                _f.write(f"{_rn}\n")
+
+    print(f"\nGROMOS NCAA summary: {len(gromos_known)} FF-native, {len(gromos_unknown)} unknown (→ parent replacement)")
+    sys.exit(0)
+
 # Accumulate across all NCAA types
 all_atomtypes = {}
 all_bonds = {}
@@ -1191,6 +1256,10 @@ try:
             break
 except Exception:
     pass
+# Also search GMXLIB (contains custom FFs like gromos54a8.ff from GroScore)
+for _gmxlib_dir in os.environ.get('GMXLIB', '').split(':'):
+    if _gmxlib_dir:
+        _gmx_search_dirs.append(_gmxlib_dir)
 for search_dir in _gmx_search_dirs:
     candidate = os.path.join(search_dir, f'{args.gmx_ff}.ff')
     if os.path.isdir(candidate):
@@ -1198,7 +1267,7 @@ for search_dir in _gmx_search_dirs:
         break
 
 if gmx_ff_src is None:
-    print(f"Error: Could not find {args.gmx_ff}.ff in GROMACS installation", file=sys.stderr)
+    print(f"Error: Could not find {args.gmx_ff}.ff in GROMACS installation or GMXLIB", file=sys.stderr)
     sys.exit(1)
 
 local_ff = f'{args.gmx_ff}.ff'
