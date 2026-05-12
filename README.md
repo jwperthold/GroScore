@@ -101,17 +101,38 @@ Ligands and cofactors are automatically extracted from PDB HETATM records and pa
 
 For best results with novel (non-PDB) ligands, provide input structures with explicit hydrogen coordinates. To skip ligand parametrization entirely, use `--no-ligand-param`.
 
-### Non-Standard Amino Acids (AMBER19SB only)
+### Non-Standard Amino Acids
 
-Modified amino acids (e.g., TRQ, TPO, SEP, MSE, HYP, MLY, CSO, PTR) are automatically detected from HETATM records that contain backbone atoms. Instead of replacing them with their parent residue, GroScore parametrizes them with OpenFF while keeping AMBER19SB backbone parameters:
+Modified amino acids (e.g., TPO, SEP, PTR, TYS, MSE, HYP, MLY, CSO, TRQ) are automatically detected from HETATM records that contain backbone atoms (N, CA, C, O). Treatment depends on the force field.
 
-1. **Detection**: HETATM residues with backbone atoms (N, CA, C, O) are identified as modified amino acids
+#### AMBER19SB
+
+GroScore parametrizes the NCAA with OpenFF while retaining AMBER19SB backbone parameters:
+
+1. **Detection**: HETATM residues with backbone atoms are identified as modified amino acids
 2. **Capped tripeptide**: An ACE-NCAA-NME fragment is built from the PDB coordinates for charge consistency
 3. **Bond orders**: OpenBabel 3D perception with RCSB Chemical Component Dictionary fallback for complex ring systems
 4. **Parametrization**: OpenFF Sage assigns charges and bonded parameters for the sidechain; backbone atoms retain AMBER19SB types and charges
 5. **Force field injection**: Custom RTP, HDB, atom types, bonded parameters, and CMAP (from parent residue) are injected into a local force field copy
 
-This is only active when using AMBER19SB force fields with ligand parametrization enabled (default). Use `--no-ligand-param` to disable.
+This is active with AMBER19SB force fields and ligand parametrization enabled (default). Use `--no-ligand-param` to disable.
+
+#### GROMOS 54A8
+
+GROMOS 54A8 ships with ~80 PTM NCAAs pre-parametrized in its residue topology files, so no OpenFF is required. pdb2gmx handles them natively after renaming:
+
+| PDB CCD | GROMOS name | Notes |
+|---------|-------------|-------|
+| TPO     | T1P         | Phosphothreonine; P→PD, O1P→OE1, O2P→OE2, O3P→OE3 |
+| SEP     | S1P         | Phosphoserine; same phosphate atom renames |
+| PTR     | Y1P         | Phosphotyrosine; P→PT, O1P→OI1, O2P→OI2, O3P→OI3 |
+| TYS     | YSU         | Sulfotyrosine; S→ST, O1S→OI1, O2S→OI2, O3S→OI3 |
+| NLE     | LNO         | Norleucine |
+| DAL     | DALA        | D-alanine |
+| OCS     | CSE         | Cysteinesulfinic acid |
+| CSO     | CSA         | S-hydroxycysteine |
+
+For NCAAs not in the GROMOS RTP (no native parameters), GroScore falls back to parent residue replacement (same as the `--no-ligand-param` behavior for AMBER19SB).
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
