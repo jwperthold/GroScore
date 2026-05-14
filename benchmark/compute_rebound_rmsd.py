@@ -310,7 +310,7 @@ print(f'Found {len(tgz_files)} tar.gz files in {args.benchmark_dir}')
 
 # ── intermediate files created by this script (strip before re-compressing) ──
 SCRATCH = {'_whole.gro', '_cluster.gro', '_clraw.gro', '_prot.gro', 'rmsd_c',
-           '_cl_sf.gro', '_cl_cf.gro'}
+           '_cl_sf.gro', '_cl_cf.gro', '_cl_pc.gro'}
 
 results = []   # list of (struct_id, cycle, rmsd_ang)
 errors  = []
@@ -399,19 +399,30 @@ for tgz_path in tgz_files:
             brev_cl_cf = f'bindrev_{push_idx}_cl_cf.gro'
             fix_chain_images(brev_prot, workdir, brev_cl_cf, npt_chain_coms)
 
+            # Candidate C: standard pbc cluster (may fail for some systems)
+            brev_cl_pc = f'bindrev_{push_idx}_cl_pc.gro'
+            rc_pc, _ = gmx(f'printf "Protein\\nProtein\\n" | gmx trjconv '
+                           f'-f {brev_whole} -s {tpr} -o {brev_cl_pc} '
+                           f'-pbc cluster -n {ndx} -quiet', workdir)
+            pc_ok = rc_pc == 0 and os.path.isfile(os.path.join(workdir, brev_cl_pc))
+
             # RMSD for each candidate; minimum = correct periodic image.
             rmsd_sf, _ = compute_rmsd(npt_cl, brev_cl_sf, workdir, f'c{cycle}_sf')
             rmsd_cf, _ = compute_rmsd(npt_cl, brev_cl_cf, workdir, f'c{cycle}_cf')
-            candidates = [(v, lbl) for v, lbl in [(rmsd_sf, 'sf'), (rmsd_cf, 'cf')]
+            rmsd_pc, _ = compute_rmsd(npt_cl, brev_cl_pc, workdir, f'c{cycle}_pc') \
+                         if pc_ok else (None, '')
+            candidates = [(v, lbl) for v, lbl in
+                          [(rmsd_sf, 'sf'), (rmsd_cf, 'cf'), (rmsd_pc, 'pc')]
                           if v is not None]
             if not candidates:
-                print(f'    ERROR: no valid RMSD for either candidate')
+                print(f'    ERROR: no valid RMSD for any candidate')
                 errors.append((struct_id, f'c{cycle}: no RMSD'))
             else:
                 rmsd, method = min(candidates, key=lambda x: x[0])
                 sf_s = f'{rmsd_sf:.2f}' if rmsd_sf is not None else 'err'
                 cf_s = f'{rmsd_cf:.2f}' if rmsd_cf is not None else 'err'
-                print(f'    RMSD = {rmsd:.2f} Å  [sf={sf_s}, cf={cf_s}, used={method}]')
+                pc_s = f'{rmsd_pc:.2f}' if rmsd_pc is not None else 'n/a'
+                print(f'    RMSD = {rmsd:.2f} Å  [sf={sf_s}, cf={cf_s}, pc={pc_s}, used={method}]')
                 struct_rmsds.append(rmsd)
                 results.append((struct_id, cycle, rmsd))
                 out_f.write(f'{struct_id}\t{cycle}\t{rmsd:.4f}\n')
