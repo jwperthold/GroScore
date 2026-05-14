@@ -109,7 +109,7 @@ BINS  = np.arange(0, X_MAX + BIN_W, BIN_W)
 
 # ── plot ──────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-title = 'Backbone RMSD: rebinding quality — cutout vs no-cutout'
+title = 'Backbone RMSD: Rebinding Quality — Cutout vs No-Cutout'
 if partial:
     title += '  [PARTIAL DATA]'
 fig.suptitle(title, fontsize=12, y=1.01)
