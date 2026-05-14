@@ -24,7 +24,7 @@ for i, a in enumerate(sys.argv[1:], 1):
     elif not a.startswith('-'):
         BASE = a
 
-FORCEFIELDS = ['charmm', 'amber', 'gromos']
+FORCEFIELDS = ['amber', 'charmm', 'gromos']
 FF_LABEL    = {'charmm': 'CHARMM36m', 'amber': 'AMBER19SB', 'gromos': 'GROMOS54A8'}
 
 COLORS = {
