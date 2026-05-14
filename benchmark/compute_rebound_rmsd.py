@@ -4,8 +4,8 @@ Compute backbone RMSD between NPT-equilibrated and re-bound structures
 for each cycle in each finished benchmark tar.gz.
 
 For cycle N:
-  Reference: npt_cN.gro     (gathered: pbc whole → pbc cluster)
-  Query:     bindrev_(N*2).gro  (pbc whole → per-chain image correction vs npt_cN)
+  Reference: npt_cN.gro     (pbc whole → Protein extract → min-image self-fix)
+  Query:     bindrev_(N*2).gro  (same pipeline)
   RMSD: Backbone fit, Backbone measurement
 
 Usage:
@@ -117,48 +117,33 @@ def nearest_image(com, ref_com, v1, v2, v3):
                     best = [tx, ty, tz]
     return best
 
-def fix_chain_images(cluster_gro, ref_gro, workdir, out_gro):
-    """Correct per-chain periodic images in a pbc-cluster protein-only GRO.
+def fix_chain_images(protein_gro, workdir, out_gro, ref_chain_coms=None):
+    """Correct per-chain periodic images in a protein-only GRO (from pbc whole).
 
-    cluster_gro – protein-only GRO (pbc cluster output) of the frame to correct
-    ref_gro     – protein-only reference GRO (npt_cl) or same file for self-fix
+    Chain A: sequential nearest-image propagation from first residue.
+    Chain B+ (ref_chain_coms=None / self-fix / NPT mode):
+        first residue placed at min-image from chain A COM, then propagated.
+    Chain B+ (ref_chain_coms provided / cross-frame / brev mode):
+        whole-chain COM placed at min-image from ref_chain_coms[mol_idx], then propagated.
+        Robust because successful rebinding puts brev chain B near NPT chain B.
 
-    Two modes:
-      Self-fix  (cluster_gro == ref_gro): all chains anchored at their own first
-                residue in cluster_gro, then sequentially propagated.  Repairs
-                per-residue fragmentation of merged molecules (e.g. 1IJK β2m+peptide)
-                without changing correctly placed separate-molecule chains.
-
-      Relative-vector (cluster_gro != ref_gro): chain A is self-fixed; each
-                subsequent chain X is anchored at
-                  brev_chain_A_COM + (ref_chain_X_first_res - ref_chain_A_COM)
-                This keeps chain X at the same spatial offset from chain A as in
-                the reference frame, handling both image mismatch (1AK4) and
-                merged-molecule gaps (1IJK).
-
-    Returns (ok: bool, error_msg: str).
+    Returns (ok: bool, error_msg: str, out_chain_coms: list).
     """
     chain_sizes = find_chain_sizes(workdir)
     if not chain_sizes:
-        return False, 'no topol_Protein_chain_*.itp found'
+        return False, 'no topol_Protein_chain_*.itp found', []
 
     n_protein = sum(chain_sizes)
 
-    with open(os.path.join(workdir, cluster_gro)) as f:
-        w_lines = f.readlines()
-    with open(os.path.join(workdir, ref_gro)) as f:
-        r_lines = f.readlines()
+    with open(os.path.join(workdir, protein_gro)) as f:
+        lines = f.readlines()
 
-    n_w = int(w_lines[1])
-    n_r = int(r_lines[1])
-    if n_w < n_protein:
-        return False, f'cluster_gro has {n_w} atoms, need >= {n_protein}'
-    if n_r < n_protein:
-        return False, f'ref_gro has {n_r} atoms, need >= {n_protein}'
+    n = int(lines[1])
+    if n < n_protein:
+        return False, f'{protein_gro} has {n} atoms, need >= {n_protein}', []
 
-    v1, v2, v3 = parse_gro_box(os.path.join(workdir, cluster_gro))
-    w_prot = list(w_lines[2:2+n_protein])   # mutable
-    r_prot = r_lines[2:2+n_protein]
+    v1, v2, v3 = parse_gro_box(os.path.join(workdir, protein_gro))
+    w_prot = list(lines[2:2+n_protein])
 
     def xyz(line):
         return float(line[20:28]), float(line[28:36]), float(line[36:44])
@@ -191,101 +176,101 @@ def fix_chain_images(cluster_gro, ref_gro, workdir, out_gro):
             boundaries.append((cur_start, len(atom_lines)))
         return boundaries
 
-    self_fix = (cluster_gro == ref_gro)
-
-    # For relative-vector mode: reference chain A COM is needed for all subsequent chains
-    ref_chain_A_com = None
-    brev_chain_A_com = None
-    if not self_fix:
-        ref_chain_A_com = res_com(r_prot[:chain_sizes[0]])
-
+    chain_A_com = None
+    out_chain_coms = []
     mol_start = 0
     for mol_idx, mol_size in enumerate(chain_sizes):
-        mol_lines_w = w_prot[mol_start:mol_start+mol_size]
-        residues = parse_residues(mol_lines_w)
+        mol_lines = w_prot[mol_start:mol_start+mol_size]
+        residues = parse_residues(mol_lines)
         rs0, re0 = residues[0]
 
-        if mol_idx == 0 or self_fix:
-            # Self-referential: anchor at cluster_gro's own first residue
-            anchor = res_com(mol_lines_w[rs0:re0])
+        if mol_idx == 0:
+            anchor = res_com(mol_lines[rs0:re0])
         else:
-            # Relative-vector: place chain X so it has the same offset from chain A
-            # as it has in the reference frame
-            mol_lines_r = r_prot[mol_start:mol_start+mol_size]
-            ref_first = res_com(mol_lines_r[rs0:re0])
-            anchor = tuple(brev_chain_A_com[i] + ref_first[i] - ref_chain_A_com[i]
-                           for i in range(3))
+            if ref_chain_coms is not None and mol_idx < len(ref_chain_coms):
+                # Cross-frame: rigid-body shift chain B to the nearest periodic image of
+                # the expected position (chain_A_com + NPT A→B relative vector).
+                # Uses the raw pbc-whole COM before sequential propagation — for a clean
+                # wrong-image error the raw COM is exactly one lattice vector away from
+                # expected, giving d_after≈0.  The caller generates both self-fix and
+                # cross-frame candidates and takes the minimum RMSD, so no additional
+                # threshold is needed here.
+                raw_com = res_com(mol_lines)
+                expected_com = (chain_A_com[0] + ref_chain_coms[mol_idx][0] - ref_chain_coms[0][0],
+                                chain_A_com[1] + ref_chain_coms[mol_idx][1] - ref_chain_coms[0][1],
+                                chain_A_com[2] + ref_chain_coms[mol_idx][2] - ref_chain_coms[0][2])
+                t_pre = nearest_image(raw_com, expected_com, v1, v2, v3)
+                shifted = shift_lines(mol_lines, t_pre)
+                for k in range(mol_size):
+                    w_prot[mol_start + k] = shifted[k]
+                mol_lines = shifted
+            else:
+                # Self-fix: place first residue at nearest-image to chain A COM.
+                raw_first = res_com(mol_lines[rs0:re0])
+                t_bulk = nearest_image(raw_first, chain_A_com, v1, v2, v3)
+                shifted = shift_lines(mol_lines, t_bulk)
+                for k in range(mol_size):
+                    w_prot[mol_start + k] = shifted[k]
+                mol_lines = shifted
+            anchor = res_com(mol_lines[rs0:re0])
 
         for rs, re in residues:
-            res_lines = [w_prot[mol_start + rs + k] for k in range(re - rs)]
+            res_lines = [w_prot[mol_start+rs+k] for k in range(re-rs)]
             rc = res_com(res_lines)
             t = nearest_image(rc, anchor, v1, v2, v3)
             new_lines = shift_lines(res_lines, t)
             for k, line in enumerate(new_lines):
-                w_prot[mol_start + rs + k] = line
+                w_prot[mol_start+rs+k] = line
             anchor = (rc[0]+t[0], rc[1]+t[1], rc[2]+t[2])
 
-        # After processing chain A, record its corrected COM for subsequent chains
-        if mol_idx == 0 and not self_fix:
-            brev_chain_A_com = res_com(w_prot[:mol_size])
-
+        out_chain_coms.append(res_com(w_prot[mol_start:mol_start+mol_size]))
+        if mol_idx == 0:
+            chain_A_com = out_chain_coms[0]
         mol_start += mol_size
 
     out_path = os.path.join(workdir, out_gro)
     with open(out_path, 'w') as f:
-        f.write('Protein chain-image corrected\n')
-        f.write(f'{n_protein}\n')
+        f.write('Protein image-corrected\n')
+        f.write(str(n_protein) + '\n')
         for line in w_prot:
             f.write(line)
-        f.write(w_lines[-1])
+        f.write(lines[-1])
 
-    return True, ''
+    return True, '', out_chain_coms
 
 # ── gathering ─────────────────────────────────────────────────────────────────
 
-def gather_gro(gro_in, tpr, ndx, gro_out, workdir, ref_gro=None):
+def gather_gro(gro_in, tpr, ndx, gro_out, workdir, ref_chain_coms=None):
     """Gather a single-frame GRO for RMSD comparison.
 
-    pbc whole → pbc cluster → fix_chain_images.
-
-    For NPT frames (ref_gro=None): self-fix mode — all chains anchored at their
-    own first residue in the pbc cluster output, then sequentially propagated.
-    This is identity for separate-molecule chains and repairs merged-molecule
-    fragmentation (1IJK β2m+peptide).
-
-    For bindrev frames (ref_gro = npt_cl): relative-vector mode — chain A is
-    self-fixed; chains B+ are placed so their offset from chain A matches the
-    npt reference frame.  Handles both different-image placement (1AK4) and
-    merged-molecule gaps (1IJK).
+    pbc whole → extract Protein group → fix_chain_images.
+    ref_chain_coms=None: self-fix (NPT mode).
+    ref_chain_coms=list: cross-frame COM placement (brev mode).
+    Returns (ok, error_msg, out_chain_coms).
     """
     whole = gro_in.replace('.gro', '_whole.gro')
-    cluster_raw = gro_in.replace('.gro', '_clraw.gro')
+    protein_raw = gro_in.replace('.gro', '_prot.gro')
 
     rc, err = gmx(f'echo "0" | gmx trjconv -f {gro_in} -s {tpr} '
                   f'-o {whole} -pbc whole -quiet', workdir)
     if rc != 0 or not os.path.isfile(os.path.join(workdir, whole)):
-        return False, 'pbc whole failed: ' + err[-200:]
+        return False, 'pbc whole failed: ' + err[-200:], []
 
-    rc, err = gmx(f'printf "Protein_Struct\\nProtein\\n" | gmx trjconv -f {whole} -s {tpr} '
-                  f'-o {cluster_raw} -pbc cluster -n {ndx} -quiet', workdir)
-    if rc != 0 or not os.path.isfile(os.path.join(workdir, cluster_raw)):
-        return False, 'pbc cluster failed: ' + err[-200:]
+    rc, err = gmx(f'echo "Protein" | gmx trjconv -f {whole} -s {tpr} '
+                  f'-o {protein_raw} -n {ndx} -quiet', workdir)
+    if rc != 0 or not os.path.isfile(os.path.join(workdir, protein_raw)):
+        return False, 'protein extract failed: ' + err[-200:], []
 
-    if ref_gro is not None and os.path.isfile(os.path.join(workdir, ref_gro)):
-        ref = ref_gro   # relative-vector mode: chain B+ placed relative to npt chain A
-    else:
-        ref = cluster_raw   # self-fix mode
-
-    ok, msg = fix_chain_images(cluster_raw, ref, workdir, gro_out)
+    ok, msg, chain_coms = fix_chain_images(protein_raw, workdir, gro_out, ref_chain_coms)
     if not ok:
-        os.rename(os.path.join(workdir, cluster_raw), os.path.join(workdir, gro_out))
-        return True, ''
+        os.rename(os.path.join(workdir, protein_raw), os.path.join(workdir, gro_out))
+        return True, '', []
 
     try:
-        os.remove(os.path.join(workdir, cluster_raw))
+        os.remove(os.path.join(workdir, protein_raw))
     except OSError:
         pass
-    return True, ''
+    return True, '', chain_coms
 
 def parse_rmsd_xvg(xvg_path):
     """Return RMSD (nm) from first data line of gmx rms output."""
@@ -324,7 +309,8 @@ tgz_files = sorted(glob.glob(os.path.join(args.benchmark_dir, '*.tar.gz')))
 print(f'Found {len(tgz_files)} tar.gz files in {args.benchmark_dir}')
 
 # ── intermediate files created by this script (strip before re-compressing) ──
-SCRATCH = {'_whole.gro', '_cluster.gro', '_clraw.gro', 'rmsd_c'}
+SCRATCH = {'_whole.gro', '_cluster.gro', '_clraw.gro', '_prot.gro', 'rmsd_c',
+           '_cl_sf.gro', '_cl_cf.gro'}
 
 results = []   # list of (struct_id, cycle, rmsd_ang)
 errors  = []
@@ -380,31 +366,52 @@ for tgz_path in tgz_files:
 
             print(f'  Cycle {cycle}: {npt_gro} ↔ {bindrev_gro}', flush=True)
 
-            # Gather npt_cN with pbc cluster (NPT structures don't have PBC drift)
+            # Gather npt_cN: pbc whole → Protein extract → self-fix (first-residue anchor)
             npt_cl = f'npt_c{cycle}_cluster.gro'
-            ok, err = gather_gro(npt_gro, tpr, ndx, npt_cl, workdir)
+            ok, err, npt_chain_coms = gather_gro(npt_gro, tpr, ndx, npt_cl, workdir)
             if not ok:
                 print(f'    ERROR gather npt: {err}')
                 errors.append((struct_id, f'c{cycle} npt gather: {err}'))
                 cycle += 1
                 continue
 
-            # Gather bindrev_K: relative-vector fix anchored to npt reference
-            brev_cl = f'bindrev_{push_idx}_cluster.gro'
-            ok, err = gather_gro(bindrev_gro, tpr, ndx, brev_cl, workdir, ref_gro=npt_cl)
-            if not ok:
-                print(f'    ERROR gather bindrev: {err}')
-                errors.append((struct_id, f'c{cycle} bindrev gather: {err}'))
-                cycle += 1
-                continue
+            # Brev: pbc whole + protein extract once, then two image-fix candidates.
+            brev_whole = f'bindrev_{push_idx}_whole.gro'
+            brev_prot  = f'bindrev_{push_idx}_prot.gro'
+            rc, err = gmx(f'echo "0" | gmx trjconv -f {bindrev_gro} -s {tpr} '
+                          f'-o {brev_whole} -pbc whole -quiet', workdir)
+            if rc != 0 or not os.path.isfile(os.path.join(workdir, brev_whole)):
+                print(f'    ERROR brev pbc whole: {err[-100:]}')
+                errors.append((struct_id, f'c{cycle} brev whole'))
+                cycle += 1; continue
+            rc, err = gmx(f'echo "Protein" | gmx trjconv -f {brev_whole} -s {tpr} '
+                          f'-o {brev_prot} -n {ndx} -quiet', workdir)
+            if rc != 0 or not os.path.isfile(os.path.join(workdir, brev_prot)):
+                print(f'    ERROR brev protein extract: {err[-100:]}')
+                errors.append((struct_id, f'c{cycle} brev prot'))
+                cycle += 1; continue
 
-            # RMSD
-            rmsd, err = compute_rmsd(npt_cl, brev_cl, workdir, f'c{cycle}')
-            if rmsd is None:
-                print(f'    ERROR rmsd: {err}')
-                errors.append((struct_id, f'c{cycle} rmsd: {err}'))
+            # Candidate A: self-fix only (first-residue anchor)
+            brev_cl_sf = f'bindrev_{push_idx}_cl_sf.gro'
+            fix_chain_images(brev_prot, workdir, brev_cl_sf, None)
+
+            # Candidate B: cross-frame pre-correction (raw pbc-whole COM → expected)
+            brev_cl_cf = f'bindrev_{push_idx}_cl_cf.gro'
+            fix_chain_images(brev_prot, workdir, brev_cl_cf, npt_chain_coms)
+
+            # RMSD for each candidate; minimum = correct periodic image.
+            rmsd_sf, _ = compute_rmsd(npt_cl, brev_cl_sf, workdir, f'c{cycle}_sf')
+            rmsd_cf, _ = compute_rmsd(npt_cl, brev_cl_cf, workdir, f'c{cycle}_cf')
+            candidates = [(v, lbl) for v, lbl in [(rmsd_sf, 'sf'), (rmsd_cf, 'cf')]
+                          if v is not None]
+            if not candidates:
+                print(f'    ERROR: no valid RMSD for either candidate')
+                errors.append((struct_id, f'c{cycle}: no RMSD'))
             else:
-                print(f'    RMSD = {rmsd:.2f} Å')
+                rmsd, method = min(candidates, key=lambda x: x[0])
+                sf_s = f'{rmsd_sf:.2f}' if rmsd_sf is not None else 'err'
+                cf_s = f'{rmsd_cf:.2f}' if rmsd_cf is not None else 'err'
+                print(f'    RMSD = {rmsd:.2f} Å  [sf={sf_s}, cf={cf_s}, used={method}]')
                 struct_rmsds.append(rmsd)
                 results.append((struct_id, cycle, rmsd))
                 out_f.write(f'{struct_id}\t{cycle}\t{rmsd:.4f}\n')
