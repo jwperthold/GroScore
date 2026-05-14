@@ -4,9 +4,9 @@ Compute backbone RMSD between NPT-equilibrated and re-bound structures
 for each cycle in each finished benchmark tar.gz.
 
 For cycle N:
-  Reference: npt_cN.gro     (pbc whole → Protein extract → min-image self-fix)
-  Query:     bindrev_(N*2).gro  (same pipeline)
-  RMSD: Backbone fit, Backbone measurement
+  Reference: npt_cN.gro     (pbc whole → Protein extract → 3 candidates: sf, pc, cf=pc+sf)
+  Query:     bindrev_(N*2).gro  (same 3 candidates)
+  RMSD: 3×3 cross-wise Backbone RMSD → minimum taken
 
 Usage:
   python3 compute_rebound_rmsd.py <benchmark_dir> [-o rmsd_rebound.gs]
@@ -366,16 +366,43 @@ for tgz_path in tgz_files:
 
             print(f'  Cycle {cycle}: {npt_gro} ↔ {bindrev_gro}', flush=True)
 
-            # Gather npt_cN: pbc whole → Protein extract → self-fix (first-residue anchor)
-            npt_cl = f'npt_c{cycle}_cluster.gro'
-            ok, err, npt_chain_coms = gather_gro(npt_gro, tpr, ndx, npt_cl, workdir)
-            if not ok:
-                print(f'    ERROR gather npt: {err}')
-                errors.append((struct_id, f'c{cycle} npt gather: {err}'))
-                cycle += 1
-                continue
+            # NPT: pbc whole → protein extract → 3 candidates (sf, pc, cf=pc+sf)
+            npt_whole = f'npt_c{cycle}_whole.gro'
+            npt_prot  = f'npt_c{cycle}_prot.gro'
+            rc, err = gmx(f'echo "0" | gmx trjconv -f {npt_gro} -s {tpr} '
+                          f'-o {npt_whole} -pbc whole -quiet', workdir)
+            if rc != 0 or not os.path.isfile(os.path.join(workdir, npt_whole)):
+                print(f'    ERROR npt pbc whole: {err[-100:]}')
+                errors.append((struct_id, f'c{cycle} npt whole')); cycle += 1; continue
+            rc, err = gmx(f'echo "Protein" | gmx trjconv -f {npt_whole} -s {tpr} '
+                          f'-o {npt_prot} -n {ndx} -quiet', workdir)
+            if rc != 0 or not os.path.isfile(os.path.join(workdir, npt_prot)):
+                print(f'    ERROR npt protein extract: {err[-100:]}')
+                errors.append((struct_id, f'c{cycle} npt prot')); cycle += 1; continue
 
-            # Brev: pbc whole + protein extract once, then two image-fix candidates.
+            # NPT sf: self-fix propagation
+            npt_cl_sf = f'npt_c{cycle}_cl_sf.gro'
+            ok_sf, _, npt_coms_sf = fix_chain_images(npt_prot, workdir, npt_cl_sf, None)
+            if not ok_sf:
+                print(f'    ERROR npt sf: no topology')
+                errors.append((struct_id, f'c{cycle} npt sf')); cycle += 1; continue
+
+            # NPT pc: pbc cluster
+            npt_cl_pc = f'npt_c{cycle}_cl_pc.gro'
+            rc_np, _ = gmx(f'printf "Protein\\nProtein\\n" | gmx trjconv '
+                           f'-f {npt_whole} -s {tpr} -o {npt_cl_pc} '
+                           f'-pbc cluster -n {ndx} -quiet', workdir)
+            npt_pc_ok = rc_np == 0 and os.path.isfile(os.path.join(workdir, npt_cl_pc))
+
+            # NPT cf: self-fix applied to pbc-cluster output (combines both corrections)
+            npt_cl_cf = f'npt_c{cycle}_cl_cf.gro'
+            if npt_pc_ok:
+                fix_chain_images(npt_cl_pc, workdir, npt_cl_cf, None)
+                npt_cf_ok = os.path.isfile(os.path.join(workdir, npt_cl_cf))
+            else:
+                npt_cf_ok = False
+
+            # Brev: pbc whole + protein extract
             brev_whole = f'bindrev_{push_idx}_whole.gro'
             brev_prot  = f'bindrev_{push_idx}_prot.gro'
             rc, err = gmx(f'echo "0" | gmx trjconv -f {bindrev_gro} -s {tpr} '
@@ -391,38 +418,43 @@ for tgz_path in tgz_files:
                 errors.append((struct_id, f'c{cycle} brev prot'))
                 cycle += 1; continue
 
-            # Candidate A: self-fix only (first-residue anchor)
+            # Brev sf: self-fix
             brev_cl_sf = f'bindrev_{push_idx}_cl_sf.gro'
             fix_chain_images(brev_prot, workdir, brev_cl_sf, None)
 
-            # Candidate B: cross-frame pre-correction (raw pbc-whole COM → expected)
+            # Brev cf: cross-frame guided by npt_coms_sf
             brev_cl_cf = f'bindrev_{push_idx}_cl_cf.gro'
-            fix_chain_images(brev_prot, workdir, brev_cl_cf, npt_chain_coms)
+            fix_chain_images(brev_prot, workdir, brev_cl_cf, npt_coms_sf)
 
-            # Candidate C: standard pbc cluster (may fail for some systems)
+            # Brev pc: pbc cluster
             brev_cl_pc = f'bindrev_{push_idx}_cl_pc.gro'
             rc_pc, _ = gmx(f'printf "Protein\\nProtein\\n" | gmx trjconv '
                            f'-f {brev_whole} -s {tpr} -o {brev_cl_pc} '
                            f'-pbc cluster -n {ndx} -quiet', workdir)
-            pc_ok = rc_pc == 0 and os.path.isfile(os.path.join(workdir, brev_cl_pc))
+            brev_pc_ok = rc_pc == 0 and os.path.isfile(os.path.join(workdir, brev_cl_pc))
 
-            # RMSD for each candidate; minimum = correct periodic image.
-            rmsd_sf, _ = compute_rmsd(npt_cl, brev_cl_sf, workdir, f'c{cycle}_sf')
-            rmsd_cf, _ = compute_rmsd(npt_cl, brev_cl_cf, workdir, f'c{cycle}_cf')
-            rmsd_pc, _ = compute_rmsd(npt_cl, brev_cl_pc, workdir, f'c{cycle}_pc') \
-                         if pc_ok else (None, '')
-            candidates = [(v, lbl) for v, lbl in
-                          [(rmsd_sf, 'sf'), (rmsd_cf, 'cf'), (rmsd_pc, 'pc')]
-                          if v is not None]
-            if not candidates:
-                print(f'    ERROR: no valid RMSD for any candidate')
+            # 3×3 RMSD grid → pick minimum
+            npt_cands  = [(npt_cl_sf, 'sf', True),
+                          (npt_cl_pc, 'pc', npt_pc_ok),
+                          (npt_cl_cf, 'cf', npt_cf_ok)]
+            brev_cands = [(brev_cl_sf, 'sf', True),
+                          (brev_cl_cf, 'cf', True),
+                          (brev_cl_pc, 'pc', brev_pc_ok)]
+            all_rmsds = []
+            for nf, nl, nok in npt_cands:
+                for bf, bl, bok in brev_cands:
+                    if not nok or not bok:
+                        continue
+                    v, _ = compute_rmsd(nf, bf, workdir, f'c{cycle}_{nl}_{bl}')
+                    if v is not None:
+                        all_rmsds.append((v, nl, bl))
+
+            if not all_rmsds:
+                print(f'    ERROR: no valid RMSD for any candidate pair')
                 errors.append((struct_id, f'c{cycle}: no RMSD'))
             else:
-                rmsd, method = min(candidates, key=lambda x: x[0])
-                sf_s = f'{rmsd_sf:.2f}' if rmsd_sf is not None else 'err'
-                cf_s = f'{rmsd_cf:.2f}' if rmsd_cf is not None else 'err'
-                pc_s = f'{rmsd_pc:.2f}' if rmsd_pc is not None else 'n/a'
-                print(f'    RMSD = {rmsd:.2f} Å  [sf={sf_s}, cf={cf_s}, pc={pc_s}, used={method}]')
+                rmsd, npt_m, brev_m = min(all_rmsds, key=lambda x: x[0])
+                print(f'    RMSD = {rmsd:.2f} Å  [npt={npt_m}, brev={brev_m}]')
                 struct_rmsds.append(rmsd)
                 results.append((struct_id, cycle, rmsd))
                 out_f.write(f'{struct_id}\t{cycle}\t{rmsd:.4f}\n')
