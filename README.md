@@ -45,7 +45,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 **Conda environment:**
 
-The easiest way is to use the provided environment file:
+The easiest way is to use the provided environment file (installs all Python dependencies):
 
 ```bash
 conda env create -f GroScore_env.yml
@@ -57,16 +57,18 @@ Or manually:
 ```bash
 conda create -n GroScore -c conda-forge python=3.10
 conda activate GroScore
-conda install -c conda-forge 'libxml2<2.14' numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange gromacs=2026
+conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange
 ```
 
-The environment file installs the CPU build of GROMACS 2026 (compatible with all systems). On systems with CUDA 12.9+, you can replace it with a GPU-accelerated build after creating the environment:
-
-```bash
-conda install -n GroScore -c conda-forge gromacs=2026
-```
-
-Conda will automatically select the CUDA build when a compatible GPU is detected. For MPI-parallel runs or unsupported CUDA versions, install GROMACS separately following the [official instructions](https://manual.gromacs.org/current/install-guide/index.html) and ensure it is available in your `PATH`.
+> **Note on GROMACS:** `openbabel=3.1.1` requires `libxml2 <2.14`, while `gromacs=2026` requires `libhwloc ≥2.12.2` which pulls in `libxml2 ≥2.14` — these are mutually exclusive in conda. GROMACS must be installed separately:
+>
+> - **HPC cluster:** load the system module (`module load gromacs/2026` or similar)
+> - **Workstation — separate conda env:**
+>   ```bash
+>   conda create -n gmx2026 -c conda-forge gromacs=2026   # GPU build selected automatically on CUDA 12.9+
+>   export PATH="$(conda info --base)/envs/gmx2026/bin:$PATH"
+>   ```
+> - **From source:** follow the [official install guide](https://manual.gromacs.org/current/install-guide/index.html)
 
 ## Force Fields
 
