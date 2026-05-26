@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 GroScore is a computational chemistry toolkit for protein-protein affinity scoring using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
 
-**Version:** 0.97
+**Version:** 0.99
 **Contact:** jan@ackergarten.at
 
 ## Tech Stack
 
-- Python 3.13 with NumPy 2.3, SciPy 1.16, OpenMM, and PDBFixer
+- Python 3.10 with NumPy 2.2, SciPy 1.15, OpenMM 8.5, and PDBFixer 1.12
 - GROMACS 2026.0 (external MD engine)
 - SLURM 23.11 job scheduler for HPC execution
 - Force fields: AMBER19SB with OPC3 water (default), AMBER19SB with OPC water, GROMOS 54A7 (united-atom), GROMOS 54A8 (united-atom), or CHARMM36 (all-atom)
@@ -34,11 +34,10 @@ python groscore.py --no-cutout
 ```
 
 **Command-line options:**
-- `-n, --numruns` - Number of pull/push cycles (default: 3)
+- `-n, --numruns` - Number of pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
-- `--cutout` - Extract interface region only (default, faster)
-- `--no-cutout` - Use full protein structure (slower, more accurate)
+- `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
 
 After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
