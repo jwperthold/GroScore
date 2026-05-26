@@ -49,18 +49,24 @@ The easiest way is to use the provided environment file:
 
 ```bash
 conda env create -f GroScore_env.yml
-conda activate groscore
+conda activate GroScore
 ```
 
 Or manually:
 
 ```bash
-conda create -n groscore -c conda-forge python=3.10
-conda activate groscore
-conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange gromacs=2026
+conda create -n GroScore -c conda-forge python=3.10
+conda activate GroScore
+conda install -c conda-forge 'libxml2<2.14' numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange gromacs=2026
 ```
 
-The conda-forge `gromacs` package automatically selects a GPU-accelerated (CUDA 12.9+) build on systems with a compatible GPU, or falls back to a CPU-only build otherwise. For MPI-parallel runs or older CUDA versions, install GROMACS separately following the [official instructions](https://manual.gromacs.org/current/install-guide/index.html) and ensure it is available in your `PATH`.
+The environment file installs the CPU build of GROMACS 2026 (compatible with all systems). On systems with CUDA 12.9+, you can replace it with a GPU-accelerated build after creating the environment:
+
+```bash
+conda install -n GroScore -c conda-forge gromacs=2026
+```
+
+Conda will automatically select the CUDA build when a compatible GPU is detected. For MPI-parallel runs or unsupported CUDA versions, install GROMACS separately following the [official instructions](https://manual.gromacs.org/current/install-guide/index.html) and ensure it is available in your `PATH`.
 
 ## Force Fields
 

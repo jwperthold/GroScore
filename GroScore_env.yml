@@ -8,10 +8,11 @@ dependencies:
   - scipy=1.15.3
   - conda-forge::openmm=8.5.0
   - conda-forge::pdbfixer=1.12
+  - conda-forge::libxml2 <2.14    # openbabel=3.1.1 requires libxml2 <2.14; also ensures gromacs CPU build (no CUDA conflict)
   - conda-forge::openbabel=3.1.1
   - conda-forge::rdkit=2025.09.5
   - conda-forge::openff-toolkit=0.16.10
   - conda-forge::openff-interchange=0.4.2
   - matplotlib-base=3.10.8
   - pandas=2.3.3
-  - conda-forge::gromacs=2026    # CUDA build selected automatically on GPU systems (requires CUDA 12.9+)
+  - conda-forge::gromacs=2026    # CPU build; for GPU/CUDA support reinstall after: conda install -n GroScore -c conda-forge gromacs=2026
