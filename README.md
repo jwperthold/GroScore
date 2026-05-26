@@ -60,7 +60,7 @@ conda activate groscore
 conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange gromacs
 ```
 
-The conda-forge `gromacs` package provides a CPU-only build. For GPU-accelerated or MPI-parallel runs on HPC clusters, install GROMACS separately following the [official instructions](https://manual.gromacs.org/current/install-guide/index.html) and ensure it is available in your `PATH`.
+The conda-forge `gromacs` package automatically selects a GPU-accelerated (CUDA 12.9+) build on systems with a compatible GPU, or falls back to a CPU-only build otherwise. For MPI-parallel runs or older CUDA versions, install GROMACS separately following the [official instructions](https://manual.gromacs.org/current/install-guide/index.html) and ensure it is available in your `PATH`.
 
 ## Force Fields
 

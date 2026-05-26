@@ -12,4 +12,4 @@ dependencies:
   - rdkit>=2025.09
   - openff-toolkit>=0.16
   - openff-interchange>=0.4
-  - gromacs>=2026        # CPU build; for GPU/MPI support install GROMACS separately
+  - gromacs>=2026        # CUDA build selected automatically on GPU systems (requires CUDA 12.9+)
