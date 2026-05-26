@@ -1,4 +1,4 @@
-name: groscore
+name: GroScore
 channels:
   - conda-forge
   - defaults
