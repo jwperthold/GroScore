@@ -45,13 +45,22 @@ GroScore estimates binding affinities between protein pairs using short steered 
 
 **Conda environment:**
 
+The easiest way is to use the provided environment file:
+
+```bash
+conda env create -f GroScore_env.yml
+conda activate groscore
+```
+
+Or manually:
+
 ```bash
 conda create -n groscore -c conda-forge python=3.10
 conda activate groscore
-conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange
+conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-toolkit openff-interchange gromacs
 ```
 
-`openff-interchange` is required separately for the `interchange.to_gromacs()` export used by the ligand and NCAA parametrizers.
+The conda-forge `gromacs` package provides a CPU-only build. For GPU-accelerated or MPI-parallel runs on HPC clusters, install GROMACS separately following the [official instructions](https://manual.gromacs.org/current/install-guide/index.html) and ensure it is available in your `PATH`.
 
 ## Force Fields
 
