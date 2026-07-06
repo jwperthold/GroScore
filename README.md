@@ -410,6 +410,8 @@ GroScore/
 
 **ENTANGLED status**: Topological knots detected. The protein structure may have threading artifacts that would invalidate pulling simulations.
 
+**FAILED status**: Stage-0 setup or energy minimization did not complete — e.g. `emin_vac.gro` was not produced (grompp hit a topology/coordinate mismatch) or the entanglement check returned no result. Check the structure's SLURM output for the first GROMACS error. Any status other than `OK` excludes the structure from scoring.
+
 **Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment.
 
 **Ligand parametrization fails**: If OpenBabel kekulization fails and RCSB download is unavailable, provide input PDB with explicit hydrogen coordinates for the ligand.

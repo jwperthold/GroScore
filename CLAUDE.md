@@ -192,5 +192,5 @@ The `renumber_pdb.py` utility reads the PDB file, assigns sequential residue num
 - File parsing filters comments with `if not line.strip().startswith("#")`
 - Large arrays pre-allocated (1,000,000 elements) then sliced to actual size
 - Distance calculations use explicit 3D Euclidean formula
-- Exit codes: 0 (success), 1 (failure); status strings: "OK", "BROKEN", "ENTANGLED"
+- Exit codes: 0 (success), 1 (failure); stage-0 status strings (results_0.gs): "OK", "BROKEN" (broken interface loop), "ENTANGLED" (entangled loops), "FAILED" (setup/EM failure, e.g. emin_vac.gro not produced), "NODIR" (missing structure dir). Anything != "OK" excludes the structure from scoring.
 - Protein separation uses chain map file (`-m/--chainmap` parameter) containing residue numbers for protein B

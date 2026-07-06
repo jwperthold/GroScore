@@ -12,6 +12,7 @@
 import os
 import sys
 import re
+import math
 import argparse
 
 parser = argparse.ArgumentParser(description="Merge crystal waters into GROMACS system.")
@@ -20,6 +21,71 @@ parser.add_argument('-c', '--conf', type=str, required=True, help="Coordinate fi
 parser.add_argument('--proximity', action='store_true',
                     help="Only include waters within 0.5 nm of protein atoms (for cutout systems)")
 args = parser.parse_args()
+
+
+def water_model_sites(topol_path):
+    """Read the SOL water model layout from the water .itp #included in the topology.
+
+    Returns (atom_names, m_dist):
+      atom_names : ordered list of SOL atom names, e.g. ['OW','HW1','HW2'] or
+                   ['OW','HW1','HW2','MW'] for a 4-point model.
+      m_dist     : O-M distance (nm) of the 4-point M virtual site, or None for a
+                   3-point model.
+
+    4-point models (OPC/TIP4P) carry an M virtual site that MUST be present in the
+    coordinate file, otherwise grompp aborts (topology has N*4 SOL atoms, the
+    coordinates only N*3). m_dist is derived from the model's own geometry (the
+    SETTLE O-H / H-H distances and the [ virtual_sites3 ] weight):
+
+        d_OM = 2*a*sqrt(doH^2 - (dHH/2)^2)    ( = 0.01594 nm = 0.1594 A for OPC )
+
+    and the site is placed on the H-O-H bisector at that distance from the oxygen.
+    Falls back to a 3-site model if the water .itp cannot be resolved.
+    """
+    default = (['OW', 'HW1', 'HW2'], None)
+    if not os.path.isfile(topol_path):
+        return default
+    topdir = os.path.dirname(os.path.abspath(topol_path))
+    lines = open(topol_path).read().splitlines()
+    itp_rel = None
+    for i, l in enumerate(lines):
+        if "water topology" in l.lower():
+            for l2 in lines[i + 1:]:
+                m = re.search(r'#include\s+"([^"]+)"', l2)
+                if m:
+                    itp_rel = m.group(1)
+                    break
+                if l2.strip().startswith('['):
+                    break
+            break
+    if not itp_rel:
+        return default
+    itp_path = os.path.normpath(os.path.join(topdir, itp_rel))
+    if not os.path.isfile(itp_path):
+        return default
+    names, section = [], None
+    doh = dhh = vsite_a = None
+    for line in open(itp_path):
+        s = line.split(';')[0].strip()
+        if not s:
+            continue
+        if s.startswith('['):
+            section = s.strip('[]').strip().lower()
+            continue
+        p = s.split()
+        if section == 'atoms' and len(p) >= 5:
+            names.append(p[4])
+        elif section == 'settles' and len(p) >= 4:
+            doh, dhh = float(p[2]), float(p[3])
+        elif section == 'virtual_sites3' and len(p) >= 7 and p[4] == '1':
+            vsite_a = float(p[5])
+    if not names:
+        return default
+    m_dist = None
+    if len(names) >= 4 and None not in (vsite_a, doh, dhh):
+        m_dist = 2.0 * vsite_a * math.sqrt(doh ** 2 - (dhh / 2.0) ** 2)
+    return names, m_dist
+
 
 PROXIMITY_CUTOFF = 0.5  # nm
 
@@ -96,13 +162,17 @@ for line in existing_atoms:
         if r > max_resnum:
             max_resnum = r
 
-# Write water atoms in GRO format: OW + HW1 + HW2 (3 atoms per SOL)
-# Generate H positions at ideal geometry from O position
-# OPC3: O-H = 0.08724 nm, H-O-H = 103.6 deg
-import math
+# Determine the SOL water model layout from the topology's included water .itp.
+# 3-point models (SPC/TIP3P/OPC3) have 3 atoms; 4-point models (OPC/TIP4P) add an
+# M virtual site that must also be written to the coordinate file.
+atom_names, m_dist = water_model_sites(args.topol)
+n_sites = len(atom_names)
+
+# Placeholder H geometry (OPC O-H = 0.08724 nm, H-O-H = 103.6 deg). The rigid-water
+# SETTLE constraints reset the exact geometry during grompp/emin, so only the
+# relative arrangement matters here. H1/H2 are symmetric about the +z bisector.
 oh_dist = 0.08724  # nm
 hoh_angle = 103.6 * math.pi / 180.0
-# Place H1 and H2 relative to O (arbitrary orientation, will relax during emin)
 dz = oh_dist * math.cos(hoh_angle / 2.0)
 dy = oh_dist * math.sin(hoh_angle / 2.0)
 
@@ -111,15 +181,19 @@ next_resnum = max_resnum + 1
 next_atomnum = max_atomnum + 1
 
 for x, y, z in water_coords:
-    # OW
-    water_atom_lines.append(f"{next_resnum:5d}{'SOL':>5s}{'  OW':5s}{next_atomnum:5d}{x:8.3f}{y:8.3f}{z:8.3f}\n")
-    next_atomnum += 1
-    # HW1
-    water_atom_lines.append(f"{next_resnum:5d}{'SOL':>5s}{' HW1':5s}{next_atomnum:5d}{x:8.3f}{y + dy:8.3f}{z + dz:8.3f}\n")
-    next_atomnum += 1
-    # HW2
-    water_atom_lines.append(f"{next_resnum:5d}{'SOL':>5s}{' HW2':5s}{next_atomnum:5d}{x:8.3f}{y - dy:8.3f}{z + dz:8.3f}\n")
-    next_atomnum += 1
+    coords = [(x, y, z), (x, y + dy, z + dz), (x, y - dy, z + dz)]  # OW, HW1, HW2
+    # 4-point M virtual site: on the H-O-H bisector (+z here), d_OM from O toward
+    # the hydrogens (0.1594 A for OPC). Its presence makes the .gro atom count
+    # match the 4-site SOL topology; grompp reconstructs its exact position.
+    if m_dist is not None and n_sites >= 4:
+        coords.append((x, y, z + m_dist))
+    while len(coords) < n_sites:      # any further sites (5-point, unused) -> at O
+        coords.append((x, y, z))
+    for si in range(n_sites):
+        px, py, pz = coords[si]
+        water_atom_lines.append(
+            f"{next_resnum:5d}{'SOL':>5s}{atom_names[si]:>5s}{next_atomnum:5d}{px:8.3f}{py:8.3f}{pz:8.3f}\n")
+        next_atomnum += 1
     next_resnum += 1
 
 total_atoms = n_existing + len(water_atom_lines)

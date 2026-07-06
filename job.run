@@ -418,8 +418,17 @@ with open('$CUTOUT_PDB', 'w') as f:
     if [[ ! -f emin_vac.gro ]]; then
       gmx mdrun -nt $nt -deffnm emin_vac
     fi
+    # Guard: if vacuum grompp/mdrun did not produce emin_vac.gro, stage 0 failed
+    # (e.g. topology/coordinate mismatch). Do NOT fall through to the entangled-loop
+    # check — on a missing file it returns empty, and `[[ "" -eq 0 ]]` is TRUE, which
+    # would mislabel the structure "OK" and cascade the failure through stage 0.
+    if [[ ! -f emin_vac.gro ]]; then
+      echo "Stage 0 failed: vacuum energy minimization did not produce emin_vac.gro."
+      echo $STRUCT_ID "FAILED" >> ../results_0.gs
+      exit 0
+    fi
     et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
-    if [[ $et -eq 0 ]]; then
+    if [[ "$et" == "0" ]]; then
       echo "after equilibration no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
       if [[ ! -f box.gro ]]; then
@@ -451,20 +460,31 @@ with open('$CUTOUT_PDB', 'w') as f:
       if [[ ! -f emin_solv.gro ]]; then
         gmx mdrun -nt $nt -deffnm emin_solv
       fi
-    else
+    elif [[ "$et" == "1" ]]; then
       echo "after equilibration entangled loops were found."
       echo $STRUCT_ID "ENTANGLED" >> ../results_0.gs
       exit 0
+    else
+      echo "Stage 0 failed: entanglement check returned unexpected output ('$et')."
+      echo $STRUCT_ID "FAILED" >> ../results_0.gs
+      exit 0
     fi
   else
-    et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
-    if [[ $et -eq 0 ]]; then
-      echo "no entangled loops were found."
+    # Restart: emin_solv.gro already exists, so stage 0 completed earlier (an
+    # entangled structure would have exited before solvation). Re-emit the status;
+    # if emin_vac.gro is gone, trust the finished setup rather than empty -> "OK".
+    if [[ ! -f emin_vac.gro ]]; then
       echo $STRUCT_ID "OK" >> ../results_0.gs
     else
-      echo "entangled loops were found."
-      echo $STRUCT_ID "ENTANGLED" >> ../results_0.gs
-      exit 0
+      et=$(python3 ../../utils/check_entangledloops.py -f emin_vac.gro -m chain_map.gs)
+      if [[ "$et" == "1" ]]; then
+        echo "entangled loops were found."
+        echo $STRUCT_ID "ENTANGLED" >> ../results_0.gs
+        exit 0
+      else
+        echo "no entangled loops were found."
+        echo $STRUCT_ID "OK" >> ../results_0.gs
+      fi
     fi
   fi
 
