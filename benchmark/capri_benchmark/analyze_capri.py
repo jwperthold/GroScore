@@ -92,6 +92,7 @@ aucs, rocs = [], []
 for t in cc.TARGETS:
     rows, n_numeric, scored = cc.join_target(t, args.targets_root, args.db, args.score_file)
     N = len(rows)
+    tot["N"] += N                       # full benchmark size — count every target
     if not scored or n_numeric == 0:
         print("%-6s %7d %7s   %-16s" % (t, N, "-", "(not scored)"))
         rows_out.append((t, N, 0, "", 0, 0, 0, float("nan"), float("nan")))
@@ -114,7 +115,7 @@ for t in cc.TARGETS:
     rows_out.append((t, N, n_numeric, fmt_top10(n_nn, n_high, n_med),
                      n_high, n_med, n_acc, e_auc, r_auc))
 
-    tot["N"] += N; tot["scored"] += n_numeric; tot["nn"] += n_nn
+    tot["scored"] += n_numeric; tot["nn"] += n_nn
     tot["high"] += n_high; tot["med"] += n_med; tot["acc"] += n_acc
     if not np.isnan(e_auc):
         aucs.append(e_auc)
@@ -129,8 +130,9 @@ print("%-6s %7d %7d   %-16s %5d %5d %5d   %8.3f %8.3f" % (
     fmt_top10(tot["nn"], tot["high"], tot["med"]),
     tot["high"], tot["med"], tot["acc"], mean_auc, mean_roc))
 print("\n(near-native = %s or better; AUC = enrichment-curve area [chapter 3], "
-      "ROC = standard ROC AUC; both random = 0.5. Totals sum the counts; "
-      "AUC/ROC are means over scored targets.)" % args.positive)
+      "ROC = standard ROC AUC; both random = 0.5. TOTAL: N = full benchmark (all "
+      "targets); scored / Top-%d / ***/**/* sum over scored targets; AUC/ROC are "
+      "means over scored targets.)" % (args.positive, args.topk))
 
 if args.out:
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
