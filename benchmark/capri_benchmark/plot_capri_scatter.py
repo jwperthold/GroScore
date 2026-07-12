@@ -121,7 +121,7 @@ def draw_joint(fig, cell, x, y, title, roc, native=None):
     ax_main.margins(x=0.02)
     # native / experimental reference structure: gold star at I-RMSD = 0
     if native is not None and np.isfinite(native):
-        ax_main.plot(0.0, native, marker="*", markersize=16, mfc="gold",
+        ax_main.plot(0.0, native, marker="*", markersize=8, mfc="gold",
                      mec="black", mew=0.6, linestyle="None", zorder=6,)
         x0, x1 = ax_main.get_xlim()
         ax_main.set_xlim(left=min(x0, -0.03 * (x1 - x0)))
