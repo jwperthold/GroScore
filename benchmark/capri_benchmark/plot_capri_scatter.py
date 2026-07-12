@@ -46,6 +46,11 @@ XKEY = "irms_nm" if args.metric == "irms" else "lrms_nm"
 XLABEL = "I-RMSD [nm]" if args.metric == "irms" else "L-RMSD [nm]"
 PMIN = {"acceptable": 1, "medium": 2, "high": 3}[args.positive]
 
+# native / experimental reference scores (natives/<target>/ scored -> natives/scores_*.gs),
+# keyed by target name; plotted as a star at I-RMSD = 0.
+native_scores, native_numeric = cc.load_scores(
+    os.path.join(cc.REPO_ROOT, "natives", args.score_file))
+
 
 def target_data(t):
     """Return (x_rmsd_nm, y_groscore, roc_auc) for a scored target, else None.
@@ -83,7 +88,7 @@ def _marginal(ax, data, orient):
         ax.plot(d, grid, color=BLUE, lw=1)
 
 
-def draw_joint(fig, cell, x, y, title, roc):
+def draw_joint(fig, cell, x, y, title, roc, native=None):
     inner = cell.subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4],
                              wspace=0.04, hspace=0.04)
     ax_main = fig.add_subplot(inner[1, 0])
@@ -114,6 +119,14 @@ def draw_joint(fig, cell, x, y, title, roc):
     ax_main.set_ylabel("GroScore [kJ/mol]", fontsize=9)
     ax_main.tick_params(labelsize=8)
     ax_main.margins(x=0.02)
+    # native / experimental reference structure: gold star at I-RMSD = 0
+    if native is not None and np.isfinite(native):
+        ax_main.plot(0.0, native, marker="*", markersize=16, mfc="gold",
+                     mec="black", mew=0.6, linestyle="None", zorder=6,)
+        x0, x1 = ax_main.get_xlim()
+        ax_main.set_xlim(left=min(x0, -0.03 * (x1 - x0)))
+        #ax_main.legend(loc="upper left", fontsize=8, frameon=True, framealpha=0.85,
+        #               handletextpad=0.2, borderpad=0.3)
     lbl = ("ROC-AUC = %.2f" % roc) if np.isfinite(roc) else "ROC-AUC = n/a"
     ax_main.text(0.96, 0.96, lbl, transform=ax_main.transAxes, fontsize=9,
                  va="top", ha="right",
@@ -140,7 +153,8 @@ outer = fig.add_gridspec(nrows, ncols, wspace=0.28, hspace=0.28)
 
 for i, t in enumerate(targets):
     x, y, roc = data[t]
-    draw_joint(fig, outer[i // ncols, i % ncols], x, y, t, roc)
+    native = native_scores.get(t) if t in native_numeric else None
+    draw_joint(fig, outer[i // ncols, i % ncols], x, y, t, roc, native)
 
 fig.suptitle("GroScore vs %s — CAPRI Score_set" % XLABEL,
              fontsize=14, fontweight="bold", y=1.0)

@@ -91,59 +91,58 @@ def load_labels(csv_path):
     return labels
 
 
-def _pick_best_label(l1, l2):
-    """Best of a pose's two T40 interface assessments: higher stars, tie -> lower I-RMSD."""
-    cands = [x for x in (l1, l2) if x is not None]
+# Targets whose CAPRI reference has TWO interfaces (a pose is near-native if it
+# matches EITHER) -> (interface CSV basenames, GroScore score dir(s)). The same
+# poses are assessed against two reference binding modes; their near-native sets
+# are disjoint, so "quality = the better interface" reproduces the papers' union.
+#   T37: JIP4 homodimer, two binding modes; one extracted structure -> one score dir.
+#   T40: double-headed API-A inhibitor, two trypsin sites; two rigid-placed copies.
+MULTI_INTERFACE = {
+    "T37": (["U-T037.1", "U-T037.2"], ["T37"]),
+    "T40": (["U-T040.1", "U-T040.2"], ["T40_1", "T40_2"]),
+}
 
-    def key(d):
-        irms = d["irms_nm"] if np.isfinite(d["irms_nm"]) else float("inf")
-        return (d["stars"], -irms)
 
-    return max(cands, key=key)
+def _join_multi(target, targets_root, db_dir, score_file):
+    """Merge a two-interface target (see MULTI_INTERFACE).
 
-
-def _join_t40(targets_root, db_dir, score_file):
-    """Merged original T40 (matches the 2014/2019 papers).
-
-    The two files hold the SAME 2180 poses; for a given pose, .1 and .2 are the
-    identical receptor+inhibitor complex (verified: ~0.0007 A RMSD after rigid
-    superposition), differing only by a rigid-body placement and the receptor
-    chain label (A vs B) — both pull ligand chain C. They differ only in which
-    reference binding mode the CAPRI quality is measured against. So per pose:
-    quality = the better of the two interface assessments (their near-native sets
-    are disjoint, reproducing the papers' union). The GroScore is invariant to the
-    rigid placement, so either file gives the same score; if both T40_1 and T40_2
-    happen to be scored, they are independent replicas of one structure and are
-    averaged.
+    Per pose: quality = the better interface assessment (higher stars; tie -> lower
+    I-RMSD). Score = the mean of whichever score dir(s) were run -- for T40 the two
+    dirs are rigid replicas of one complex (~0.0007 A RMSD) so they are averaged;
+    T37 has a single score dir.
     """
-    lab1 = load_labels(os.path.join(db_dir, TARGET_CSV["T40_1"] + ".csv"))
-    lab2 = load_labels(os.path.join(db_dir, TARGET_CSV["T40_2"] + ".csv"))
-    p1 = os.path.join(targets_root, "T40_1", score_file)
-    p2 = os.path.join(targets_root, "T40_2", score_file)
-    sc1, num1 = load_scores(p1)
-    sc2, num2 = load_scores(p2)
+    csvs, score_dirs = MULTI_INTERFACE[target]
+    labs = [load_labels(os.path.join(db_dir, c + ".csv")) for c in csvs]
+    score_paths = [os.path.join(targets_root, d, score_file) for d in score_dirs]
+    loaded = [load_scores(p) for p in score_paths]
+
+    ids = set()
+    for lab in labs:
+        ids |= set(lab)
 
     rows, numeric = [], set()
-    for pid in set(lab1) | set(lab2):
-        best = _pick_best_label(lab1.get(pid), lab2.get(pid))
-        cand = [s for s, is_num in ((sc1.get(pid), pid in num1),
-                                    (sc2.get(pid), pid in num2)) if is_num]
-        if cand:
-            score = float(np.mean(cand))   # .1/.2 are replicas of one complex -> average
+    for pid in ids:
+        cands = [lab[pid] for lab in labs if pid in lab]
+        best = max(cands, key=lambda d: (d["stars"],
+                   -(d["irms_nm"] if np.isfinite(d["irms_nm"]) else float("inf"))))
+        cand_scores = [sc[pid] for sc, num in loaded if pid in num]
+        if cand_scores:
+            score = float(np.mean(cand_scores))   # replicas / single run -> mean
             numeric.add(pid)
             has_score = True
         else:
             score = FAILED_SCORE
             has_score = False
         rows.append(dict(id=pid, score=score, scored=has_score, **best))
-    return rows, len(numeric), (os.path.isfile(p1) or os.path.isfile(p2))
+    scored = any(os.path.isfile(p) for p in score_paths)
+    return rows, len(numeric), scored
 
 
 def join_target(target, targets_root=REPO_ROOT, db_dir=DB_DIR, score_file="scores_avg.gs"):
     """Join scores with labels over the full benchmark set for one target.
 
-    "T40" is the merged original target (both trypsin interfaces); the split
-    interfaces "T40_1" / "T40_2" can still be requested individually.
+    "T37" and "T40" are merged two-interface targets (see MULTI_INTERFACE); T40's
+    split interfaces "T40_1" / "T40_2" can still be requested individually.
 
     The CSV is the universe of poses; each pose gets its numeric GroScore or
     FAILED_SCORE if not scored. Returns (rows, n_numeric, scored):
@@ -151,8 +150,8 @@ def join_target(target, targets_root=REPO_ROOT, db_dir=DB_DIR, score_file="score
       n_numeric : number of poses that had a real numeric score
       scored    : True if the target's score file exists (i.e. it has been run)
     """
-    if target == "T40":
-        return _join_t40(targets_root, db_dir, score_file)
+    if target in MULTI_INTERFACE:
+        return _join_multi(target, targets_root, db_dir, score_file)
     csv_path = os.path.join(db_dir, TARGET_CSV[target] + ".csv")
     score_path = os.path.join(targets_root, target, score_file)
     labels = load_labels(csv_path)

@@ -61,8 +61,10 @@ def fmt_top10(n_nn, n_high, n_med):
 
 
 def target_dirs(target):
-    """Physical folder(s) for a target (the merged T40 lives in T40_1 and T40_2)."""
-    return ["T40_1", "T40_2"] if target == "T40" else [target]
+    """Physical folder(s) a target's per-pose CSV is written into."""
+    if target in cc.MULTI_INTERFACE:
+        return cc.MULTI_INTERFACE[target][1]
+    return [target]
 
 
 def write_pose_csv(target, rows, fname):
@@ -84,13 +86,14 @@ def write_pose_csv(target, rows, fname):
     return written
 
 
-hdr = "%-6s %7s %7s   %-16s %5s %5s %5s   %8s %8s" % (
-    "Target", "N", "scored", "Top-%d" % args.topk, "***", "**", "*", "AUC", "ROC")
+hdr = "%-6s %8s %8s   %-18s %-16s   %8s %8s" % (
+    "Target", "N", "scored", "in-set", "Top-%d" % args.topk, "AUC", "ROC")
 print(hdr)
 print("-" * len(hdr))
 
 rows_out = []
-tot = dict(N=0, scored=0, nn=0, high=0, med=0, acc=0)
+tot = dict(N=0, scored=0, nn=0, high=0, med=0, acc=0,
+           s_nn=0, s_high=0, s_med=0, s_acc=0)
 aucs, rocs = [], []
 pose_files = []
 
@@ -98,9 +101,19 @@ for t in cc.TARGETS:
     rows, n_numeric, scored = cc.join_target(t, args.targets_root, args.db, args.score_file)
     N = len(rows)
     tot["N"] += N                       # full benchmark size — count every target
+
+    # near-native poses contained in the target set (independent of scoring)
+    s_high = sum(1 for r in rows if r["stars"] == 3)
+    s_med = sum(1 for r in rows if r["stars"] == 2)
+    s_acc = sum(1 for r in rows if r["stars"] == 1)
+    s_nn = s_high + s_med + s_acc
+    set_str = fmt_top10(s_nn, s_high, s_med)
+    tot["s_nn"] += s_nn; tot["s_high"] += s_high; tot["s_med"] += s_med; tot["s_acc"] += s_acc
+
     if not scored or n_numeric == 0:
-        print("%-6s %7d %7s   %-16s" % (t, N, "-", "(not scored)"))
-        rows_out.append((t, N, 0, "", 0, 0, 0, float("nan"), float("nan")))
+        print("%-6s %8d %8s   %-18s %s" % (t, N, "-", set_str, "(not scored)"))
+        rows_out.append((t, N, 0, set_str, s_high, s_med, s_acc,
+                         "", 0, 0, 0, float("nan"), float("nan")))
         continue
 
     order = sorted(rows, key=lambda d: d["score"])   # best (most negative) first
@@ -109,14 +122,15 @@ for t in cc.TARGETS:
     n_med = sum(1 for d in top if d["stars"] == 2)
     n_acc = sum(1 for d in top if d["stars"] == 1)
     n_nn = n_high + n_med + n_acc
+    top_str = fmt_top10(n_nn, n_high, n_med)
 
     e_auc = cc.enrichment_auc(rows, PMIN)
     r_auc = cc.roc_auc(rows, PMIN)
 
-    print("%-6s %7d %7d   %-16s %5d %5d %5d   %8.3f %8.3f" % (
-        t, N, n_numeric, fmt_top10(n_nn, n_high, n_med), n_high, n_med, n_acc, e_auc, r_auc))
-    rows_out.append((t, N, n_numeric, fmt_top10(n_nn, n_high, n_med),
-                     n_high, n_med, n_acc, e_auc, r_auc))
+    print("%-6s %8d %8d   %-18s %-16s   %8.3f %8.3f" % (
+        t, N, n_numeric, set_str, top_str, e_auc, r_auc))
+    rows_out.append((t, N, n_numeric, set_str, s_high, s_med, s_acc,
+                     top_str, n_high, n_med, n_acc, e_auc, r_auc))
 
     tot["scored"] += n_numeric; tot["nn"] += n_nn
     tot["high"] += n_high; tot["med"] += n_med; tot["acc"] += n_acc
@@ -130,14 +144,17 @@ for t in cc.TARGETS:
 print("-" * len(hdr))
 mean_auc = np.mean(aucs) if aucs else float("nan")
 mean_roc = np.mean(rocs) if rocs else float("nan")
-print("%-6s %7d %7d   %-16s %5d %5d %5d   %8.3f %8.3f" % (
+print("%-6s %8d %8d   %-18s %-16s   %8.3f %8.3f" % (
     "TOTAL", tot["N"], tot["scored"],
+    fmt_top10(tot["s_nn"], tot["s_high"], tot["s_med"]),
     fmt_top10(tot["nn"], tot["high"], tot["med"]),
-    tot["high"], tot["med"], tot["acc"], mean_auc, mean_roc))
-print("\n(near-native = %s or better; AUC = enrichment-curve area [chapter 3], "
-      "ROC = standard ROC AUC; both random = 0.5. TOTAL: N = full benchmark (all "
-      "targets); scored / Top-%d / ***/**/* sum over scored targets; AUC/ROC are "
-      "means over scored targets.)" % (args.positive, args.topk))
+    mean_auc, mean_roc))
+print("\n(counts shown as total/n***/n**, near-native = %s or better. in-set = "
+      "near-native poses contained in the benchmark set; Top-%d = among the best-ranked "
+      "by GroScore. AUC = enrichment-curve area [chapter 3], ROC = standard ROC AUC; "
+      "both random = 0.5. TOTAL: N and in-set sum over all targets; scored / Top-%d sum "
+      "over scored targets; AUC/ROC are means over scored targets.)"
+      % (args.positive, args.topk, args.topk))
 
 if pose_files:
     print("Wrote per-pose CSV '%s' into %d scored target folder(s)." % (args.pose_csv, len(pose_files)))
@@ -145,7 +162,8 @@ if pose_files:
 if args.out:
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
-        f.write("target\tN\tn_scored\ttop%d\thigh\tmedium\tacceptable\tAUC_enrich\tROC_AUC\n" % args.topk)
+        f.write("target\tN\tn_scored\tinset\tinset_high\tinset_medium\tinset_acceptable\t"
+                "top%d\ttop_high\ttop_medium\ttop_acceptable\tAUC_enrich\tROC_AUC\n" % args.topk)
         for r in rows_out:
-            f.write("%s\t%d\t%d\t%s\t%d\t%d\t%d\t%.4f\t%.4f\n" % r)
+            f.write("%s\t%d\t%d\t%s\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%.4f\t%.4f\n" % r)
     print("Wrote %s" % args.out)
