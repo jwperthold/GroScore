@@ -15,6 +15,9 @@ For each target the poses are ranked by GroScore (most negative = best) and:
 Positive class ("near-native") defaults to acceptable-or-better (stars >= 1).
 Failed / un-scored poses get score 0 (paper convention) and rank last.
 
+Also writes a per-pose CSV (rank, pose_id, GroScore, I-RMSD [nm], stars, quality)
+into each scored target's folder (default capri_poses.csv; --pose-csv '' to skip).
+
 Usage:
   python3 analyze_capri.py                     # all targets, scores_avg.gs
   python3 analyze_capri.py -s scores_cgi.gs    # use CGI scores
@@ -24,7 +27,6 @@ Usage:
 import os
 import argparse
 import numpy as np
-from scipy.stats import rankdata
 
 import capri_common as cc
 
@@ -40,35 +42,13 @@ ap.add_argument("--db", default=cc.DB_DIR, help="CAPRI database dir with the CSV
 ap.add_argument("--positive", choices=list(STARS_MIN), default="acceptable",
                 help="quality threshold counted as near-native for the AUCs (default: acceptable)")
 ap.add_argument("-k", "--topk", type=int, default=10, help="Top-K to count (default: 10)")
-ap.add_argument("-o", "--out", default=None, help="optional TSV output path")
+ap.add_argument("-o", "--out", default=None, help="optional summary TSV output path")
+ap.add_argument("--pose-csv", default="capri_poses.csv",
+                help="per-pose CSV (score / I-RMSD / quality) written into each scored "
+                     "target folder; pass '' to skip (default: capri_poses.csv)")
 args = ap.parse_args()
 
 PMIN = STARS_MIN[args.positive]
-
-
-def enrichment_auc(stars_ranked, pmin):
-    """Area under the fraction-recovered vs fraction-considered curve (random=0.5)."""
-    y = (stars_ranked >= pmin).astype(float)
-    n = len(y)
-    P = y.sum()
-    if P == 0 or P == n:
-        return float("nan")
-    cum = np.cumsum(y) / P                    # fraction of positives recovered
-    x = np.arange(1, n + 1) / n               # fraction of poses considered
-    x = np.concatenate(([0.0], x))
-    yv = np.concatenate(([0.0], cum))
-    return float(np.sum((x[1:] - x[:-1]) * (yv[1:] + yv[:-1]) / 2.0))
-
-
-def roc_auc(stars, scores, pmin):
-    """Standard ROC AUC via average ranks (higher confidence = more negative score)."""
-    y = (np.asarray(stars) >= pmin).astype(int)
-    P = int(y.sum())
-    N = len(y) - P
-    if P == 0 or N == 0:
-        return float("nan")
-    r = rankdata(-np.asarray(scores))         # -score so best binder ranks highest
-    return float((r[y == 1].sum() - P * (P + 1) / 2.0) / (P * N))
 
 
 def fmt_top10(n_nn, n_high, n_med):
@@ -80,6 +60,30 @@ def fmt_top10(n_nn, n_high, n_med):
     return s
 
 
+def target_dirs(target):
+    """Physical folder(s) for a target (the merged T40 lives in T40_1 and T40_2)."""
+    return ["T40_1", "T40_2"] if target == "T40" else [target]
+
+
+def write_pose_csv(target, rows, fname):
+    """Write per-pose score / I-RMSD / quality (ranked best-first) into the target folder(s)."""
+    order = sorted(rows, key=lambda d: d["score"])
+    written = []
+    for sub in target_dirs(target):
+        d = os.path.join(args.targets_root, sub)
+        if not os.path.isdir(d):
+            continue
+        path = os.path.join(d, fname)
+        with open(path, "w") as f:
+            f.write("rank,pose_id,groscore,i_rmsd_nm,stars,quality\n")
+            for i, r in enumerate(order, 1):
+                score = "%.1f" % r["score"] if r.get("scored") else ""
+                irms = "%.3f" % r["irms_nm"] if np.isfinite(r["irms_nm"]) else ""
+                f.write("%d,%s,%s,%s,%d,%s\n" % (i, r["id"], score, irms, r["stars"], r["cls"]))
+        written.append(path)
+    return written
+
+
 hdr = "%-6s %7s %7s   %-16s %5s %5s %5s   %8s %8s" % (
     "Target", "N", "scored", "Top-%d" % args.topk, "***", "**", "*", "AUC", "ROC")
 print(hdr)
@@ -88,6 +92,7 @@ print("-" * len(hdr))
 rows_out = []
 tot = dict(N=0, scored=0, nn=0, high=0, med=0, acc=0)
 aucs, rocs = [], []
+pose_files = []
 
 for t in cc.TARGETS:
     rows, n_numeric, scored = cc.join_target(t, args.targets_root, args.db, args.score_file)
@@ -105,10 +110,8 @@ for t in cc.TARGETS:
     n_acc = sum(1 for d in top if d["stars"] == 1)
     n_nn = n_high + n_med + n_acc
 
-    stars_ranked = np.array([d["stars"] for d in order])
-    scores_ranked = np.array([d["score"] for d in order])
-    e_auc = enrichment_auc(stars_ranked, PMIN)
-    r_auc = roc_auc(stars_ranked, scores_ranked, PMIN)
+    e_auc = cc.enrichment_auc(rows, PMIN)
+    r_auc = cc.roc_auc(rows, PMIN)
 
     print("%-6s %7d %7d   %-16s %5d %5d %5d   %8.3f %8.3f" % (
         t, N, n_numeric, fmt_top10(n_nn, n_high, n_med), n_high, n_med, n_acc, e_auc, r_auc))
@@ -121,6 +124,8 @@ for t in cc.TARGETS:
         aucs.append(e_auc)
     if not np.isnan(r_auc):
         rocs.append(r_auc)
+    if args.pose_csv:
+        pose_files.extend(write_pose_csv(t, rows, args.pose_csv))
 
 print("-" * len(hdr))
 mean_auc = np.mean(aucs) if aucs else float("nan")
@@ -133,6 +138,9 @@ print("\n(near-native = %s or better; AUC = enrichment-curve area [chapter 3], "
       "ROC = standard ROC AUC; both random = 0.5. TOTAL: N = full benchmark (all "
       "targets); scored / Top-%d / ***/**/* sum over scored targets; AUC/ROC are "
       "means over scored targets.)" % (args.positive, args.topk))
+
+if pose_files:
+    print("Wrote per-pose CSV '%s' into %d scored target folder(s)." % (args.pose_csv, len(pose_files)))
 
 if args.out:
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

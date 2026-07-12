@@ -15,6 +15,7 @@ Conventions (matching the GroScore paper / thesis chapter 3):
 import os
 import csv
 import numpy as np
+from scipy.stats import rankdata
 
 REPO_ROOT = "/home/jwperthold/GroScore"
 DB_DIR = os.path.join(REPO_ROOT, "CAPRI", "database")
@@ -130,9 +131,11 @@ def _join_t40(targets_root, db_dir, score_file):
         if cand:
             score = float(np.mean(cand))   # .1/.2 are replicas of one complex -> average
             numeric.add(pid)
+            has_score = True
         else:
             score = FAILED_SCORE
-        rows.append(dict(id=pid, score=score, **best))
+            has_score = False
+        rows.append(dict(id=pid, score=score, scored=has_score, **best))
     return rows, len(numeric), (os.path.isfile(p1) or os.path.isfile(p2))
 
 
@@ -154,7 +157,47 @@ def join_target(target, targets_root=REPO_ROOT, db_dir=DB_DIR, score_file="score
     score_path = os.path.join(targets_root, target, score_file)
     labels = load_labels(csv_path)
     scores, numeric = load_scores(score_path)
-    rows = [dict(id=pid, score=scores.get(pid, FAILED_SCORE), **lab)
+    rows = [dict(id=pid, score=scores.get(pid, FAILED_SCORE), scored=(pid in numeric), **lab)
             for pid, lab in labels.items()]
     n_numeric = len(numeric & set(labels))
     return rows, n_numeric, os.path.isfile(score_path)
+
+
+def _positive_mask(rows, pmin):
+    return np.array([1 if r["stars"] >= pmin else 0 for r in rows])
+
+
+def roc_auc(rows, positive_min_stars=1):
+    """Standard ROC AUC (rank-based Mann-Whitney) for near-native detection.
+
+    Positive class = stars >= positive_min_stars; "confidence" = -GroScore (more
+    negative = more favourable). Equals P(a near-native pose ranks better than a
+    non-native one), ties = 0.5. NaN if either class is empty.
+    """
+    y = _positive_mask(rows, positive_min_stars)
+    scores = np.array([r["score"] for r in rows], dtype=float)
+    P = int(y.sum())
+    N = len(y) - P
+    if P == 0 or N == 0:
+        return float("nan")
+    r = rankdata(-scores)                      # -score so the best binder ranks highest
+    return float((r[y == 1].sum() - P * (P + 1) / 2.0) / (P * N))
+
+
+def enrichment_auc(rows, positive_min_stars=1):
+    """Area under the enrichment curve (thesis chapter 3 / paper Fig 6).
+
+    Fraction of near-native poses recovered vs fraction of poses considered when
+    ranked by GroScore (best first); random = 0.5. NaN if all/none are positive.
+    """
+    order = sorted(rows, key=lambda d: d["score"])
+    y = _positive_mask(order, positive_min_stars).astype(float)
+    n = len(y)
+    P = y.sum()
+    if P == 0 or P == n:
+        return float("nan")
+    cum = np.cumsum(y) / P                      # fraction of positives recovered
+    x = np.arange(1, n + 1) / n                 # fraction of poses considered
+    x = np.concatenate(([0.0], x))
+    yv = np.concatenate(([0.0], cum))
+    return float(np.sum((x[1:] - x[:-1]) * (yv[1:] + yv[:-1]) / 2.0))

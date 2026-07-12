@@ -37,22 +37,32 @@ ap.add_argument("--metric", choices=["irms", "lrms"], default="irms",
 ap.add_argument("--targets-root", default=cc.REPO_ROOT)
 ap.add_argument("--db", default=cc.DB_DIR)
 ap.add_argument("--ncols", type=int, default=4, help="columns in the grid (default: 4)")
+ap.add_argument("--positive", choices=["acceptable", "medium", "high"], default="acceptable",
+                help="quality threshold counted as near-native for the ROC-AUC (default: acceptable)")
 ap.add_argument("-o", "--out", default=None)
 args = ap.parse_args()
 
 XKEY = "irms_nm" if args.metric == "irms" else "lrms_nm"
 XLABEL = "I-RMSD [nm]" if args.metric == "irms" else "L-RMSD [nm]"
+PMIN = {"acceptable": 1, "medium": 2, "high": 3}[args.positive]
 
 
-def target_xy(t):
-    """Return (x_rmsd_nm, y_groscore) arrays for a scored target, else None."""
+def target_data(t):
+    """Return (x_rmsd_nm, y_groscore, roc_auc) for a scored target, else None.
+
+    Only actually-scored poses are plotted; failed / un-scored poses (which sit at
+    GroScore 0) are excluded. The ROC-AUC is still computed over the full set
+    (failed poses ranked last), so it matches analyze_capri.py.
+    """
     rows, n_numeric, scored = cc.join_target(t, args.targets_root, args.db, args.score_file)
     if not scored or n_numeric == 0:
         return None
-    x = np.array([r[XKEY] for r in rows])
-    y = np.array([r["score"] for r in rows])
+    roc = cc.roc_auc(rows, PMIN)
+    scored_rows = [r for r in rows if r.get("scored")]
+    x = np.array([r[XKEY] for r in scored_rows])
+    y = np.array([r["score"] for r in scored_rows])
     m = np.isfinite(x) & np.isfinite(y)
-    return x[m], y[m]
+    return x[m], y[m], roc
 
 
 def _marginal(ax, data, orient):
@@ -73,7 +83,7 @@ def _marginal(ax, data, orient):
         ax.plot(d, grid, color=BLUE, lw=1)
 
 
-def draw_joint(fig, cell, x, y, title):
+def draw_joint(fig, cell, x, y, title, roc):
     inner = cell.subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4],
                              wspace=0.04, hspace=0.04)
     ax_main = fig.add_subplot(inner[1, 0])
@@ -104,22 +114,22 @@ def draw_joint(fig, cell, x, y, title):
     ax_main.set_ylabel("GroScore [kJ/mol]", fontsize=9)
     ax_main.tick_params(labelsize=8)
     ax_main.margins(x=0.02)
+    lbl = ("ROC-AUC = %.2f" % roc) if np.isfinite(roc) else "ROC-AUC = n/a"
+    ax_main.text(0.96, 0.96, lbl, transform=ax_main.transAxes, fontsize=9,
+                 va="top", ha="right",
+                 bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85, ec="0.7"))
     return ax_main
 
 
 # ── select targets ────────────────────────────────────────────────────────────
-if args.target:
-    targets = [args.target]
-else:
-    targets = [t for t in cc.TARGETS if target_xy(t) is not None]
+cand = [args.target] if args.target else list(cc.TARGETS)
+data = {t: target_data(t) for t in cand}
+targets = [t for t in cand if data[t] is not None]
 
 if not targets:
+    if args.target:
+        raise SystemExit("Target %s is not scored (looked for %s)." % (args.target, args.score_file))
     raise SystemExit("No scored targets found (looked for %s in each target dir)." % args.score_file)
-
-data = {t: target_xy(t) for t in targets}
-missing = [t for t in targets if data[t] is None]
-if missing:
-    raise SystemExit("Target(s) not scored: %s" % ", ".join(missing))
 
 # ── figure ────────────────────────────────────────────────────────────────────
 n = len(targets)
@@ -129,8 +139,8 @@ fig = plt.figure(figsize=(4.6 * ncols, 4.2 * nrows))
 outer = fig.add_gridspec(nrows, ncols, wspace=0.28, hspace=0.28)
 
 for i, t in enumerate(targets):
-    x, y = data[t]
-    draw_joint(fig, outer[i // ncols, i % ncols], x, y, t)
+    x, y, roc = data[t]
+    draw_joint(fig, outer[i // ncols, i % ncols], x, y, t, roc)
 
 fig.suptitle("GroScore vs %s — CAPRI Score_set" % XLABEL,
              fontsize=14, fontweight="bold", y=1.0)
