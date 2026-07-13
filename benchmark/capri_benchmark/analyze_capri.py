@@ -13,7 +13,8 @@ For each target the poses are ranked by GroScore (most negative = best) and:
   * ROC    : standard ROC AUC (rank-based Mann-Whitney), same positive class.
 
 Positive class ("near-native") defaults to acceptable-or-better (stars >= 1).
-Failed / un-scored poses get score 0 (paper convention) and rank last.
+Failed / un-scored poses carry no score and rank last (in a random order among
+themselves; see capri_common._assign_rank_scores).
 
 Also writes a per-pose CSV (rank, pose_id, GroScore, I-RMSD [nm], stars, quality)
 into each scored target's folder (default capri_poses.csv; --pose-csv '' to skip).
@@ -46,9 +47,12 @@ ap.add_argument("-o", "--out", default=None, help="optional summary TSV output p
 ap.add_argument("--pose-csv", default="capri_poses.csv",
                 help="per-pose CSV (score / I-RMSD / quality) written into each scored "
                      "target folder; pass '' to skip (default: capri_poses.csv)")
+ap.add_argument("--with-native", action=argparse.BooleanOptionalAction, default=True,
+                help="include the native/experimental structure as a positive in the ROC (default: yes)")
 args = ap.parse_args()
 
 PMIN = STARS_MIN[args.positive]
+NATIVE_SCORES = cc.load_native_scores(args.score_file) if args.with_native else {}
 
 
 def fmt_top10(n_nn, n_high, n_med):
@@ -69,7 +73,7 @@ def target_dirs(target):
 
 def write_pose_csv(target, rows, fname):
     """Write per-pose score / I-RMSD / quality (ranked best-first) into the target folder(s)."""
-    order = sorted(rows, key=lambda d: d["score"])
+    order = sorted(rows, key=lambda d: d["rank_score"])
     written = []
     for sub in target_dirs(target):
         d = os.path.join(args.targets_root, sub)
@@ -116,7 +120,7 @@ for t in cc.TARGETS:
                          "", 0, 0, 0, float("nan"), float("nan")))
         continue
 
-    order = sorted(rows, key=lambda d: d["score"])   # best (most negative) first
+    order = sorted(rows, key=lambda d: d["rank_score"])   # best (most negative) first, failed last
     top = order[:args.topk]
     n_high = sum(1 for d in top if d["stars"] == 3)
     n_med = sum(1 for d in top if d["stars"] == 2)
@@ -125,7 +129,7 @@ for t in cc.TARGETS:
     top_str = fmt_top10(n_nn, n_high, n_med)
 
     e_auc = cc.enrichment_auc(rows, PMIN)
-    r_auc = cc.roc_auc(rows, PMIN)
+    r_auc = cc.roc_auc(rows, PMIN, native_score=NATIVE_SCORES.get(t))
 
     print("%-6s %8d %8d   %-18s %-16s   %8.3f %8.3f" % (
         t, N, n_numeric, set_str, top_str, e_auc, r_auc))

@@ -24,8 +24,8 @@ for i, a in enumerate(sys.argv[1:], 1):
     elif not a.startswith('-'):
         BASE = a
 
-FORCEFIELDS = ['amber', 'charmm', 'gromos']
-FF_LABEL    = {'charmm': 'CHARMM36m', 'amber': 'AMBER19SB', 'gromos': 'GROMOS54A8'}
+FORCEFIELDS = ['amber_opc', 'amber', 'charmm', 'gromos']
+FF_LABEL    = {'amber_opc': 'AMBER19SB/OPC', 'charmm': 'CHARMM36m/TIP3P', 'amber': 'AMBER19SB/OPC3', 'gromos': 'GROMOS54A8/SPC'}
 
 COLORS = {
     'cutout':   '#1565C0',   # dark blue
@@ -108,13 +108,13 @@ X_MAX = np.ceil(all_vals.max() / BIN_W) * BIN_W if len(all_vals) else 15.0
 BINS  = np.arange(0, X_MAX + BIN_W, BIN_W)
 
 # ── plot ──────────────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+fig, axes = plt.subplots(2, 2, figsize=(11, 9))
 title = 'Backbone RMSD: Rebinding Quality — Cutout vs No-Cutout'
 if partial:
     title += '  [PARTIAL DATA]'
 fig.suptitle(title, fontsize=12, y=1.01)
 
-for ax, ff in zip(axes, FORCEFIELDS):
+for ax, ff in zip(axes.flat, FORCEFIELDS):
     for key, label, color in [
         ('cutout',   'Cutout',    COLORS['cutout']),
         ('nocutout', 'No-Cutout', COLORS['nocutout']),

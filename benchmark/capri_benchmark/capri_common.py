@@ -6,7 +6,9 @@ root) with the CAPRI benchmark quality/RMSD annotations (CAPRI/database/*.csv).
 
 Conventions (matching the GroScore paper / thesis chapter 3):
   * GroScore: more negative = more favourable binding (best = rank 1).
-  * Failed or un-scored poses are assigned score 0.0 kJ/mol (rank last).
+  * Failed / un-scored simulations carry no score: they are ranked *last* (worse
+    than every scored pose) in a random order among themselves (see
+    _assign_rank_scores), so their arbitrary input order can't bias the metrics.
   * CAPRI stars: 0 incorrect, 1 acceptable (*), 2 medium (**), 3 high (***);
     "near-native" = acceptable or better (stars >= 1).
   * CSV L-/I-RMSD are in Angstrom; converted here to nm (/10) to match the
@@ -19,7 +21,8 @@ from scipy.stats import rankdata
 
 REPO_ROOT = "/home/jwperthold/GroScore"
 DB_DIR = os.path.join(REPO_ROOT, "CAPRI", "database")
-FAILED_SCORE = 0.0   # paper: structures that fail stage 0 get a GroScore of 0
+FAILED_SCORE = float("nan")   # failed / un-scored poses carry no score (ranked last)
+RANK_SEED = 0                 # fixed seed -> reproducible random order among failed poses
 
 # target directory name -> CAPRI database CSV basename (matches prepare_capri.py)
 TARGET_CSV = {
@@ -91,6 +94,29 @@ def load_labels(csv_path):
     return labels
 
 
+def _assign_rank_scores(rows, seed=RANK_SEED):
+    """Give every row a `rank_score` used for *all* ranking (Top-k / enrichment / ROC).
+
+    Scored poses rank by their GroScore (more negative = better). Failed / un-scored
+    simulations carry no score and must rank *last* — worse than every scored pose,
+    including scored poses with an unfavourable (positive) GroScore. A plain score of
+    0.0 would not do that (it would outrank any pose scoring > 0). Instead each failed
+    pose gets a rank_score strictly beyond the worst real score, in a random order
+    among themselves (fixed seed -> reproducible), so their arbitrary input order can
+    never bias the enrichment / ROC results. Mutates and returns `rows`.
+    """
+    scored = [r for r in rows if r.get("scored")]
+    failed = [r for r in rows if not r.get("scored")]
+    for r in scored:
+        r["rank_score"] = r["score"]
+    if failed:
+        worst = max((r["score"] for r in scored), default=0.0)
+        shuffled = np.random.default_rng(seed).permutation(len(failed))
+        for r, k in zip(failed, shuffled):
+            r["rank_score"] = worst + 1.0 + float(k)   # distinct, all > any real score
+    return rows
+
+
 # Targets whose CAPRI reference has TWO interfaces (a pose is near-native if it
 # matches EITHER) -> (interface CSV basenames, GroScore score dir(s)). The same
 # poses are assessed against two reference binding modes; their near-native sets
@@ -135,7 +161,7 @@ def _join_multi(target, targets_root, db_dir, score_file):
             has_score = False
         rows.append(dict(id=pid, score=score, scored=has_score, **best))
     scored = any(os.path.isfile(p) for p in score_paths)
-    return rows, len(numeric), scored
+    return _assign_rank_scores(rows), len(numeric), scored
 
 
 def join_target(target, targets_root=REPO_ROOT, db_dir=DB_DIR, score_file="scores_avg.gs"):
@@ -144,9 +170,10 @@ def join_target(target, targets_root=REPO_ROOT, db_dir=DB_DIR, score_file="score
     "T37" and "T40" are merged two-interface targets (see MULTI_INTERFACE); T40's
     split interfaces "T40_1" / "T40_2" can still be requested individually.
 
-    The CSV is the universe of poses; each pose gets its numeric GroScore or
-    FAILED_SCORE if not scored. Returns (rows, n_numeric, scored):
-      rows      : list of dict(id, score, stars, irms_nm, lrms_nm, cls)
+    The CSV is the universe of poses; each pose gets its numeric GroScore (or NaN if
+    not scored) plus a `rank_score` that ranks failed poses last. Returns
+    (rows, n_numeric, scored):
+      rows      : list of dict(id, score, rank_score, scored, stars, irms_nm, lrms_nm, cls)
       n_numeric : number of poses that had a real numeric score
       scored    : True if the target's score file exists (i.e. it has been run)
     """
@@ -159,22 +186,40 @@ def join_target(target, targets_root=REPO_ROOT, db_dir=DB_DIR, score_file="score
     rows = [dict(id=pid, score=scores.get(pid, FAILED_SCORE), scored=(pid in numeric), **lab)
             for pid, lab in labels.items()]
     n_numeric = len(numeric & set(labels))
-    return rows, n_numeric, os.path.isfile(score_path)
+    return _assign_rank_scores(rows), n_numeric, os.path.isfile(score_path)
 
 
 def _positive_mask(rows, pmin):
     return np.array([1 if r["stars"] >= pmin else 0 for r in rows])
 
 
-def roc_auc(rows, positive_min_stars=1):
+def load_native_scores(score_file="scores_avg.gs", natives_dir=None):
+    """{target: native GroScore} for natives that have a numeric score in natives/.
+
+    The native/experimental reference of each target is scored in natives/<target>/
+    (keyed by target name, incl. the merged T37/T40).
+    """
+    natives_dir = natives_dir or os.path.join(REPO_ROOT, "natives")
+    scores, numeric = load_scores(os.path.join(natives_dir, score_file))
+    return {t: scores[t] for t in numeric}
+
+
+def roc_auc(rows, positive_min_stars=1, native_score=None):
     """Standard ROC AUC (rank-based Mann-Whitney) for near-native detection.
 
-    Positive class = stars >= positive_min_stars; "confidence" = -GroScore (more
-    negative = more favourable). Equals P(a near-native pose ranks better than a
-    non-native one), ties = 0.5. NaN if either class is empty.
+    Positive class = stars >= positive_min_stars; "confidence" = -rank_score, i.e.
+    more negative GroScore = more favourable, with failed poses ranked last (see
+    _assign_rank_scores). Equals P(a near-native pose ranks better than a non-native
+    one), ties = 0.5. NaN if either class is empty.
+
+    If native_score is given, the native/experimental structure (I-RMSD 0, always
+    near-native) is added as one extra positive at that GroScore.
     """
     y = _positive_mask(rows, positive_min_stars)
-    scores = np.array([r["score"] for r in rows], dtype=float)
+    scores = np.array([r["rank_score"] for r in rows], dtype=float)
+    if native_score is not None and np.isfinite(native_score):
+        y = np.append(y, 1)                    # native = experimental reference = positive
+        scores = np.append(scores, float(native_score))
     P = int(y.sum())
     N = len(y) - P
     if P == 0 or N == 0:
@@ -187,9 +232,10 @@ def enrichment_auc(rows, positive_min_stars=1):
     """Area under the enrichment curve (thesis chapter 3 / paper Fig 6).
 
     Fraction of near-native poses recovered vs fraction of poses considered when
-    ranked by GroScore (best first); random = 0.5. NaN if all/none are positive.
+    ranked by GroScore (best first, failed poses last); random = 0.5. NaN if all/none
+    are positive.
     """
-    order = sorted(rows, key=lambda d: d["score"])
+    order = sorted(rows, key=lambda d: d["rank_score"])
     y = _positive_mask(order, positive_min_stars).astype(float)
     n = len(y)
     P = y.sum()
