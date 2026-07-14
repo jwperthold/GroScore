@@ -213,7 +213,10 @@ def roc_auc(rows, positive_min_stars=1, native_score=None):
     one), ties = 0.5. NaN if either class is empty.
 
     If native_score is given, the native/experimental structure (I-RMSD 0, always
-    near-native) is added as one extra positive at that GroScore.
+    near-native) is added as one extra positive at that GroScore -- the figure
+    caption states the native is part of the ROC-AUC. For a target with no near-native
+    decoys in the set, the native is then the sole positive, so the ROC reduces to the
+    native's own percentile rank (e.g. T36); this is intentional and still reported.
     """
     y = _positive_mask(rows, positive_min_stars)
     scores = np.array([r["rank_score"] for r in rows], dtype=float)

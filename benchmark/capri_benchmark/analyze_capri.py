@@ -131,8 +131,10 @@ for t in cc.TARGETS:
     e_auc = cc.enrichment_auc(rows, PMIN)
     r_auc = cc.roc_auc(rows, PMIN, native_score=NATIVE_SCORES.get(t))
 
-    print("%-6s %8d %8d   %-18s %-16s   %8.3f %8.3f" % (
-        t, N, n_numeric, set_str, top_str, e_auc, r_auc))
+    def _auc(v):   # AUC/ROC are undefined (n/a) for sets with no near-native poses
+        return "%8.3f" % v if np.isfinite(v) else "%8s" % "n/a"
+    print("%-6s %8d %8d   %-18s %-16s   %s %s" % (
+        t, N, n_numeric, set_str, top_str, _auc(e_auc), _auc(r_auc)))
     rows_out.append((t, N, n_numeric, set_str, s_high, s_med, s_acc,
                      top_str, n_high, n_med, n_acc, e_auc, r_auc))
 
