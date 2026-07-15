@@ -119,7 +119,7 @@ def draw_joint(fig, cell, x, y, title, roc, native=None, n_total=None):
 
     ax_top.axis("off")
     ax_right.axis("off")
-    ax_top.set_title("%s  (n=%d)" % (title, len(x)), fontsize=11, fontweight="bold")
+    ax_top.set_title("%s  (N=%d)" % (title, len(x)), fontsize=11, fontweight="bold")
     ax_main.set_xlabel(XLABEL, fontsize=9)
     ax_main.set_ylabel("GroScore [kJ/mol]", fontsize=9)
     ax_main.tick_params(labelsize=8)
@@ -134,7 +134,7 @@ def draw_joint(fig, cell, x, y, title, roc, native=None, n_total=None):
         #               handletextpad=0.2, borderpad=0.3)
     lbl = ("ROC-AUC = %.2f" % roc) if np.isfinite(roc) else "ROC-AUC = n/a"
     if native is not None and np.isfinite(native) and n_total:
-        lbl += "\nnative: top %.1f%%" % (100.0 * np.sum(np.asarray(y) < native) / n_total)
+        lbl += "\nNative: Top %.1f%%" % (100.0 * np.sum(np.asarray(y) < native) / n_total)
     ax_main.text(0.96, 0.96, lbl, transform=ax_main.transAxes, fontsize=9,
                  va="top", ha="right",
                  bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85, ec="0.7"))
