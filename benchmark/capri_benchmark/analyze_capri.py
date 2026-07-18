@@ -12,9 +12,12 @@ For each target the poses are ranked by GroScore (most negative = best) and:
              chapter 3 Table 3-1 / paper Figure 6.
   * ROC    : standard ROC AUC (rank-based Mann-Whitney), same positive class.
 
-Positive class ("near-native") defaults to acceptable-or-better (stars >= 1).
-Failed / un-scored poses carry no score and rank last (in a random order among
-themselves; see capri_common._assign_rank_scores).
+Positive class ("near-native") defaults to acceptable-or-better (stars >= 1). The
+AUC and ROC are computed over the actually-scored poses only; failed / non-simulated
+poses are excluded (a target whose near-native poses were never simulated would
+otherwise score a misleadingly low AUC / ROC). For Top-k ranking the failed poses
+carry no score and rank last (random order among themselves; see
+capri_common._assign_rank_scores).
 
 Also writes a per-pose CSV (rank, pose_id, GroScore, I-RMSD [nm], stars, quality)
 into each scored target's folder (default capri_poses.csv; --pose-csv '' to skip).
@@ -158,8 +161,9 @@ print("%-6s %8d %8d   %-18s %-16s   %8.3f %8.3f" % (
 print("\n(counts shown as total/n***/n**, near-native = %s or better. in-set = "
       "near-native poses contained in the benchmark set; Top-%d = among the best-ranked "
       "by GroScore. AUC = enrichment-curve area [chapter 3], ROC = standard ROC AUC; "
-      "both random = 0.5. TOTAL: N and in-set sum over all targets; scored / Top-%d sum "
-      "over scored targets; AUC/ROC are means over scored targets.)"
+      "both random = 0.5, computed over the scored poses only (non-simulated excluded). "
+      "TOTAL: N and in-set sum over all targets; scored / Top-%d sum over scored "
+      "targets; AUC/ROC are means over scored targets.)"
       % (args.positive, args.topk, args.topk))
 
 if pose_files:

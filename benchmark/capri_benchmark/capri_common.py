@@ -6,9 +6,10 @@ root) with the CAPRI benchmark quality/RMSD annotations (CAPRI/database/*.csv).
 
 Conventions (matching the GroScore paper / thesis chapter 3):
   * GroScore: more negative = more favourable binding (best = rank 1).
-  * Failed / un-scored simulations carry no score: they are ranked *last* (worse
-    than every scored pose) in a random order among themselves (see
-    _assign_rank_scores), so their arbitrary input order can't bias the metrics.
+  * Failed / un-scored simulations carry no score: for Top-k ranking they are placed
+    *last* (worse than every scored pose) in a random order among themselves (see
+    _assign_rank_scores), so their arbitrary input order can't bias the counts. The
+    ROC / enrichment AUCs exclude them entirely (computed over the scored poses only).
   * CAPRI stars: 0 incorrect, 1 acceptable (*), 2 medium (**), 3 high (***);
     "near-native" = acceptable or better (stars >= 1).
   * CSV L-/I-RMSD are in Angstrom; converted here to nm (/10) to match the
@@ -95,7 +96,7 @@ def load_labels(csv_path):
 
 
 def _assign_rank_scores(rows, seed=RANK_SEED):
-    """Give every row a `rank_score` used for *all* ranking (Top-k / enrichment / ROC).
+    """Give every row a `rank_score` used for Top-k ranking and per-pose CSV ordering.
 
     Scored poses rank by their GroScore (more negative = better). Failed / un-scored
     simulations carry no score and must rank *last* — worse than every scored pose,
@@ -103,7 +104,8 @@ def _assign_rank_scores(rows, seed=RANK_SEED):
     0.0 would not do that (it would outrank any pose scoring > 0). Instead each failed
     pose gets a rank_score strictly beyond the worst real score, in a random order
     among themselves (fixed seed -> reproducible), so their arbitrary input order can
-    never bias the enrichment / ROC results. Mutates and returns `rows`.
+    never bias the Top-k counts. (The ROC / enrichment AUCs instead exclude the failed
+    poses entirely — see roc_auc / enrichment_auc.) Mutates and returns `rows`.
     """
     scored = [r for r in rows if r.get("scored")]
     failed = [r for r in rows if not r.get("scored")]
@@ -207,19 +209,25 @@ def load_native_scores(score_file="scores_avg.gs", natives_dir=None):
 def roc_auc(rows, positive_min_stars=1, native_score=None):
     """Standard ROC AUC (rank-based Mann-Whitney) for near-native detection.
 
-    Positive class = stars >= positive_min_stars; "confidence" = -rank_score, i.e.
-    more negative GroScore = more favourable, with failed poses ranked last (see
-    _assign_rank_scores). Equals P(a near-native pose ranks better than a non-native
-    one), ties = 0.5. NaN if either class is empty.
+    Computed over the actually-scored poses only; failed / non-simulated poses are
+    excluded. Including them would penalise ranking by coverage: a target whose
+    near-native poses were never simulated (they carry no score and would rank last)
+    would otherwise show a misleadingly low ROC even though none of its scored poses
+    is near-native. Positive class = stars >= positive_min_stars; "confidence" =
+    -GroScore (more negative = more favourable). Equals P(a near-native scored pose
+    ranks better than a non-native scored one), ties = 0.5. NaN if either class is
+    empty among the scored poses.
 
     If native_score is given, the native/experimental structure (I-RMSD 0, always
-    near-native) is added as one extra positive at that GroScore -- the figure
-    caption states the native is part of the ROC-AUC. For a target with no near-native
-    decoys in the set, the native is then the sole positive, so the ROC reduces to the
-    native's own percentile rank (e.g. T36); this is intentional and still reported.
+    near-native) is added as one extra positive at that GroScore -- the figure caption
+    states the native is part of the ROC-AUC. For a target with no scored near-native
+    decoy, the native is then the sole positive, so the ROC reduces to the native's
+    own percentile among the scored poses (e.g. T32, T36, T38); this is intentional
+    and still reported.
     """
-    y = _positive_mask(rows, positive_min_stars)
-    scores = np.array([r["rank_score"] for r in rows], dtype=float)
+    scored = [r for r in rows if r.get("scored")]
+    y = _positive_mask(scored, positive_min_stars)
+    scores = np.array([r["score"] for r in scored], dtype=float)
     if native_score is not None and np.isfinite(native_score):
         y = np.append(y, 1)                    # native = experimental reference = positive
         scores = np.append(scores, float(native_score))
@@ -235,10 +243,12 @@ def enrichment_auc(rows, positive_min_stars=1):
     """Area under the enrichment curve (thesis chapter 3 / paper Fig 6).
 
     Fraction of near-native poses recovered vs fraction of poses considered when
-    ranked by GroScore (best first, failed poses last); random = 0.5. NaN if all/none
-    are positive.
+    ranked by GroScore (best first); random = 0.5. Computed over the actually-scored
+    poses only — failed / non-simulated poses are excluded (see roc_auc). NaN if
+    all / none of the scored poses are positive.
     """
-    order = sorted(rows, key=lambda d: d["rank_score"])
+    scored = [r for r in rows if r.get("scored")]
+    order = sorted(scored, key=lambda d: d["score"])
     y = _positive_mask(order, positive_min_stars).astype(float)
     n = len(y)
     P = y.sum()

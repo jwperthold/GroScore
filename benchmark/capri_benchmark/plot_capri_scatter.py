@@ -6,8 +6,9 @@ Per target: gray scatter of GroScore [kJ/mol] against interface-RMSD [nm], with
 computed by KDE — matching the thesis / paper figures. Near-native (favourable,
 strongly negative GroScore, low I-RMSD) poses cluster at the bottom-left.
 
-Failed / un-scored poses carry no score (they rank last) and are excluded from the
-scatter, but still count toward the ROC-AUC and the native percentile denominator.
+Failed / un-scored poses carry no score and are excluded from the scatter as well as
+from the ROC-AUC and the plotted native percentile (both computed over the scored
+poses only). The console native-rank report below still lists all poses.
 
 Usage:
   python3 plot_capri_scatter.py                 # grid of all scored targets
@@ -58,10 +59,10 @@ native_scores, native_numeric = cc.load_scores(
 def target_data(t):
     """Return (x_rmsd_nm, y_groscore, roc_auc, n_total) for a scored target, else None.
 
-    Only actually-scored poses are plotted; failed / un-scored poses (which carry no
-    score and rank last) are excluded from the scatter. The ROC-AUC and the native
-    percentile are computed over the full pose set (n_total = all poses, failed
-    included), matching analyze_capri.py / the ROC.
+    Only actually-scored poses are plotted; failed / un-scored poses are excluded from
+    the scatter and from the ROC-AUC / plotted native percentile (all over the scored
+    poses only, matching analyze_capri.py). n_total (all poses, failed included) is
+    returned only for the console native-rank report.
     """
     rows, n_numeric, scored = cc.join_target(t, args.targets_root, args.db, args.score_file)
     if not scored or n_numeric == 0:
@@ -93,7 +94,7 @@ def _marginal(ax, data, orient):
         ax.plot(d, grid, color=BLUE, lw=1)
 
 
-def draw_joint(fig, cell, x, y, title, roc, native=None, n_total=None):
+def draw_joint(fig, cell, x, y, title, roc, native=None):
     inner = cell.subgridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4],
                              wspace=0.04, hspace=0.04)
     ax_main = fig.add_subplot(inner[1, 0])
@@ -133,8 +134,8 @@ def draw_joint(fig, cell, x, y, title, roc, native=None, n_total=None):
         #ax_main.legend(loc="upper left", fontsize=8, frameon=True, framealpha=0.85,
         #               handletextpad=0.2, borderpad=0.3)
     lbl = ("ROC-AUC = %.2f" % roc) if np.isfinite(roc) else "ROC-AUC = n/a"
-    if native is not None and np.isfinite(native) and n_total:
-        lbl += "\nNative: Top %.1f%%" % (100.0 * np.sum(np.asarray(y) < native) / n_total)
+    if native is not None and np.isfinite(native) and len(y):
+        lbl += "\nNative: Top %.1f%%" % (100.0 * np.sum(np.asarray(y) < native) / len(y))
     ax_main.text(0.96, 0.96, lbl, transform=ax_main.transAxes, fontsize=9,
                  va="top", ha="right",
                  bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85, ec="0.7"))
@@ -174,9 +175,9 @@ fig = plt.figure(figsize=(4.6 * ncols, 4.2 * nrows))
 outer = fig.add_gridspec(nrows, ncols, wspace=0.28, hspace=0.28)
 
 for i, t in enumerate(targets):
-    x, y, roc, n_total = data[t]
+    x, y, roc, _ = data[t]
     native = native_scores.get(t) if t in native_numeric else None
-    draw_joint(fig, outer[i // ncols, i % ncols], x, y, t, roc, native, n_total)
+    draw_joint(fig, outer[i // ncols, i % ncols], x, y, t, roc, native)
 
 fig.suptitle("GroScore vs %s — CAPRI Score_set" % XLABEL,
              fontsize=14, fontweight="bold", y=1.0)
