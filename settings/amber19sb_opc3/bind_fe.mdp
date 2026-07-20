@@ -1,0 +1,78 @@
+; bind_fe.mdp - FE unbinding leg (forward). Interface restraints fade out
+; (k -> kB=0) while Boresch restraints fade in (k=0 -> kB); the interface and
+; Boresch-r references move outward at pull-rate to +1.5 nm. The full pull block
+; (groups + coords) is appended by make_boresch.py.
+;
+; nsteps 1875000 * dt 0.004 = 7500 ps; at 0.0002 nm/ps -> +1.5 nm separation.
+
+integrator               = md
+nsteps                   = 1875000
+dt                       = 0.004
+mass-repartition-factor  = 3
+
+nstxout                  = 0
+nstxout-compressed       = 100000
+compressed-x-precision   = 1000
+nstvout                  = 0
+nstfout                  = 0
+nstenergy                = 2000
+nstlog                   = 10000
+nstcalcenergy            = 100
+
+comm-mode                = linear
+nstcomm                  = 1000
+
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = all-bonds
+lincs_iter               = 1
+lincs_order              = 6
+
+cutoff-scheme            = Verlet
+ns_type                  = grid
+rlist                    = 1.0
+rcoulomb                 = 1.0
+rvdw                     = 1.0
+
+vdwtype                  = cutoff
+vdw-modifier             = Potential-shift
+
+coulombtype              = PME
+fourierspacing           = 0.125
+
+DispCorr                 = EnerPres
+
+tcoupl                   = V-rescale
+tc-grps                  = Protein Non-Protein
+tau_t                    = 0.1  0.1
+ref_t                    = 310  310
+
+pcoupl                   = Parrinello-Rahman
+pcoupltype               = isotropic
+tau_p                    = 2.0
+ref_p                    = 1.0
+compressibility          = 4.5e-5
+refcoord_scaling         = com
+
+pbc                      = xyz
+
+gen_vel                  = no
+
+; ---- Free-energy (force-constant switching k -> kB, driven by lambda) ----
+free-energy              = yes
+init-lambda              = 0
+delta-lambda             = 5.33333333e-07
+dhdl-derivatives         = yes
+nstdhdl                  = 500
+separate-dhdl-file       = yes
+calc-lambda-neighbors    = 0
+sc-alpha                 = 0
+
+; ---- COM pulling (moving references -> mechanical separation work) ----
+pull                     = yes
+pull-print-com1          = no
+pull-print-com2          = no
+pull-print-ref-value     = no
+pull-print-components    = no
+pull-nstxout             = 0
+pull-nstfout             = 500
