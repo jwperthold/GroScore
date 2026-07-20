@@ -183,6 +183,11 @@ Note that CGI requires at least 20 cycles to fit forward and reverse work distri
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
+| **AMBER19SB/OPC** | |
+|--------------------|-------------|
+| **Fit:** pKd = -0.0155 × GroScore + 4.2704 | Convergence |
+| <img src="/benchmark/results/correlation_plot_amber_opc.png" alt="Correlation Plot AMBER19SB/OPC" height="290"> | <img src="/benchmark/results/convergence_plot_amber_opc.png" alt="Convergence Plot AMBER19SB/OPC" height="290"> |
+
 | **AMBER19SB/OPC3** | |
 |--------------------|-------------|
 | **Fit:** pKd = -0.0176 × GroScore + 3.4513 | Convergence |
