@@ -423,12 +423,19 @@ GroScore/
 
 ## Benchmark
 
-The `benchmark/` directory contains a setup script for the [HADDOCKING Protein-Protein Affinity Benchmark](https://github.com/haddocking/binding-affinity-benchmark) (46 structures). To run the benchmark:
+The `benchmark/` directory is organized into one subdirectory per benchmark set, with shared plots in `benchmark/results/`:
+
+- `haddock_benchmark/` — [HADDOCKING Protein-Protein Affinity Benchmark](https://github.com/haddocking/binding-affinity-benchmark) (46 structures), described below
+- `ppb_benchmark/` — PPB-Affinity benchmark
+- `hetatom_benchmark/` — heteroatom (molecular glue / PROTAC) benchmark
+- `capri_benchmark/` — CAPRI Score_set benchmark
+
+To run the HADDOCKING benchmark:
 
 ```bash
-cd benchmark
+cd benchmark/haddock_benchmark
 python setup_benchmark.py  # Downloads PDBs and creates sp.gs
-python ../groscore.py
+python ../../groscore.py
 ```
 
 ## Citation
