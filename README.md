@@ -274,6 +274,33 @@ Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at 300 K
 
 On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per structure for 5 cycles** (including all equilibration legs and 5 × 10 ns of SMD). Cost scales linearly with cycle count and roughly linearly with system size; the interface-cutout mode (default) keeps system size near-constant across most complexes, so per-structure walltimes are tightly clustered. The benchmark directory contains `compute_walltime.py`, which extracts realised walltimes and PFLOP counts from completed SLURM logs.
 
+## Absolute Binding Free Energies (GroScore-FE)
+
+> **Experimental / in development.** Force-field support is currently limited to `amber19sb_opc3`.
+
+The classic pipeline reports a *relative* pulling-work score. `groscore_fe.py` (with `job_fe.run`) is a free-energy variant that aims for **absolute** binding free energies comparable to experiment, by turning the many empirical interface distance restraints into a rigorous, analytically-correctable restraint scheme.
+
+During unbinding, the atom–atom interface restraints are gradually switched off while a set of **Boresch orientational restraints** (one distance, two angles, three dihedrals, built on backbone centre-of-mass anchor groups) is switched on. Because the Boresch restraint has a closed-form standard-state free energy (Boresch et al. 2003), its contribution in the separated state is computed analytically rather than simulated. Every leg is run forward and reverse and combined with the Crooks–Gaussian-Intersection estimator, exactly as in the classic engine.
+
+The absolute binding free energy is assembled from a thermodynamic cycle:
+
+```
+dG_bind = -( dG_intro + dG_unbind + dG_release )
+   dG_intro    interface restraints introduced in the bound state   (dhdl)
+   dG_unbind    interface -> Boresch handoff + separation to 1.5 nm  (pull work + dhdl)
+   dG_release   analytical Boresch standard-state term               (closed form)
+```
+
+Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each leg uses 1 ns equilibration, a 1.5 nm separation, and adds bound-state restraint legs — roughly 5× the per-structure cost (~136 ns/structure at 5 cycles).
+
+Run it like the classic engine (same inputs and working-directory layout), substituting the script name:
+
+```bash
+python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
+```
+
+Results land in `scores_fe.gs` (absolute dG_bind in kcal/mol plus the three cycle components), fed by per-cycle works in `results_fe.gs`.
+
 ## Heteroatom Support
 
 ### Crystal Waters
