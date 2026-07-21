@@ -278,7 +278,7 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 > **Experimental / in development.** Force-field support is currently limited to `amber19sb_opc3`.
 
-The classic pipeline reports a *relative* pulling-work score. `groscore_fe.py` (with `job_fe.run`) is a free-energy variant that aims for **absolute** binding free energies comparable to experiment, by turning the many empirical interface distance restraints into a rigorous, analytically-correctable restraint scheme.
+The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, so the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly — turning the many empirical interface restraints into a rigorous, analytically-correctable restraint scheme, so the result approaches experimentally comparable absolute binding free energies.
 
 During unbinding, the atom–atom interface restraints are gradually switched off while a set of **Boresch orientational restraints** (one distance, two angles, three dihedrals, built on backbone centre-of-mass anchor groups) is switched on. Because the Boresch restraint has a closed-form standard-state free energy (Boresch et al. 2003), its contribution in the separated state is computed analytically rather than simulated. Every leg is run forward and reverse and combined with the Crooks–Gaussian-Intersection estimator, exactly as in the classic engine.
 
