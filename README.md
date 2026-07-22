@@ -315,7 +315,7 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 | `boundrev` | bound restraints off (dhdl) | 5 ns |
 | **per cycle** | | **~22 ns** |
 
-At the default 5 cycles this is **~112 ns/structure** (≈ 5 × 22 ns + one initial equilibration). The system size is identical to the classic protocol (interface cutout, `-d 1.5` box), so per-nanosecond cost is the same; on a single consumer-grade RTX-class GPU that works out to roughly **~17 GPU-hours per structure** — about **2× the classic ~8 GPU-hours** for the same cycle count. Budget slightly more (~17–20 GPU-h) because the free-energy code (`dhdl`) and the ~150 pull coordinates add a few percent of per-step overhead. Cost scales linearly with cycle count, and — since the two bidirectional pairs are independent — the bound-state legs can be run as a separate, cheaper (smaller-box) job stream if wall-clock latency matters more than total GPU-hours.
+At the default 5 cycles this is **~112 ns/structure** (≈ 5 × 22 ns + one initial equilibration), about **2× the computational cost** for the same cycle count.
 
 ## Heteroatom Support
 
