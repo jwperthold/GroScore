@@ -291,7 +291,7 @@ dG_bind = -( dG_intro + dG_unbind + dG_release )
    dG_release   analytical Boresch standard-state term               (closed form)
 ```
 
-Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each leg uses 1 ns equilibration, a 1.0 nm separation, and adds bound-state restraint legs — roughly 2× the per-structure cost (~112 ns/structure at 5 cycles).
+Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each cycle uses 1 ns equilibration, a 1.0 nm separation, and adds bound-state restraint legs (see [Compute cost](#compute-cost) below).
 
 Run it like the classic engine (same inputs and working-directory layout), substituting the script name:
 
@@ -300,6 +300,22 @@ python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
 ```
 
 Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by per-cycle works in `results_fe.gs`.
+
+### Compute cost
+
+Each cycle runs five switching/hold legs plus one equilibration, all in the same `-d 1.5` box as the classic protocol:
+
+| Leg | Purpose | Length |
+|---|---|---|
+| equilibration | NVT 1–5 + 1 ns NPT | ~1.1 ns |
+| `boundfwd` | bound restraints on (dhdl) | 5 ns |
+| `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 5 ns |
+| `nptrev_fe` | hold unbound | 1 ns |
+| `bindrev_fe` | rebind | 5 ns |
+| `boundrev` | bound restraints off (dhdl) | 5 ns |
+| **per cycle** | | **~22 ns** |
+
+At the default 5 cycles this is **~112 ns/structure** (≈ 5 × 22 ns + one initial equilibration). The system size is identical to the classic protocol (interface cutout, `-d 1.5` box), so per-nanosecond cost is the same; on a single consumer-grade RTX-class GPU that works out to roughly **~17 GPU-hours per structure** — about **2× the classic ~8 GPU-hours** for the same cycle count. Budget slightly more (~17–20 GPU-h) because the free-energy code (`dhdl`) and the ~150 pull coordinates add a few percent of per-step overhead. Cost scales linearly with cycle count, and — since the two bidirectional pairs are independent — the bound-state legs can be run as a separate, cheaper (smaller-box) job stream if wall-clock latency matters more than total GPU-hours.
 
 ## Heteroatom Support
 
