@@ -392,11 +392,18 @@ ref_phC = dihedral_deg(P3c, L1c, L2c, L3c)          # deg  phi_C
 # appropriate to the thermodynamic cycle.
 #======================================================
 
+# r0 for the standard-state release is the UNBOUND reference distance. The Boresch
+# distance coordinate is pulled out by args.pull_dist during unbinding, so the
+# restraint is released at (ref_r + pull_dist), not the bound ref_r. Using ref_r
+# here would be inconsistent with the pull work already spent moving it out, and
+# would leave the thermodynamic cycle unclosed. Only the distance moves; the
+# angle/dihedral references (rate 0) keep their measured values.
+r0_release = ref_r + args.pull_dist
 thA0 = ref_thA * DEG2RAD
 thB0 = ref_thB * DEG2RAD
 prodK = K_R * (K_ANG_RAD ** 5)   # Kr * KthA*KthB*KphA*KphB*KphC (all angles equal)
 numerator = 8.0 * math.pi**2 * V0 * math.sqrt(prodK)
-denominator = (ref_r**2) * math.sin(thA0) * math.sin(thB0) * (2.0 * math.pi * RT)**3
+denominator = (r0_release**2) * math.sin(thA0) * math.sin(thB0) * (2.0 * math.pi * RT)**3
 dG_release = -RT * math.log(numerator / denominator)   # kJ/mol
 
 with open("boresch_analytical.gs", "w") as f:
@@ -405,9 +412,10 @@ with open("boresch_analytical.gs", "w") as f:
   f.write("# standard state (1 mol/L). dG_intro = -dG_release.\n")
   f.write("# quantity            value        unit\n")
   f.write("dG_release_kJ_mol     %.6f\n" % dG_release)
-  f.write("dG_release_kcal_mol   %.6f\n" % (dG_release / 4.184))
   f.write("temperature_K         %.2f\n" % args.temp)
-  f.write("ref_r_nm              %.6f\n" % ref_r)
+  f.write("ref_r_bound_nm        %.6f\n" % ref_r)
+  f.write("r0_release_nm         %.6f\n" % r0_release)
+  f.write("pull_dist_nm          %.6f\n" % args.pull_dist)
   f.write("ref_thetaA_deg        %.4f\n" % ref_thA)
   f.write("ref_thetaB_deg        %.4f\n" % ref_thB)
   f.write("ref_phiA_deg          %.4f\n" % ref_phA)
