@@ -1,12 +1,12 @@
 ; bind_fe.mdp - FE unbinding leg (forward). Interface restraints fade out
 ; (k -> kB=0) while Boresch restraints fade in (k=0 -> kB); the interface and
-; Boresch-r references move outward at pull-rate to +1.5 nm. The full pull block
+; Boresch-r references move outward at pull-rate to +1.0 nm. The full pull block
 ; (groups + coords) is appended by make_boresch.py.
 ;
-; nsteps 1875000 * dt 0.004 = 7500 ps; at 0.0002 nm/ps -> +1.5 nm separation.
+; nsteps 1250000 * dt 0.004 = 5000 ps; at 0.0002 nm/ps -> +1.0 nm separation.
 
 integrator               = md
-nsteps                   = 1875000
+nsteps                   = 1250000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -61,7 +61,7 @@ gen_vel                  = no
 ; ---- Free-energy (force-constant switching k -> kB, driven by lambda) ----
 free-energy              = yes
 init-lambda              = 0
-delta-lambda             = 5.33333333e-07
+delta-lambda             = 8.0e-07
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

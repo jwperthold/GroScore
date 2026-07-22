@@ -287,11 +287,11 @@ The absolute binding free energy is assembled from a thermodynamic cycle:
 ```
 dG_bind = -( dG_intro + dG_unbind + dG_release )
    dG_intro    interface restraints introduced in the bound state   (dhdl)
-   dG_unbind    interface -> Boresch handoff + separation to 1.5 nm  (pull work + dhdl)
+   dG_unbind    interface -> Boresch handoff + separation to 1.0 nm  (pull work + dhdl)
    dG_release   analytical Boresch standard-state term               (closed form)
 ```
 
-Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each leg uses 1 ns equilibration, a 1.5 nm separation, and adds bound-state restraint legs — roughly 5× the per-structure cost (~136 ns/structure at 5 cycles).
+Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each leg uses 1 ns equilibration, a 1.0 nm separation, and adds bound-state restraint legs — roughly 2× the per-structure cost (~112 ns/structure at 5 cycles).
 
 Run it like the classic engine (same inputs and working-directory layout), substituting the script name:
 
