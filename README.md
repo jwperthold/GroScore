@@ -299,7 +299,7 @@ Run it like the classic engine (same inputs and working-directory layout), subst
 python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
 ```
 
-Results land in `scores_fe.gs` (absolute dG_bind in kcal/mol plus the three cycle components), fed by per-cycle works in `results_fe.gs`.
+Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by per-cycle works in `results_fe.gs`.
 
 ## Heteroatom Support
 
