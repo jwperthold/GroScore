@@ -18,6 +18,7 @@ import numpy as np
 
 parser = argparse.ArgumentParser(description="Calculate total wall-clock time and FLOPS from SLURM output files.")
 parser.add_argument('-d', '--directory', type=str, default='.', help="Directory containing slurm-*.out files (default: current)")
+parser.add_argument('--no-flops', action='store_true', help="Skip the FLOPS calculation, which extracts GROMACS .log files from the per-structure tar.gz archives (slow). Reports wall-clock times only.")
 args = parser.parse_args()
 
 # Find all slurm output files
@@ -98,42 +99,45 @@ def extract_mflops_from_lines(line_iter):
             in_table = False
     return total
 
-tar_files = sorted(glob.glob(os.path.join(args.directory, "*.tar.gz")))
-if tar_files:
-    print(f"Reading FLOPS from {len(tar_files)} archive(s)...", file=sys.stderr)
-for tar_path in tar_files:
-    struct_id = os.path.basename(tar_path).replace('.tar.gz', '')
-    total_mflops = 0.0
-    try:
-        with tarfile.open(tar_path, 'r:gz') as tar:
-            for member in tar.getmembers():
-                if not member.name.endswith('.log'):
-                    continue
-                f = tar.extractfile(member)
-                if f is None:
-                    continue
-                lines = (raw.decode('utf-8', errors='replace') for raw in f)
-                total_mflops += extract_mflops_from_lines(lines)
-    except Exception:
-        pass
-    if total_mflops > 0:
-        flops_per_struct[struct_id] = total_mflops
-
-# Also check unarchived structure directories for .log files
-struct_dirs = [d for d in glob.glob(os.path.join(args.directory, "*")) if os.path.isdir(d)]
-for struct_dir in struct_dirs:
-    struct_id = os.path.basename(struct_dir)
-    if struct_id in flops_per_struct:
-        continue
-    total_mflops = 0.0
-    for log_path in glob.glob(os.path.join(struct_dir, "*.log")):
+if args.no_flops:
+    print("Skipping FLOPS calculation (--no-flops); wall-clock times only.", file=sys.stderr)
+else:
+    tar_files = sorted(glob.glob(os.path.join(args.directory, "*.tar.gz")))
+    if tar_files:
+        print(f"Reading FLOPS from {len(tar_files)} archive(s)...", file=sys.stderr)
+    for tar_path in tar_files:
+        struct_id = os.path.basename(tar_path).replace('.tar.gz', '')
+        total_mflops = 0.0
         try:
-            with open(log_path) as f:
-                total_mflops += extract_mflops_from_lines(f)
+            with tarfile.open(tar_path, 'r:gz') as tar:
+                for member in tar.getmembers():
+                    if not member.name.endswith('.log'):
+                        continue
+                    f = tar.extractfile(member)
+                    if f is None:
+                        continue
+                    lines = (raw.decode('utf-8', errors='replace') for raw in f)
+                    total_mflops += extract_mflops_from_lines(lines)
         except Exception:
             pass
-    if total_mflops > 0:
-        flops_per_struct[struct_id] = total_mflops
+        if total_mflops > 0:
+            flops_per_struct[struct_id] = total_mflops
+
+    # Also check unarchived structure directories for .log files
+    struct_dirs = [d for d in glob.glob(os.path.join(args.directory, "*")) if os.path.isdir(d)]
+    for struct_dir in struct_dirs:
+        struct_id = os.path.basename(struct_dir)
+        if struct_id in flops_per_struct:
+            continue
+        total_mflops = 0.0
+        for log_path in glob.glob(os.path.join(struct_dir, "*.log")):
+            try:
+                with open(log_path) as f:
+                    total_mflops += extract_mflops_from_lines(f)
+            except Exception:
+                pass
+        if total_mflops > 0:
+            flops_per_struct[struct_id] = total_mflops
 
 # Merge duplicate structures (multiple SLURM submissions/restarts)
 merged = {}
