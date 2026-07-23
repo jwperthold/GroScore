@@ -343,6 +343,8 @@ def score(structids):
   RTLN10 = RT * math.log(10.0)
   def pkd(x):
     return -x / RTLN10 if (x is not None and not (isinstance(x, float) and math.isnan(x))) else float('nan')
+  def pkd_ci(ci):   # pKD is linear in dG_bind, so its CI just rescales by RT ln10
+    return ci / RTLN10 if (ci is not None and np.isfinite(ci)) else float('nan')
 
   def cell(x):
     return ("%.2f" % x) if (x is not None and np.isfinite(x)) else "nan"
@@ -354,7 +356,7 @@ def score(structids):
   # CGI estimators, each with its own 95% CI. The dG_bind CIs come from the joint
   # cycle bootstrap (they include the dG_intro/dG_unbind covariance, so they are
   # NOT simply the quadrature of the component CIs).
-  cols = ("dGbind_avg  dGbind_avg_CI  pKD_avg  dGbind_cgi  dGbind_cgi_CI  pKD_cgi  "
+  cols = ("dGbind_avg  dGbind_avg_CI  pKD_avg  pKD_avg_CI  dGbind_cgi  dGbind_cgi_CI  pKD_cgi  pKD_cgi_CI  "
           "dG_intro_avg  dG_intro_avg_CI  dG_intro_cgi  dG_intro_cgi_CI  "
           "dG_unbind_avg  dG_unbind_avg_CI  dG_unbind_cgi  dG_unbind_cgi_CI  "
           "dG_release  Ncycles  Note")
@@ -363,10 +365,10 @@ def score(structids):
     f.write("# Structure_ID  " + "  ".join(cols.split()) + "\n")
     for sid, r, gr, n, note in rows:
       if r is None:
-        f.write("\t".join([sid] + ["nan"] * 15 + [str(n), note or ""]) + "\n")
+        f.write("\t".join([sid] + ["nan"] * 17 + [str(n), note or ""]) + "\n")
       else:
-        vals = [cell(r['bind_avg']), cell(r['bind_avg_ci']), cell(pkd(r['bind_avg'])),
-                cell(r['bind_cgi']), cell(r['bind_cgi_ci']), cell(pkd(r['bind_cgi'])),
+        vals = [cell(r['bind_avg']), cell(r['bind_avg_ci']), cell(pkd(r['bind_avg'])), cell(pkd_ci(r['bind_avg_ci'])),
+                cell(r['bind_cgi']), cell(r['bind_cgi_ci']), cell(pkd(r['bind_cgi'])), cell(pkd_ci(r['bind_cgi_ci'])),
                 cell(r['intro_avg']), cell(r['intro_avg_ci']),
                 cell(r['intro_cgi']), cell(r['intro_cgi_ci']),
                 cell(r['unb_avg']), cell(r['unb_avg_ci']),
