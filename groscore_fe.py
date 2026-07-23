@@ -88,67 +88,91 @@ def readstructparams(filepath):
 
 #------------------------------------------------------
 
-def bootstrap_stream(pulls, pushes, n_bootstrap=50000, method='avg'):
-  """Bootstrap standard error of the CGI/avg estimate for one stream.
-  `pushes` are already sign-aligned (i.e. -W_reverse)."""
-  if len(pulls) == 0 or len(pushes) == 0:
-    return float('nan')
-  pa, pb = np.array(pulls), np.array(pushes)
-  bi = pa[np.random.randint(0, len(pa), size=(n_bootstrap, len(pa)))]
-  bj = pb[np.random.randint(0, len(pb), size=(n_bootstrap, len(pb)))]
-  if method == 'avg':
-    scores = (bi.mean(axis=1) + bj.mean(axis=1)) / 2.0
-    return float(np.std(scores))
-  if method == 'cgi' and len(pulls) > 2 and len(pushes) > 2:
-    ap, vp = bi.mean(axis=1), bi.var(axis=1)
-    aq, vq = bj.mean(axis=1), bj.var(axis=1)
-    mask = (vp > 0) & (vq > 0) & (vp != vq)
-    if not np.any(mask):
-      return float('nan')
-    ap, vp, aq, vq = ap[mask], vp[mask], aq[mask], vq[mask]
-    dinv = 1.0 / vp - 1.0 / vq
-    t1 = ap / vp - aq / vq
-    t2 = np.sqrt((ap - aq)**2 / (vp * vq) + 2.0 * dinv * np.log(vq / vp))
+def _stream_avg(fwd, rev, axis=None):
+  """Crooks average estimator of one stream: (mean(fwd) + mean(-rev)) / 2."""
+  return (fwd.mean(axis) - rev.mean(axis)) / 2.0
+
+def _stream_cgi(fwd, rev):
+  """CGI intersection of one stream. fwd/rev are 2-D (n_replicates, n_cycles);
+  pushes = -rev (mean flips sign, variance unchanged). Returns one value per row,
+  NaN where the two Gaussians are degenerate."""
+  ap, vp = fwd.mean(1), fwd.var(1)
+  aq, vq = -rev.mean(1), rev.var(1)
+  out = np.full(fwd.shape[0], np.nan)
+  m = (vp > 0) & (vq > 0) & (vp != vq)
+  if np.any(m):
+    apm, vpm, aqm, vqm = ap[m], vp[m], aq[m], vq[m]
+    dinv = 1.0 / vpm - 1.0 / vqm
+    t1 = apm / vpm - aqm / vqm
+    t2 = np.sqrt((apm - aqm)**2 / (vpm * vqm) + 2.0 * dinv * np.log(vqm / vpm))
     s1 = (t1 + t2) / dinv
     s2 = (t1 - t2) / dinv
-    mid = (ap + aq) / 2.0
-    scores = np.where(np.abs(mid - s1) > np.abs(mid - s2), s2, s1)
-    return float(np.std(scores))
-  return float('nan')
-
-def cgi_point(pulls, pushes):
-  """CGI intersection for one stream (pushes already sign-aligned)."""
-  if len(pulls) < 3 or len(pushes) < 3:
-    return float('nan')
-  ap, vp = np.mean(pulls), np.var(pulls)
-  aq, vq = np.mean(pushes), np.var(pushes)
-  if vp <= 0 or vq <= 0 or vp == vq:
-    return float('nan')
-  dinv = 1.0 / vp - 1.0 / vq
-  t1 = ap / vp - aq / vq
-  t2 = math.sqrt((ap - aq)**2 / (vp * vq) + 2.0 * dinv * math.log(vq / vp))
-  s1 = (t1 + t2) / dinv
-  s2 = (t1 - t2) / dinv
-  mid = (ap + aq) / 2.0
-  return s2 if math.fabs(mid - s1) > math.fabs(mid - s2) else s1
-
-def estimate_stream(forward, reverse):
-  """Return dict with avg/cgi free energy (kJ/mol) and 95% CIs for one stream.
-  forward = physical forward works; reverse = physical reverse works."""
-  pulls = list(forward)
-  pushes = [-w for w in reverse]   # sign-align the reverse process
-  out = dict(n=min(len(pulls), len(pushes)),
-             avg=float('nan'), avg_ci=float('nan'),
-             cgi=float('nan'), cgi_ci=float('nan'))
-  if pulls and pushes:
-    out['avg'] = (np.mean(pulls) + np.mean(pushes)) / 2.0
-    se = bootstrap_stream(pulls, pushes, method='avg')
-    out['avg_ci'] = 1.96 * se if not math.isnan(se) else float('nan')
-  if len(pulls) > 2 and len(pushes) > 2:
-    out['cgi'] = cgi_point(pulls, pushes)
-    se = bootstrap_stream(pulls, pushes, method='cgi')
-    out['cgi_ci'] = 1.96 * se if not math.isnan(se) else float('nan')
+    mid = (apm + aqm) / 2.0
+    out[m] = np.where(np.abs(mid - s1) > np.abs(mid - s2), s2, s1)
   return out
+
+def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
+                     n_boot=50000, seed=12345):
+  """Joint cycle-level bootstrap for one structure.
+
+  Point estimates and 95% CIs for dG_intro, dG_unbind and dG_bind under BOTH the
+  average (Crooks) and CGI estimators. The bootstrap resamples CYCLES (the
+  sampling unit) with a SHARED index across the bound and unbinding streams, so
+  the dG_bind CI correctly includes the covariance between dG_intro and dG_unbind
+  (both are estimated from the same cycles) rather than assuming independence.
+  Forward/reverse works are paired by cycle. dG_release is analytical and treated
+  as exact (contributes no error).
+
+    bound  stream: forward = W_intro (restraints on),  reverse = W_remove (off)
+    unbind stream: forward = Wtot_f  (unbinding),        reverse = Wtot_r (rebinding)
+    dG_bind = -(dG_intro + dG_unbind + dG_release)
+  """
+  Wi = np.asarray(W_intro, float); Wr = np.asarray(W_remove, float)
+  Wf = np.asarray(Wtot_f, float);  Wv = np.asarray(Wtot_r, float)
+  ncyc = len(Wi)
+  nan = float('nan')
+
+  r = dict(n=ncyc,
+           intro_avg=nan, intro_avg_ci=nan, intro_cgi=nan, intro_cgi_ci=nan,
+           unb_avg=nan, unb_avg_ci=nan, unb_cgi=nan, unb_cgi_ci=nan,
+           bind_avg=nan, bind_avg_ci=nan, bind_cgi=nan, bind_cgi_ci=nan)
+  if ncyc == 0:
+    return r
+
+  # Point estimates from the full data.
+  r['intro_avg'] = float(_stream_avg(Wi, Wr))
+  r['unb_avg']   = float(_stream_avg(Wf, Wv))
+  r['bind_avg']  = -(r['intro_avg'] + r['unb_avg'] + dG_release)
+  if ncyc >= 3:                                   # CGI needs the per-cycle variance
+    r['intro_cgi'] = float(_stream_cgi(Wi[None, :], Wr[None, :])[0])
+    r['unb_cgi']   = float(_stream_cgi(Wf[None, :], Wv[None, :])[0])
+    if np.isfinite(r['intro_cgi']) and np.isfinite(r['unb_cgi']):
+      r['bind_cgi'] = -(r['intro_cgi'] + r['unb_cgi'] + dG_release)
+  if ncyc < 2:
+    return r
+
+  # Joint bootstrap: one shared cycle-index resample drives both streams.
+  rng = np.random.default_rng(seed)
+  idx = rng.integers(0, ncyc, size=(n_boot, ncyc))
+  Wi_b, Wr_b, Wf_b, Wv_b = Wi[idx], Wr[idx], Wf[idx], Wv[idx]
+
+  ia = _stream_avg(Wi_b, Wr_b, axis=1)
+  ua = _stream_avg(Wf_b, Wv_b, axis=1)
+  r['intro_avg_ci'] = 1.96 * float(np.std(ia))
+  r['unb_avg_ci']   = 1.96 * float(np.std(ua))
+  r['bind_avg_ci']  = 1.96 * float(np.std(-(ia + ua + dG_release)))
+
+  if ncyc >= 3:
+    ic = _stream_cgi(Wi_b, Wr_b)
+    uc = _stream_cgi(Wf_b, Wv_b)
+    if np.isfinite(ic).sum() > 1:
+      r['intro_cgi_ci'] = 1.96 * float(np.nanstd(ic))
+    if np.isfinite(uc).sum() > 1:
+      r['unb_cgi_ci'] = 1.96 * float(np.nanstd(uc))
+    both = np.isfinite(ic) & np.isfinite(uc)
+    if both.sum() > 1:
+      r['bind_cgi_ci'] = 1.96 * float(np.std(-(ic[both] + uc[both] + dG_release)))
+  return r
 
 #------------------------------------------------------
 
@@ -284,10 +308,10 @@ def score(structids):
   analytical = read_analytical("results_analytical.gs")
   works = read_works("results_fe.gs")
 
-  rows = []  # (sid, dGbind_avg, ci_avg, dGbind_cgi, ci_cgi, dGintro, dGunbind, dGrelease, ncyc, note)
+  rows = []  # (sid, result_dict_or_None, dG_release_or_None, ncyc, note)
   for sid in structids:
     if sid in status:
-      rows.append((sid, None, None, None, None, None, None, None, 0, status[sid]))
+      rows.append((sid, None, None, 0, status[sid]))
       continue
     cycles = works.get(sid, [])
     # deduplicate by cycle index (restart safety), keep last occurrence
@@ -296,7 +320,7 @@ def score(structids):
       by_cycle[row[0]] = row
     cycles = [by_cycle[c] for c in sorted(by_cycle)]
     if not cycles or sid not in analytical:
-      rows.append((sid, None, None, None, None, None, None, None, len(cycles), "PENDING"))
+      rows.append((sid, None, None, len(cycles), "PENDING"))
       continue
 
     W_intro   = [c[1] for c in cycles]
@@ -310,24 +334,9 @@ def score(structids):
     Wtot_f = [SIGN_PULL_FWD * up + ud for up, ud in zip(Wu_pull, Wu_dhdl)]
     Wtot_r = [SIGN_PULL_REV * rp + rd for rp, rd in zip(Wr_pull, Wr_dhdl)]
 
-    bound  = estimate_stream(W_intro, W_remove)   # dG_intro
-    unbind = estimate_stream(Wtot_f, Wtot_r)      # dG_unbind
     dG_release = analytical[sid]
-
-    def combine(intro, unb):
-      if math.isnan(intro) or math.isnan(unb):
-        return float('nan')
-      return -(intro + unb + dG_release)
-
-    dGbind_avg = combine(bound['avg'], unbind['avg'])
-    dGbind_cgi = combine(bound['cgi'], unbind['cgi'])
-    ci_avg = math.sqrt((bound['avg_ci'] or 0)**2 + (unbind['avg_ci'] or 0)**2) \
-             if not (math.isnan(bound['avg_ci']) or math.isnan(unbind['avg_ci'])) else float('nan')
-    ci_cgi = math.sqrt((bound['cgi_ci'] or 0)**2 + (unbind['cgi_ci'] or 0)**2) \
-             if not (math.isnan(bound['cgi_ci']) or math.isnan(unbind['cgi_ci'])) else float('nan')
-
-    rows.append((sid, dGbind_avg, ci_avg, dGbind_cgi, ci_cgi,
-                 bound['avg'], unbind['avg'], dG_release, len(cycles), ""))
+    r = score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release)
+    rows.append((sid, r, dG_release, len(cycles), ""))
 
   # Report binding free energies in kJ/mol and as pKD (never kcal/mol).
   # dG_bind = -RT ln(Ka) = RT ln(KD)  =>  pKD = -log10(KD) = -dG_bind / (RT ln 10).
@@ -335,23 +344,35 @@ def score(structids):
   def pkd(x):
     return -x / RTLN10 if (x is not None and not (isinstance(x, float) and math.isnan(x))) else float('nan')
 
-  rows_valid = [r for r in rows if r[1] is not None and not math.isnan(r[1])]
-  rows_valid.sort(key=lambda r: r[1])
+  def cell(x):
+    return ("%.2f" % x) if (x is not None and np.isfinite(x)) else "nan"
 
+  rows_valid = [row for row in rows if row[1] is not None and np.isfinite(row[1]['bind_avg'])]
+  rows_valid.sort(key=lambda row: row[1]['bind_avg'])
+
+  # dG_bind, dG_intro and dG_unbind are each reported under BOTH the average and
+  # CGI estimators, each with its own 95% CI. The dG_bind CIs come from the joint
+  # cycle bootstrap (they include the dG_intro/dG_unbind covariance, so they are
+  # NOT simply the quadrature of the component CIs).
+  cols = ("dGbind_avg  dGbind_avg_CI  pKD_avg  dGbind_cgi  dGbind_cgi_CI  pKD_cgi  "
+          "dG_intro_avg  dG_intro_avg_CI  dG_intro_cgi  dG_intro_cgi_CI  "
+          "dG_unbind_avg  dG_unbind_avg_CI  dG_unbind_cgi  dG_unbind_cgi_CI  "
+          "dG_release  Ncycles  Note")
   with open("scores_fe.gs", "w") as f:
     f.write("# GroScore-FE absolute binding free energies (kJ/mol; pKD dimensionless, T=%.1f K)\n" % args.temp)
-    f.write("# Structure_ID  dGbind_avg_kJ  CI95_kJ  pKD_avg  dGbind_cgi_kJ  CI95_kJ  pKD_cgi  dG_intro_kJ  dG_unbind_kJ  dG_release_kJ  Ncycles  Note\n")
-    for sid, a, aci, c, cci, gi, gu, gr, n, note in rows:
-      if a is None:
-        f.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n"
-                % (sid, note or "nan", "nan", "nan", "nan", "nan", "nan", "nan", "nan", "nan", n, note or ""))
+    f.write("# Structure_ID  " + "  ".join(cols.split()) + "\n")
+    for sid, r, gr, n, note in rows:
+      if r is None:
+        f.write("\t".join([sid] + ["nan"] * 15 + [str(n), note or ""]) + "\n")
       else:
-        aci_s = ("%.2f" % aci) if not math.isnan(aci) else "nan"
-        cgi_s = ("%.2f" % c) if not math.isnan(c) else "nan"
-        cgi_ci_s = ("%.2f" % cci) if not math.isnan(cci) else "nan"
-        cgi_pkd_s = ("%.2f" % pkd(c)) if not math.isnan(c) else "nan"
-        f.write("%s\t%.2f\t%s\t%.2f\t%s\t%s\t%s\t%.2f\t%.2f\t%.2f\t%d\t%s\n"
-                % (sid, a, aci_s, pkd(a), cgi_s, cgi_ci_s, cgi_pkd_s, gi, gu, gr, n, note))
+        vals = [cell(r['bind_avg']), cell(r['bind_avg_ci']), cell(pkd(r['bind_avg'])),
+                cell(r['bind_cgi']), cell(r['bind_cgi_ci']), cell(pkd(r['bind_cgi'])),
+                cell(r['intro_avg']), cell(r['intro_avg_ci']),
+                cell(r['intro_cgi']), cell(r['intro_cgi_ci']),
+                cell(r['unb_avg']), cell(r['unb_avg_ci']),
+                cell(r['unb_cgi']), cell(r['unb_cgi_ci']),
+                cell(gr)]
+        f.write("\t".join([sid] + vals + [str(n), note]) + "\n")
 
   done = len(rows_valid)
   print("Scored %d/%d structures with complete cycles. Wrote scores_fe.gs." % (done, len(structids)))
