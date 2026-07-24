@@ -114,39 +114,29 @@ max_structural_resnum = max(all_structural) if all_structural else 0
 prot1_data = []  # receptor: [(resname, resnum, atomname, atomnum, x, y, z), ...]
 prot2_data = []  # ligand / protein B
 
-# GRO fixed-width columns: resnum(0:5) resname(5:10) atomname(10:15) atomnum(15:20)
-# x(20:28) y(28:36) z(36:44). The GRO atom-number field wraps modulo 100000, so for
-# systems > 99999 atoms it cannot be used as the absolute atom index (that would put
-# pull groups on the wrong atoms in index.ndx). The atom's line position (1-based)
-# is the true topology index, so use that; also parse by fixed columns rather than
-# by split (which breaks when fields touch or for SOL entries).
 if os.path.isfile(args.input):
   with open(args.input, "r") as f:
-    gro_lines = f.readlines()
-  try:
-    natoms = int(gro_lines[1])
-  except (IndexError, ValueError):
-    natoms = 0
-  for i in range(natoms):
-    if 2 + i >= len(gro_lines):
-      break
-    line = gro_lines[2 + i]
-    try:
-      resnum = int(line[0:5])
-      resname_field = line[0:10].strip()      # resnum+resname, e.g. "577GLN"
-      resname = line[5:10].strip()
-      atomname = line[10:15].strip()
-      atomnum = i + 1                          # absolute 1-based index (wrap-safe)
-      x, y, z = float(line[20:28]), float(line[28:36]), float(line[36:44])
-    except (ValueError, IndexError):
-      continue
-    if resname == "SOL" or resnum > max_structural_resnum:
-      continue
-    rec = (resname_field, resnum, atomname, atomnum, x, y, z)
-    if resnum not in residues_b:
-      prot1_data.append(rec)
-    else:
-      prot2_data.append(rec)
+    for line in f:
+      if not line.strip().startswith("#"):
+        left = line[:15]
+        right = line[15:]
+        tmp = left.split() + right.split()
+        try:
+          s = re.search(r"\d+(\.\d+)?", tmp[0])
+          resnum = int(s.group(0))
+          atomname = tmp[1]
+          atomnum = int(tmp[2])
+          x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
+          res3 = re.sub(r'\d+', '', tmp[0])
+          if res3 == "SOL" or resnum > max_structural_resnum:
+            continue
+          rec = (tmp[0], resnum, atomname, atomnum, x, y, z)
+          if resnum not in residues_b:
+            prot1_data.append(rec)
+          else:
+            prot2_data.append(rec)
+        except (ValueError, IndexError, AttributeError):
+          pass
 
 len1 = len(prot1_data)
 len2 = len(prot2_data)
