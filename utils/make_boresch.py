@@ -114,29 +114,39 @@ max_structural_resnum = max(all_structural) if all_structural else 0
 prot1_data = []  # receptor: [(resname, resnum, atomname, atomnum, x, y, z), ...]
 prot2_data = []  # ligand / protein B
 
+# GRO fixed-width columns: resnum(0:5) resname(5:10) atomname(10:15) atomnum(15:20)
+# x(20:28) y(28:36) z(36:44). The GRO atom-number field wraps modulo 100000, so for
+# systems > 99999 atoms it cannot be used as the absolute atom index (that would put
+# pull groups on the wrong atoms in index.ndx). The atom's line position (1-based)
+# is the true topology index, so use that; also parse by fixed columns rather than
+# by split (which breaks when fields touch or for SOL entries).
 if os.path.isfile(args.input):
   with open(args.input, "r") as f:
-    for line in f:
-      if not line.strip().startswith("#"):
-        left = line[:15]
-        right = line[15:]
-        tmp = left.split() + right.split()
-        try:
-          s = re.search(r"\d+(\.\d+)?", tmp[0])
-          resnum = int(s.group(0))
-          atomname = tmp[1]
-          atomnum = int(tmp[2])
-          x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-          res3 = re.sub(r'\d+', '', tmp[0])
-          if res3 == "SOL" or resnum > max_structural_resnum:
-            continue
-          rec = (tmp[0], resnum, atomname, atomnum, x, y, z)
-          if resnum not in residues_b:
-            prot1_data.append(rec)
-          else:
-            prot2_data.append(rec)
-        except (ValueError, IndexError, AttributeError):
-          pass
+    gro_lines = f.readlines()
+  try:
+    natoms = int(gro_lines[1])
+  except (IndexError, ValueError):
+    natoms = 0
+  for i in range(natoms):
+    if 2 + i >= len(gro_lines):
+      break
+    line = gro_lines[2 + i]
+    try:
+      resnum = int(line[0:5])
+      resname_field = line[0:10].strip()      # resnum+resname, e.g. "577GLN"
+      resname = line[5:10].strip()
+      atomname = line[10:15].strip()
+      atomnum = i + 1                          # absolute 1-based index (wrap-safe)
+      x, y, z = float(line[20:28]), float(line[28:36]), float(line[36:44])
+    except (ValueError, IndexError):
+      continue
+    if resname == "SOL" or resnum > max_structural_resnum:
+      continue
+    rec = (resname_field, resnum, atomname, atomnum, x, y, z)
+    if resnum not in residues_b:
+      prot1_data.append(rec)
+    else:
+      prot2_data.append(rec)
 
 len1 = len(prot1_data)
 len2 = len(prot2_data)
@@ -285,12 +295,18 @@ def select_boresch_anchors():
     P2 : buried receptor residue maximizing lever arm from P3 with theta_A in window
     L3 : buried ligand residue maximizing non-collinearity of (L1,L2,L3)
     P1 : buried receptor residue maximizing non-collinearity of (P3,P2,P1)
-  Angle acceptance window keeps the analytical eq.32 valid (away from 0/180).
+  Angle acceptance window keeps the analytical eq.32 valid (away from 0/180). All
+  anchor lever arms are capped at ARM_MAX so the Boresch frame stays local: no
+  coordinate vector may approach half the box, or GROMACS aborts the pull with a
+  minimum-image error (seen on large complexes where the maximum-spread pick put
+  P2/P3 ~6 nm apart).
   """
   if len(rec_groups) < 3 or len(lig_groups) < 3:
     return None
 
   ANG_LO, ANG_HI = 45.0, 135.0
+  ARM_MAX = 1.2   # nm; keep every anchor within ~1.2 nm of its reference so no
+                  # Boresch coordinate vector nears the minimum-image limit
 
   rec_med = np.median(list(rec_burial.values())) if rec_burial else 0
   lig_med = np.median(list(lig_burial.values())) if lig_burial else 0
@@ -322,7 +338,7 @@ def select_boresch_anchors():
         continue
       c = (lig_groups.get(rn) or rec_groups.get(rn))["com"]
       arm = np.linalg.norm(c - vertex_c)
-      if arm < 0.3:
+      if arm < 0.3 or arm > ARM_MAX:      # keep the lever arm local (min-image safe)
         continue
       ang = angle_deg(other_c, vertex_c, c)
       in_win = ANG_LO <= ang <= ANG_HI
@@ -339,15 +355,22 @@ def select_boresch_anchors():
   L2c, P2c = lig_groups[L2]["com"], rec_groups[P2]["com"]
 
   def pick_noncollinear(pool, exclude, p, q):
-    best, best_area = None, -1.0
-    for rn in pool:
-      if rn in exclude:
-        continue
-      c = (lig_groups.get(rn) or rec_groups.get(rn))["com"]
-      a = tri_area(p, q, c)
-      if a > best_area:
-        best_area, best = a, rn
-    return best
+    # Prefer a residue local to both existing anchors (within ARM_MAX) that
+    # maximizes non-collinearity; relax the locality cap only if none qualifies.
+    for local in (True, False):
+      best, best_area = None, -1.0
+      for rn in pool:
+        if rn in exclude:
+          continue
+        c = (lig_groups.get(rn) or rec_groups.get(rn))["com"]
+        if local and (np.linalg.norm(c - p) > ARM_MAX or np.linalg.norm(c - q) > ARM_MAX):
+          continue
+        a = tri_area(p, q, c)
+        if a > best_area:
+          best_area, best = a, rn
+      if best is not None:
+        return best
+    return None
 
   L3 = pick_noncollinear(lig_pool, {L1, L2}, L1c, L2c)
   P1 = pick_noncollinear(rec_pool, {P3, P2}, P3c, P2c)
