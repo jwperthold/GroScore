@@ -308,14 +308,14 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 | Leg | Purpose | Length |
 |---|---|---|
 | equilibration | NVT 1–5 + 1 ns NPT | ~1.1 ns |
-| `boundfwd` | bound restraints on (dhdl) | 5 ns |
+| `boundfwd` | bound restraints on (dhdl) | 1.5 ns |
 | `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 5 ns |
 | `nptrev_fe` | hold unbound | 1 ns |
 | `bindrev_fe` | rebind | 5 ns |
-| `boundrev` | bound restraints off (dhdl) | 5 ns |
-| **per cycle** | | **~22 ns** |
+| `boundrev` | bound restraints off (dhdl) | 1.5 ns |
+| **per cycle** | | **~15 ns** |
 
-At the default 5 cycles this is **~112 ns/structure** (≈ 5 × 22 ns + one initial equilibration), about **2× the computational cost** for the same cycle count.
+At the default 5 cycles this is **~76 ns/structure** (≈ 5 × 15 ns + one initial equilibration), about **1.5× the computational cost** for the same cycle count. The bound-restraint legs are only 1.5 ns because that switch converges quickly (small `dG_intro` uncertainty); the unbinding/rebinding legs stay at 5 ns.
 
 ## Heteroatom Support
 

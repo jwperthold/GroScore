@@ -5,10 +5,10 @@
 ; network is present but fixed; no Boresch restraints here. Pull block appended
 ; by make_boresch.py (family 'bound').
 ;
-; nsteps 1250000 * dt 0.004 = 5000 ps.
+; nsteps 375000 * dt 0.004 = 1500 ps.
 
 integrator               = md
-nsteps                   = 1250000
+nsteps                   = 375000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -63,7 +63,7 @@ gen_vel                  = no
 ; ---- Free-energy: introduce restraints, lambda 0 -> 1 ----
 free-energy              = yes
 init-lambda              = 0
-delta-lambda             = 8.0e-07
+delta-lambda             = 2.66666667e-06
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

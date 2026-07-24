@@ -3,10 +3,10 @@
 ; pulling. Pure dhdl. Paired with boundfwd for the Crooks-Gaussian-Intersection
 ; estimate of the bound-state restraint free energy.
 ;
-; nsteps 1250000 * dt 0.004 = 5000 ps.
+; nsteps 375000 * dt 0.004 = 1500 ps.
 
 integrator               = md
-nsteps                   = 1250000
+nsteps                   = 375000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -61,7 +61,7 @@ gen_vel                  = no
 ; ---- Free-energy: remove restraints, lambda 1 -> 0 ----
 free-energy              = yes
 init-lambda              = 1
-delta-lambda             = -8.0e-07
+delta-lambda             = -2.66666667e-06
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes
