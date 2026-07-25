@@ -7,8 +7,8 @@ computed by KDE — matching the thesis / paper figures. Near-native (favourable
 strongly negative GroScore, low I-RMSD) poses cluster at the bottom-left.
 
 Failed / un-scored poses carry no score and are excluded from the scatter as well as
-from the ROC-AUC and the plotted native percentile (both computed over the scored
-poses only). The console native-rank report below still lists all poses.
+from the ROC-AUC, the plotted native percentile, and the console native-rank report
+below — all computed over the scored poses only (so the console and scatter agree).
 
 Usage:
   python3 plot_capri_scatter.py                 # grid of all scored targets
@@ -133,7 +133,10 @@ def draw_joint(fig, cell, x, y, title, roc, native=None):
         ax_main.set_xlim(left=min(x0, -0.03 * (x1 - x0)))
         #ax_main.legend(loc="upper left", fontsize=8, frameon=True, framealpha=0.85,
         #               handletextpad=0.2, borderpad=0.3)
-    lbl = ("ROC-AUC = %.2f" % roc) if np.isfinite(roc) else "ROC-AUC = n/a"
+    # 3 decimals (matching analyze_capri): for targets with no near-native decoy the
+    # ROC degenerates to the native's percentile (ROC = 1 - Top/100), and 2 decimals
+    # would round e.g. 0.985 -> 0.99, visually clashing with the 1-decimal "Top 1.5%".
+    lbl = ("ROC-AUC = %.3f" % roc) if np.isfinite(roc) else "ROC-AUC = n/a"
     if native is not None and np.isfinite(native) and len(y):
         lbl += "\nNative: Top %.1f%%" % (100.0 * np.sum(np.asarray(y) < native) / len(y))
     ax_main.text(0.96, 0.96, lbl, transform=ax_main.transAxes, fontsize=9,
@@ -153,17 +156,18 @@ if not targets:
     raise SystemExit("No scored targets found (looked for %s in each target dir)." % args.score_file)
 
 # ── native-structure percentile vs the scored poses (console only) ────────────
-print("\nNative structure rank vs all poses incl. failed (GroScore, more negative = better):")
+print("\nNative structure rank vs scored poses (GroScore, more negative = better):")
 _printed = False
 for t in targets:
     if t not in native_numeric:
         continue
     _printed = True
-    _, ys, _, n = data[t]                   # n = all poses (incl. failed) for the percentile
-    nat = native_scores[t]
-    n_better = int(np.sum(np.asarray(ys) < nat))   # poses more favourable than the native
-    print("  %-5s native = %8.1f kJ/mol   beats %5.1f%% of %d poses  ->  top %4.1f%%"
-          % (t, nat, 100.0 * (n - n_better) / n, n, 100.0 * n_better / n))
+    _, ys, _, _ = data[t]                   # ys = the scored poses that are plotted; the
+    nscored = len(ys)                       #   percentile is over these only (as in the
+    nat = native_scores[t]                  #   scatter label and the ROC-AUC), NOT all poses
+    n_better = int(np.sum(np.asarray(ys) < nat))   # scored poses more favourable than the native
+    print("  %-5s native = %8.1f kJ/mol   beats %5.1f%% of %d scored poses  ->  top %4.1f%%"
+          % (t, nat, 100.0 * (nscored - n_better) / nscored, nscored, 100.0 * n_better / nscored))
 if not _printed:
     print("  (no target yet has both a scored native and scored poses)")
 
