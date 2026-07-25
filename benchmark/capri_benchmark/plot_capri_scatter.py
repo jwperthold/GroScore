@@ -38,7 +38,7 @@ ap.add_argument("--metric", choices=["irms", "lrms"], default="irms",
                 help="RMSD on the x-axis (default: irms)")
 ap.add_argument("--targets-root", default=cc.REPO_ROOT)
 ap.add_argument("--db", default=cc.DB_DIR)
-ap.add_argument("--ncols", type=int, default=4, help="columns in the grid (default: 4)")
+ap.add_argument("--ncols", type=int, default=3, help="columns in the grid (default: 3)")
 ap.add_argument("--positive", choices=["acceptable", "medium", "high"], default="acceptable",
                 help="quality threshold counted as near-native for the ROC-AUC (default: acceptable)")
 ap.add_argument("--with-native", action=argparse.BooleanOptionalAction, default=True,
