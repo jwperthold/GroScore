@@ -299,7 +299,23 @@ Run it like the classic engine (same inputs and working-directory layout), subst
 python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
 ```
 
-Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by per-cycle works in `results_fe.gs`.
+Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`.
+
+### Job layout (parallel cycles)
+
+Convergence needs many cycles, and cycles are independent — each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
+
+1. a one-off **setup** job (stage 0 + initial equilibration + restraint definition), and
+2. a **cycle job array** (`--array=1-N`), submitted with `--dependency=afterany` on the setup job.
+
+Because all cycles share the restraints (elastic network, interface, Boresch) that only the setup defines, a cycle task that SLURM starts early does **not** terminate — `job_fe.run --cycle N` waits for the setup's `setup.done` marker (polling every 30 s, 6 h cap; override with `GROSCORE_SETUP_WAIT`/`GROSCORE_SETUP_POLL`). If the setup reports a failure, the waiting tasks exit cleanly rather than hanging. Each cycle writes its own `results_fe.d/<id>_c<n>.gs` (no concurrent appends to a shared file), and whichever task finishes last archives the structure — elected atomically via `mkdir`, so two tasks can never tar/delete the same directory.
+
+Useful options:
+
+- `--array-throttle N` — cap concurrent cycle tasks per structure (SLURM `%N`). Rarely needed: several GROMACS processes sharing one GPU give higher *aggregate* throughput than one at a time, because a single small-system run leaves the GPU idle during CPU-side work. Leave it unset unless you run out of GPU memory.
+- `--sequential` — legacy layout: one job per structure running all cycles in sequence.
+
+Re-running the command later re-submits only what is missing (a structure whose `setup.done` exists gets no new setup job) and re-scores whatever has completed.
 
 ### Compute cost
 

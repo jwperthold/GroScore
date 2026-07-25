@@ -45,7 +45,7 @@
 # bidirectional run using the standard CGI diagnostic (forward and reverse work
 # histograms should overlap around dG). See the SIGN_* constants below.
 
-import math, os, sys, argparse, shutil
+import math, os, sys, argparse, shutil, glob, subprocess
 import numpy as np
 
 #------------------------------------------------------
@@ -62,6 +62,12 @@ parser.add_argument('--slurm', type=str, default="workstation", help="SLURM temp
 parser.add_argument('--restart', action='store_true', help="Resubmit jobs even if run.gs exists.")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job_fe.run into archived (.tar.gz) structures.")
 parser.add_argument('--temp', type=float, default=310.0, help="Temperature in K (default: 310).")
+parser.add_argument('--array-throttle', type=int, default=0, metavar='N',
+                    help="Max cycle-array tasks running concurrently per structure "
+                         "(SLURM %%N). Use 1 on a single-GPU workstation; 0 = no limit (default).")
+parser.add_argument('--sequential', action='store_true',
+                    help="Legacy submission: one job per structure running all cycles "
+                         "sequentially, instead of a setup job + per-cycle job array.")
 parser.set_defaults(cutout=True, ligand_param=True)
 args = parser.parse_args()
 
@@ -176,8 +182,18 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
 
 #------------------------------------------------------
 
+def sbatch_parsable(path):
+  """Submit a job script and return its job id (None if submission failed)."""
+  try:
+    out = subprocess.run(["sbatch", "--parsable", path],
+                         capture_output=True, text=True, check=True).stdout.strip()
+  except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+    print("  sbatch failed for %s: %s" % (path, e))
+    return None
+  return out.split(";")[0] if out else None
+
 def setup_and_submit(structids, structchains):
-  """Write per-structure run.gs, copy job_fe.run, build and submit the array."""
+  """Write per-structure run.gs, copy job_fe.run, build and submit the jobs."""
   script_dir = os.path.dirname(os.path.abspath(__file__))
   job_src = os.path.join(script_dir, "job_fe.run")
   if not os.path.isfile(job_src):
@@ -236,16 +252,70 @@ def setup_and_submit(structids, structchains):
   if not os.path.isfile(slurm_template):
     print("Error: SLURM template not found: %s" % slurm_template); sys.exit(1)
   with open(slurm_template) as t:
-    template = t.read()
-  with open("array_submit.run", "w") as f:
-    f.write(template.rstrip("\n") + "\n")
-    f.write("#SBATCH --array=0-%d\n\n" % (len(structids) - 1))
-    f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
-    f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
-    f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n  rm \"${STRUCT_ID}.tar.gz\"\nfi\n")
-    f.write("cd $STRUCT_ID\n./job.run\n")
-  os.system("sbatch array_submit.run")
-  print("Submitted all FE simulation jobs.\n")
+    template = t.read().rstrip("\n")
+
+  live = [sid for sid in structids
+          if os.path.isdir("./%s" % sid) or os.path.isfile("./%s.tar.gz" % sid)]
+  if not live:
+    print("No structures to submit.\n"); return
+
+  def extract_snippet(sid):
+    return ("if [[ ! -d \"%s\" && -f \"%s.tar.gz\" ]]; then\n"
+            "  tar -xzf \"%s.tar.gz\"\n  rm \"%s.tar.gz\"\nfi\n" % (sid, sid, sid, sid))
+
+  if args.sequential:
+    # Legacy layout: one array task per structure, running setup + all cycles
+    # sequentially inside a single job.
+    with open("array_submit.run", "w") as f:
+      f.write(template + "\n")
+      f.write("#SBATCH --array=0-%d\n\n" % (len(structids) - 1))
+      f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
+      f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
+      f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n  rm \"${STRUCT_ID}.tar.gz\"\nfi\n")
+      f.write("cd $STRUCT_ID\n./job.run\n")
+    os.system("sbatch array_submit.run")
+    print("Submitted 1 array of %d structures (sequential cycles).\n" % len(structids))
+    return
+
+  # Default: per structure, a one-off setup job plus a job array over cycles.
+  # The cycles are embarrassingly parallel, but every cycle needs the restraints
+  # (elastic network + interface + Boresch) that the setup defines, so the array
+  # depends on the setup job. `afterany` rather than `afterok`: on setup failure
+  # the tasks still start and exit cleanly after reading the status, instead of
+  # sitting pending forever with an unsatisfiable dependency. job.run --cycle
+  # additionally waits on setup.done, covering the case where a task is released
+  # or started before the setup files are in place.
+  os.makedirs("slurm_fe", exist_ok=True)
+  throttle = ("%%%d" % args.array_throttle) if args.array_throttle > 0 else ""
+  n_setup = n_array = 0
+  for sid in live:
+    setup_path = os.path.join("slurm_fe", "setup_%s.run" % sid)
+    cycles_path = os.path.join("slurm_fe", "cycles_%s.run" % sid)
+    with open(setup_path, "w") as f:
+      f.write(template + "\n")
+      f.write("#SBATCH --job-name=fesetup_%s\n\n" % sid)
+      f.write(extract_snippet(sid))
+      f.write("cd %s\n./job.run --setup\n" % sid)
+    with open(cycles_path, "w") as f:
+      f.write(template + "\n")
+      f.write("#SBATCH --job-name=fecyc_%s\n" % sid)
+      f.write("#SBATCH --array=1-%d%s\n\n" % (args.numruns, throttle))
+      f.write("cd %s\n./job.run --cycle $SLURM_ARRAY_TASK_ID\n" % sid)
+
+    # A structure whose setup already completed (e.g. adding more cycles later)
+    # needs no new setup job and no dependency.
+    dep = ""
+    if not os.path.isfile("./%s/setup.done" % sid):
+      jid = sbatch_parsable(setup_path)
+      if jid:
+        dep = "--dependency=afterany:%s " % jid
+        n_setup += 1
+    if os.system("sbatch %s%s" % (dep, cycles_path)) == 0:
+      n_array += 1
+
+  print("Submitted %d setup job(s) + %d cycle array(s) x %d cycles%s.\n"
+        % (n_setup, n_array, args.numruns,
+           " (max %d concurrent)" % args.array_throttle if args.array_throttle > 0 else ""))
 
 #------------------------------------------------------
 
@@ -262,43 +332,91 @@ def read_status(filepath, structids):
           status[tmp[0]] = tmp[1]
   return status
 
-def read_analytical(filepath):
-  """Read results_analytical.gs -> {struct_id: dG_release_kJ_mol}."""
+def read_analytical(filepath, andir="results_analytical.d"):
+  """-> {struct_id: dG_release_kJ_mol}, merging the per-structure files written by
+  the setup job with any legacy single results_analytical.gs."""
   vals = {}
+
+  def take(line):
+    if line.strip().startswith("#"):
+      return
+    tmp = line.split()
+    if len(tmp) >= 2:
+      try:
+        vals[tmp[0]] = float(tmp[1])
+      except ValueError:
+        pass
+
   if os.path.isfile(filepath):
     with open(filepath) as f:
       for line in f:
-        if line.strip().startswith("#"):
-          continue
-        tmp = line.split()
-        if len(tmp) >= 2:
-          try:
-            vals[tmp[0]] = float(tmp[1])
-          except ValueError:
-            pass
+        take(line)
+  for path in sorted(glob.glob(os.path.join(andir, "*.gs"))):
+    try:
+      with open(path) as f:
+        for line in f:
+          take(line)
+    except OSError:
+      pass
+
+  # Last resort: read the value straight out of each unarchived structure's
+  # boresch_analytical.gs. The top-level record is only a cache -- if it is
+  # cleared (or was written by an older job.run that gated it behind a marker),
+  # every structure would otherwise score PENDING even though the value is right
+  # there in the structure directory.
+  for path in sorted(glob.glob(os.path.join("*", "boresch_analytical.gs"))):
+    sid = os.path.basename(os.path.dirname(path))
+    if sid in vals:
+      continue
+    try:
+      with open(path) as f:
+        for line in f:
+          tmp = line.split()
+          if len(tmp) >= 2 and tmp[0] == "dG_release_kJ_mol":
+            try:
+              vals[sid] = float(tmp[1])
+            except ValueError:
+              pass
+            break
+    except OSError:
+      pass
   return vals
 
-def read_works(filepath):
-  """Read results_fe.gs -> {struct_id: [ (cycle, W_intro, Wu_pull, Wu_dhdl,
-  Wr_pull, Wr_dhdl, W_remove), ... ]} keeping only rows with all values numeric."""
+def read_works(filepath, workdir="results_fe.d"):
+  """-> {struct_id: [ (cycle, W_intro, Wu_pull, Wu_dhdl, Wr_pull, Wr_dhdl,
+  W_remove), ... ]}, keeping only rows whose values are all numeric.
+
+  Reads the per-cycle files written by the cycle array (results_fe.d/<sid>_c<n>.gs,
+  one line each -- parallel tasks must not append to a shared file) as well as any
+  legacy single results_fe.gs, so runs started before the split still score."""
   works = {}
+
+  def take(line):
+    if line.strip().startswith("#"):
+      return
+    tmp = line.split()
+    if len(tmp) < 8:
+      return
+    try:
+      cyc = int(tmp[1])
+      vals = [float(x) for x in tmp[2:8]]
+    except ValueError:
+      return
+    if any(math.isnan(v) for v in vals):
+      return
+    works.setdefault(tmp[0], []).append((cyc, *vals))
+
   if os.path.isfile(filepath):
     with open(filepath) as f:
       for line in f:
-        if line.strip().startswith("#"):
-          continue
-        tmp = line.split()
-        if len(tmp) < 8:
-          continue
-        sid = tmp[0]
-        try:
-          cyc = int(tmp[1])
-          vals = [float(x) for x in tmp[2:8]]
-        except ValueError:
-          continue
-        if any(math.isnan(v) for v in vals):
-          continue
-        works.setdefault(sid, []).append((cyc, *vals))
+        take(line)
+  for path in sorted(glob.glob(os.path.join(workdir, "*.gs"))):
+    try:
+      with open(path) as f:
+        for line in f:
+          take(line)
+    except OSError:
+      pass
   return works
 
 #------------------------------------------------------

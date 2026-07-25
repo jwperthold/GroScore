@@ -3,17 +3,49 @@
 
 nt=${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-4}}
 
+# Execution mode (groscore_fe.py submits setup and cycles as separate SLURM jobs so
+# the embarrassingly-parallel cycles can run as an array):
+#   --setup      run the shared setup only (stage 0 + initial equilibration +
+#                make_boresch, which defines the elastic network / restraints),
+#                then write setup.done and exit.
+#   --cycle N    wait for setup.done, then run ONLY cycle N. Safe to run many of
+#                these concurrently: every cycle starts fresh from emin_solv.gro
+#                with new velocities and writes only cycle-suffixed files.
+#   (no args)    legacy: setup followed by all cycles sequentially in one job.
+MODE="all"
+CYCLE_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --setup) MODE="setup"; shift ;;
+    --cycle)
+      # Validate before shifting: `shift 2` with only one argument left fails
+      # without consuming it, which would spin this loop forever.
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "--cycle requires a cycle number"; exit 1
+      fi
+      MODE="cycle"; CYCLE_ARG="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+if [[ "$MODE" == "cycle" && ! "$CYCLE_ARG" =~ ^[0-9]+$ ]]; then
+  echo "--cycle requires a positive integer (got '$CYCLE_ARG')"; exit 1
+fi
+
 # Safety check: Exit if any files were modified within the last 70 minutes
 # This prevents running simulations while setup is still in progress
-# 60 minutes matches the timeout duration for individual simulation steps
-NUMBER_FILES=$(ls -1 2>/dev/null | wc -l)
-RECENT_FILES=$(find . -maxdepth 1 -type f -mmin -70 2>/dev/null | wc -l)
-if [[ $NUMBER_FILES -lt 4 ]]; then
-  echo "Safety check: Starting simulation from scratch."
-elif [[ $RECENT_FILES -gt 2 ]]; then
-  echo "Safety check: Files in this directory were modified within the last 70 minutes."
-  echo "Exiting to avoid conflicts with ongoing setup. Wait 70 minutes and resubmit."
-  exit 0
+# 60 minutes matches the timeout duration for individual simulation steps.
+# Only meaningful in legacy single-job mode: with the setup/cycle split, sibling
+# array tasks are writing files by design, so this check would abort all of them.
+if [[ "$MODE" == "all" ]]; then
+  NUMBER_FILES=$(ls -1 2>/dev/null | wc -l)
+  RECENT_FILES=$(find . -maxdepth 1 -type f -mmin -70 2>/dev/null | wc -l)
+  if [[ $NUMBER_FILES -lt 4 ]]; then
+    echo "Safety check: Starting simulation from scratch."
+  elif [[ $RECENT_FILES -gt 2 ]]; then
+    echo "Safety check: Files in this directory were modified within the last 70 minutes."
+    echo "Exiting to avoid conflicts with ongoing setup. Wait 70 minutes and resubmit."
+    exit 0
+  fi
 fi
 
 export GMX_MAXBACKUP=-1
@@ -22,7 +54,7 @@ export GMX_MAXBACKUP=-1
 # If conf.gro exists but emin_solv.gro doesn't, a previous setup attempt failed
 # partway through. Clean up ALL setup files and start from scratch to avoid
 # stale topology/coordinate mismatches.
-if [[ -f conf.gro && ! -f emin_solv.gro ]]; then
+if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   echo "Restart recovery: setup incomplete (conf.gro exists but emin_solv.gro missing)"
   echo "Cleaning all setup files for fresh re-run..."
   rm -f renumbered.pdb chain_map.gs ion_residues.gs ligand_info.gs ligand_residues.gs
@@ -58,6 +90,50 @@ do
     LIGAND_PARAM=$e
   fi
 done < run.gs
+
+# A completed setup is never redone: make_boresch rewrites index.ndx and the leg
+# .mdp files, which would be pulled out from under any cycle task already running
+# (e.g. if the user re-submits with --restart while jobs are live).
+if [[ "$MODE" == "setup" && -f setup.done ]]; then
+  # Still refresh the top-level analytical record: it is cheap, idempotent, and
+  # may be missing even though the setup is complete (e.g. the results files were
+  # cleared for a fresh scoring run). Without it every structure scores PENDING.
+  if [[ -f boresch_analytical.gs ]]; then
+    DGREL=$(awk '$1=="dG_release_kJ_mol"{print $2}' boresch_analytical.gs)
+    mkdir -p ../results_analytical.d
+    echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
+  fi
+  echo "Setup already complete for $STRUCT_ID; nothing to do."
+  exit 0
+fi
+
+# In array mode, wait for the one-off setup job to finish instead of terminating:
+# nothing below (pdb2gmx, the leg .mdp files, index.ndx, numpertres.gs) exists
+# until the setup has defined the restraints. This must happen BEFORE any setup
+# step so a task released early never races the setup job. Exit cleanly -- not by
+# error -- if the setup reported a failure for this structure.
+if [[ "$MODE" == "cycle" ]]; then
+  WAIT_MAX=${GROSCORE_SETUP_WAIT:-21600}   # seconds; default 6 h
+  WAIT_INT=${GROSCORE_SETUP_POLL:-30}
+  waited=0
+  while [[ ! -f setup.done ]]; do
+    # Only a non-OK status is a definitive failure: "OK" is written part-way
+    # through the setup, before the restraints exist.
+    SETUP_STATUS=$(awk -v s="$STRUCT_ID" '$1==s && $2!="OK"{print $2}' ../results_0.gs 2>/dev/null | tail -1)
+    if [[ -n "$SETUP_STATUS" ]]; then
+      echo "Setup for $STRUCT_ID failed ($SETUP_STATUS); cycle $CYCLE_ARG has nothing to run."
+      exit 0
+    fi
+    if [[ $waited -ge $WAIT_MAX ]]; then
+      echo "Timed out after ${waited}s waiting for setup of $STRUCT_ID (cycle $CYCLE_ARG)."
+      exit 1
+    fi
+    [[ $waited -eq 0 ]] && echo "Cycle $CYCLE_ARG waiting for shared setup of $STRUCT_ID ..."
+    sleep $WAIT_INT
+    waited=$((waited+WAIT_INT))
+  done
+  [[ $waited -gt 0 ]] && echo "Setup ready after ${waited}s; starting cycle $CYCLE_ARG."
+fi
 
 # Set force field specific parameters
 # Get absolute path to GroScore root (two levels up from structure directory)
@@ -322,10 +398,15 @@ with open('$PDB2GMX_INPUT', 'w') as f:
 fi
 # with restart and cutout mode, chain_map.gs references the cutout protein
 bl=0
-if [[ ! -f conf_cutout.gro ]]; then
+if [[ "$MODE" != "cycle" && ! -f conf_cutout.gro ]]; then
   bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
 fi
 if [[ $bl -eq 0 ]]; then
+# ===== SETUP PHASE =====================================================
+# Everything the cycles share: stage 0, the initial equilibration, and the
+# restraint definition (elastic network + interface + Boresch) written into the
+# leg .mdp files. Runs once per structure; skipped entirely by --cycle tasks.
+if [[ "$MODE" != "cycle" ]]; then
   # Stage 0: Prepare system up to emin_solv.gro
   if [[ ! -f conf_vacbox.gro ]]; then
     if [[ $CUTOUT -eq 1 ]]; then
@@ -559,23 +640,61 @@ with open('$CUTOUT_PDB', 'w') as f:
   fi
   # Record the analytical Boresch standard-state term (dG_release, kJ/mol) at the
   # top level so groscore_fe.py can read it without unpacking archives.
-  if [[ -f boresch_analytical.gs && ! -f analytical_recorded.done ]]; then
+  # One idempotent file per structure, rewritten on every setup: gating this on a
+  # marker inside the structure directory made it unrecoverable if the top-level
+  # record was ever removed -- the marker said "already recorded" while the value
+  # was gone, and every structure then scored as PENDING with no dG at all.
+  if [[ -f boresch_analytical.gs ]]; then
     DGREL=$(awk '$1=="dG_release_kJ_mol"{print $2}' boresch_analytical.gs)
-    echo "$STRUCT_ID $DGREL" >> ../results_analytical.gs
-    touch analytical_recorded.done
+    mkdir -p ../results_analytical.d
+    echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
   fi
 
-  # Read NUMPERTRES for integration
-  while read -r a b
-  do
-    NUMPERTRES=$a
-  done < numpertres.gs
+  # Setup finished: release any --cycle tasks that are waiting on this marker.
+  touch setup.done
+  echo "Setup complete for $STRUCT_ID (restraints defined)."
+  if [[ "$MODE" == "setup" ]]; then
+    exit 0
+  fi
+fi
+# ===== END SETUP PHASE =================================================
 
-  # Independent equilibration cycles
-  # Each cycle: fresh equilibration -> pull -> short NPT -> push
-  NUMCYCLES=$((MAXRUNS/2))
-  cycle=1
-  while [[ $cycle -le $NUMCYCLES ]]; do
+# ===== CYCLE PHASE =====================================================
+# A local force field with NCAA / FeS entries lives in the structure directory.
+# The setup phase exports GMXLIB inside its own block, so re-export it here for
+# --cycle tasks that skip that block, otherwise grompp cannot resolve the include.
+if [[ -d amber19sb.ff ]]; then
+  if [[ -n "${GMXLIB:-}" ]]; then
+    export GMXLIB="$(pwd):${GMXLIB}"
+  else
+    export GMXLIB="$(pwd)"
+  fi
+fi
+
+# Read NUMPERTRES for integration
+while read -r a b
+do
+  NUMPERTRES=$a
+done < numpertres.gs
+
+# Independent equilibration cycles
+# Each cycle: fresh equilibration -> pull -> short NPT -> push.
+# Cycles are independent (each restarts from emin_solv.gro with new velocities),
+# so they can run concurrently as separate array tasks.
+NUMCYCLES=$((MAXRUNS/2))
+if [[ "$MODE" == "cycle" ]]; then
+  if [[ $CYCLE_ARG -gt $NUMCYCLES ]]; then
+    echo "Cycle $CYCLE_ARG exceeds NUMCYCLES=$NUMCYCLES; nothing to do."
+    exit 0
+  fi
+  CYCLE_START=$CYCLE_ARG
+  CYCLE_END=$CYCLE_ARG
+else
+  CYCLE_START=1
+  CYCLE_END=$NUMCYCLES
+fi
+  cycle=$CYCLE_START
+  while [[ $cycle -le $CYCLE_END ]]; do
     echo "=== FE cycle $cycle of $NUMCYCLES ==="
 
     # Full equilibration for this cycle (NVT 1-5 + NPT)
@@ -649,38 +768,74 @@ with open('$CUTOUT_PDB', 'w') as f:
     # --- Work integration: one results_fe.gs line per completed cycle ---
     # Columns: STRUCT_ID cycle W_intro Wunbind_pull Wunbind_dhdl Wrebind_pull Wrebind_dhdl W_remove
     # (all in kJ/mol; groscore_fe.py combines them via the thermodynamic cycle.)
-    if [[ ! -f results_fe_c${cycle}.done ]]; then
+    # Recompute whenever this cycle's result file is missing or still holds NaN --
+    # not merely when the cycle is new. Two cases the .done marker alone misses:
+    #   * a cycle finished by an earlier run has its values only in the legacy
+    #     results_fe.gs, so results_fe.d/ would stay empty for it;
+    #   * a cycle whose legs failed wrote NaNs and marked itself done, so the
+    #     values were never repaired after the legs were re-run.
+    # Integration is cheap (the .xvg.gz are kept), so this backfills in seconds.
+    RESFILE=../results_fe.d/${STRUCT_ID}_c${cycle}.gs
+    # A stored result counts as final only if it is a complete 8-field line with
+    # no NaN; anything else (missing, truncated by a failed integration, or NaN
+    # from a leg that had not finished) is recomputed.
+    NEEDS_RESULT=1
+    if [[ -f $RESFILE ]] && awk 'NR==1 && NF==8 && $0 !~ /NaN/{ok=1} END{exit !ok}' $RESFILE; then
+      NEEDS_RESULT=0
+    fi
+    if [[ $NEEDS_RESULT -eq 1 ]]; then
       for w in boundfwd_${cycle}_dhdl bindfwd_${cycle}_pullf bindfwd_${cycle}_dhdl \
                bindrev_${cycle}_pullf bindrev_${cycle}_dhdl boundrev_${cycle}_dhdl; do
         [[ ! -f ${w}.xvg && -f ${w}.xvg.gz ]] && gunzip ${w}.xvg.gz
       done
+      # Never let a failed integration (crash, missing module, empty output) turn
+      # a field into an empty string: that silently writes a short line which no
+      # NaN check would ever flag for repair. Fall back to NaN so the row stays
+      # 8 fields wide and is retried on the next run.
+      integrate_or_nan() {
+        local out
+        out=$("$@" 2>/dev/null) || out=""
+        [[ -z "$out" ]] && out="NaN"
+        printf '%s' "$out"
+      }
       W_intro="NaN"; Wu_pull="NaN"; Wu_dhdl="NaN"; Wr_pull="NaN"; Wr_dhdl="NaN"; W_remove="NaN"
-      [[ -f boundfwd_${cycle}_dhdl.xvg ]] && W_intro=$(python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd)
-      [[ -f bindfwd_${cycle}_pullf.xvg ]] && Wu_pull=$(python3 ../../utils/integrate.py -f bindfwd_${cycle}_pullf.xvg -nr $NUMPERTRES)
-      [[ -f bindfwd_${cycle}_dhdl.xvg ]]  && Wu_dhdl=$(python3 ../../utils/integrate_dhdl.py -f bindfwd_${cycle}_dhdl.xvg --direction fwd)
-      [[ -f bindrev_${cycle}_pullf.xvg ]] && Wr_pull=$(python3 ../../utils/integrate.py -f bindrev_${cycle}_pullf.xvg -nr $NUMPERTRES)
-      [[ -f bindrev_${cycle}_dhdl.xvg ]]  && Wr_dhdl=$(python3 ../../utils/integrate_dhdl.py -f bindrev_${cycle}_dhdl.xvg --direction rev)
-      [[ -f boundrev_${cycle}_dhdl.xvg ]] && W_remove=$(python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev)
-      echo "$STRUCT_ID $cycle $W_intro $Wu_pull $Wu_dhdl $Wr_pull $Wr_dhdl $W_remove" >> ../results_fe.gs
-      touch results_fe_c${cycle}.done
+      [[ -f boundfwd_${cycle}_dhdl.xvg ]] && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd)
+      [[ -f bindfwd_${cycle}_pullf.xvg ]] && Wu_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwd_${cycle}_pullf.xvg -nr $NUMPERTRES)
+      [[ -f bindfwd_${cycle}_dhdl.xvg ]]  && Wu_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwd_${cycle}_dhdl.xvg --direction fwd)
+      [[ -f bindrev_${cycle}_pullf.xvg ]] && Wr_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrev_${cycle}_pullf.xvg -nr $NUMPERTRES)
+      [[ -f bindrev_${cycle}_dhdl.xvg ]]  && Wr_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrev_${cycle}_dhdl.xvg --direction rev)
+      [[ -f boundrev_${cycle}_dhdl.xvg ]] && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev)
+      # One file per cycle rather than appending to a shared results_fe.gs: with
+      # cycles running as parallel array tasks, many writers would race on the
+      # same file. groscore_fe.py merges results_fe.d/ with any legacy file.
+      mkdir -p ../results_fe.d
+      echo "$STRUCT_ID $cycle $W_intro $Wu_pull $Wu_dhdl $Wr_pull $Wr_dhdl $W_remove" \
+        > $RESFILE
       gzip -f boundfwd_${cycle}_dhdl.xvg bindfwd_${cycle}_pullf.xvg bindfwd_${cycle}_dhdl.xvg \
               bindrev_${cycle}_pullf.xvg bindrev_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg 2>/dev/null
+      # Written last, so the archive check below can treat .done as "fully finished".
+      touch results_fe_c${cycle}.done
     fi
 
     cycle=$((cycle+1))
   done
 
-  # Archive completed structure to reduce inode count
-  # Only if all cycles finished (last cycle's results line was written).
+  # Archive completed structure to reduce inode count.
+  # Only when EVERY cycle has finished -- with cycles running as parallel array
+  # tasks, whichever task finishes last does the archiving. `mkdir` is atomic, so
+  # it elects a single winner even if several tasks finish simultaneously (two
+  # tasks tarring/deleting the same directory would be destructive).
   # Guard the rm behind a successful, non-empty tar so a killed/broken archive
   # can never delete the source directory (a 0-byte tar once wiped a structure).
-  if [[ -f results_fe_c${NUMCYCLES}.done ]]; then
+  DONE_CYCLES=$(ls -1 results_fe_c*.done 2>/dev/null | wc -l)
+  if [[ $DONE_CYCLES -ge $NUMCYCLES ]] && mkdir .archive.lock 2>/dev/null; then
     cd ..
     if tar -czf "${STRUCT_ID}.tar.gz" "${STRUCT_ID}/" && [[ -s "${STRUCT_ID}.tar.gz" ]]; then
       rm -rf "${STRUCT_ID}/"
     else
       echo "Archive failed or empty for ${STRUCT_ID}; keeping directory."
       rm -f "${STRUCT_ID}.tar.gz"
+      rmdir "${STRUCT_ID}/.archive.lock" 2>/dev/null
     fi
   fi
 else
