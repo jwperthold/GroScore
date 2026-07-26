@@ -1,8 +1,5 @@
-; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1) for
-; 1 ns of re-equilibration between the unbinding (bind_fe) and rebinding
-; (bindrev_fe) legs. delta-lambda = 0 (no switching); pull references held fixed
-; at the unbound geometry (make_boresch writes this block with zero rate). No
-; pull force output is needed here.
+; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1)
+; between the unbinding and rebinding legs. No switching (delta-lambda = 0).
 ;
 ; nsteps 250000 * dt 0.004 = 1000 ps.
 
@@ -59,7 +56,7 @@ pbc                      = xyz
 
 gen_vel                  = no
 
-; ---- Free-energy: hold at lambda = 1 (Boresch fully on, interface off) ----
+; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 1
 delta-lambda             = 0
@@ -69,6 +66,7 @@ separate-dhdl-file       = yes
 calc-lambda-neighbors    = 0
 sc-alpha                 = 0
 
+; ---- COM pulling (pull block appended by make_boresch.py) ----
 pull                     = yes
 pull-print-com1          = no
 pull-print-com2          = no

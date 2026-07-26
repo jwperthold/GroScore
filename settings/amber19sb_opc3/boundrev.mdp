@@ -1,7 +1,4 @@
-; boundrev.mdp - Bound-state restraint-removal leg (reverse of boundfwd). The
-; interface restraints are switched OFF in the bound state (lambda 1 -> 0), no
-; pulling. Pure dhdl. Paired with boundfwd for the Crooks-Gaussian-Intersection
-; estimate of the bound-state restraint free energy.
+; boundrev.mdp - Bound-state restraint removal (reverse of boundfwd, lambda 1 -> 0).
 ;
 ; nsteps 375000 * dt 0.004 = 1500 ps.
 
@@ -58,7 +55,7 @@ pbc                      = xyz
 
 gen_vel                  = no
 
-; ---- Free-energy: remove restraints, lambda 1 -> 0 ----
+; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 1
 delta-lambda             = -2.66666667e-06
@@ -68,6 +65,7 @@ separate-dhdl-file       = yes
 calc-lambda-neighbors    = 0
 sc-alpha                 = 0
 
+; ---- COM pulling (pull block appended by make_boresch.py) ----
 pull                     = yes
 pull-print-com1          = no
 pull-print-com2          = no

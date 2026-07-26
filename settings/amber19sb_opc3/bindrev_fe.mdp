@@ -1,7 +1,8 @@
 ; bindrev_fe.mdp - FE rebinding leg (reverse of bind_fe). lambda ramps 1 -> 0:
 ; interface restraints fade back in, Boresch fade out, references move inward
-; from +1.0 nm back to the bound geometry. Pull block appended by make_boresch.py
-; (built with direction 'rev': init offset +1.0 nm, negative rate).
+; from +1.0 nm back to the bound geometry.
+;
+; nsteps 1250000 * dt 0.004 = 5000 ps.
 
 integrator               = md
 nsteps                   = 1250000
@@ -56,16 +57,17 @@ pbc                      = xyz
 
 gen_vel                  = no
 
-; ---- Free-energy: reverse ramp lambda 1 -> 0 ----
+; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 1
-delta-lambda             = -8.0e-07
+delta-lambda             = -8.00000000e-07
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes
 calc-lambda-neighbors    = 0
 sc-alpha                 = 0
 
+; ---- COM pulling (pull block appended by make_boresch.py) ----
 pull                     = yes
 pull-print-com1          = no
 pull-print-com2          = no

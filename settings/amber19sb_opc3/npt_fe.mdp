@@ -1,6 +1,5 @@
 ; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before
-; each FE leg cycle (extended from the 100 ps npt.mdp used by the classic
-; protocol). No pulling, no free-energy switching.
+; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).
 ;
 ; nsteps 250000 * dt 0.004 = 1000 ps.
 

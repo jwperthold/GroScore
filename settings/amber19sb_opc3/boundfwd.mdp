@@ -1,9 +1,5 @@
-; boundfwd.mdp - Bound-state restraint-introduction leg (forward). The interface
-; atom-atom restraints are switched ON in the bound state (k=0 -> kB=full) via a
-; lambda ramp 0 -> 1, with NO pulling (rate 0). Pure dhdl work. This measures the
-; free energy of introducing the restraints in the bound ensemble. The elastic
-; network is present but fixed; no Boresch restraints here. Pull block appended
-; by make_boresch.py (family 'bound').
+; boundfwd.mdp - Bound-state restraint introduction (dhdl only, no pulling).
+; Interface restraints switched ON in the bound state (k=0 -> kB=full).
 ;
 ; nsteps 375000 * dt 0.004 = 1500 ps.
 
@@ -60,7 +56,7 @@ pbc                      = xyz
 
 gen_vel                  = no
 
-; ---- Free-energy: introduce restraints, lambda 0 -> 1 ----
+; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 0
 delta-lambda             = 2.66666667e-06
@@ -70,6 +66,7 @@ separate-dhdl-file       = yes
 calc-lambda-neighbors    = 0
 sc-alpha                 = 0
 
+; ---- COM pulling (pull block appended by make_boresch.py) ----
 pull                     = yes
 pull-print-com1          = no
 pull-print-com2          = no

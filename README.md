@@ -276,7 +276,7 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 ## Absolute Binding Free Energies (GroScore-FE)
 
-> **Experimental / in development.** Force-field support is currently limited to `amber19sb_opc3`.
+> **Experimental / in development.** Sign conventions and convergence are still being validated; see the caveats at the end of this section.
 
 The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, so the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly — turning the many empirical interface restraints into a rigorous, analytically-correctable restraint scheme, so the result approaches experimentally comparable absolute binding free energies.
 
@@ -297,6 +297,12 @@ Run it like the classic engine (same inputs and working-directory layout), subst
 
 ```bash
 python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
+```
+
+All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm36`, `gromos54a8`). Each one's FE `.mdp` files are derived from its own `bind.mdp` / `npt.mdp` / `nptrev.mdp`, so its nonbonded treatment (cutoffs, vdw modifier, dispersion correction) carries over unchanged and only the free-energy settings are added. If you edit a force field's base mdps, regenerate the FE set with:
+
+```bash
+python3 utils/make_fe_mdps.py
 ```
 
 Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`.
