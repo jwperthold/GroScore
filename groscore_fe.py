@@ -51,7 +51,10 @@ import numpy as np
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="GroScore FE: absolute binding free energy via Boresch restraints.")
-parser.add_argument('-n', '--numruns', type=int, default=5, help="Number of bidirectional cycles per structure (default: 5).")
+parser.add_argument('-n', '--numruns', type=int, default=5,
+                    help="TOTAL bidirectional cycles wanted per structure (default: 5). "
+                         "Re-run with a larger value plus --restart to add cycles: only "
+                         "the cycles without a complete result are submitted.")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
 parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
                     choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
@@ -59,7 +62,9 @@ parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout.")
 parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Disable OpenFF small-molecule parametrization.")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ (default: workstation).")
-parser.add_argument('--restart', action='store_true', help="Resubmit jobs even if run.gs exists.")
+parser.add_argument('--restart', action='store_true',
+                    help="Submit again for an existing run: re-queues missing/failed cycles "
+                         "and, with a larger -n, adds new ones.")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job_fe.run into archived (.tar.gz) structures.")
 parser.add_argument('--temp', type=float, default=310.0, help="Temperature in K (default: 310).")
 parser.add_argument('--array-throttle', type=int, default=0, metavar='N',
@@ -182,6 +187,21 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
 
 #------------------------------------------------------
 
+def compact_ranges(nums):
+  """[1,2,3,7,9,10] -> '1-3,7,9-10' (SLURM array index specification)."""
+  parts, start, prev = [], None, None
+  for n in sorted(nums):
+    if start is None:
+      start = prev = n
+    elif n == prev + 1:
+      prev = n
+    else:
+      parts.append(str(start) if start == prev else "%d-%d" % (start, prev))
+      start = prev = n
+  if start is not None:
+    parts.append(str(start) if start == prev else "%d-%d" % (start, prev))
+  return ",".join(parts)
+
 def sbatch_parsable(path):
   """Submit a job script and return its job id (None if submission failed)."""
   try:
@@ -260,8 +280,12 @@ def setup_and_submit(structids, structchains):
     print("No structures to submit.\n"); return
 
   def extract_snippet(sid):
+    # A structure archived after finishing its cycles is unpacked again when more
+    # cycles are added. .archive.lock is inside the tarball, so drop it or the
+    # completed structure could never be re-archived.
     return ("if [[ ! -d \"%s\" && -f \"%s.tar.gz\" ]]; then\n"
-            "  tar -xzf \"%s.tar.gz\"\n  rm \"%s.tar.gz\"\nfi\n" % (sid, sid, sid, sid))
+            "  tar -xzf \"%s.tar.gz\"\n  rm \"%s.tar.gz\"\n"
+            "  rm -rf \"%s/.archive.lock\"\nfi\n" % (sid, sid, sid, sid, sid))
 
   if args.sequential:
     # Legacy layout: one array task per structure, running setup + all cycles
@@ -287,23 +311,42 @@ def setup_and_submit(structids, structchains):
   # or started before the setup files are in place.
   os.makedirs("slurm_fe", exist_ok=True)
   throttle = ("%%%d" % args.array_throttle) if args.array_throttle > 0 else ""
+
+  # -n is the TOTAL number of cycles wanted, so re-running with a larger -n adds
+  # cycles. Only the cycles that have no complete result yet are submitted, so
+  # topping up a structure costs one array task per missing cycle rather than
+  # re-walking everything. Cycles whose result contains NaN count as missing and
+  # are recomputed. The total is passed via GROSCORE_NUMCYCLES because run.gs
+  # cannot be rewritten inside an archived structure.
+  done_cycles = {}
+  for sid, rows_ in read_works("results_fe.gs").items():
+    done_cycles[sid] = {int(r[0]) for r in rows_}
+
   n_setup = n_array = 0
   for sid in live:
+    have = done_cycles.get(sid, set())
+    missing = [c for c in range(1, args.numruns + 1) if c not in have]
+    if not missing:
+      print("  %s: all %d cycles complete, nothing to submit." % (sid, args.numruns))
+      continue
+
     setup_path = os.path.join("slurm_fe", "setup_%s.run" % sid)
     cycles_path = os.path.join("slurm_fe", "cycles_%s.run" % sid)
     with open(setup_path, "w") as f:
       f.write(template + "\n")
       f.write("#SBATCH --job-name=fesetup_%s\n\n" % sid)
       f.write(extract_snippet(sid))
-      f.write("cd %s\n./job.run --setup\n" % sid)
+      f.write("cd %s || exit 1\n./job.run --setup\n" % sid)
     with open(cycles_path, "w") as f:
       f.write(template + "\n")
       f.write("#SBATCH --job-name=fecyc_%s\n" % sid)
-      f.write("#SBATCH --array=1-%d%s\n\n" % (args.numruns, throttle))
-      f.write("cd %s\n./job.run --cycle $SLURM_ARRAY_TASK_ID\n" % sid)
+      f.write("#SBATCH --array=%s%s\n\n" % (compact_ranges(missing), throttle))
+      f.write("export GROSCORE_NUMCYCLES=%d\n" % args.numruns)
+      f.write("cd %s || exit 1\n./job.run --cycle $SLURM_ARRAY_TASK_ID\n" % sid)
 
-    # A structure whose setup already completed (e.g. adding more cycles later)
-    # needs no new setup job and no dependency.
+    # A structure whose setup already completed needs no new setup job and no
+    # dependency. An archived structure has no directory, so its setup job runs
+    # (it unpacks the tarball, then exits early since setup.done is inside).
     dep = ""
     if not os.path.isfile("./%s/setup.done" % sid):
       jid = sbatch_parsable(setup_path)
@@ -312,8 +355,10 @@ def setup_and_submit(structids, structchains):
         n_setup += 1
     if os.system("sbatch %s%s" % (dep, cycles_path)) == 0:
       n_array += 1
+      print("  %s: submitting %d of %d cycles (%s)"
+            % (sid, len(missing), args.numruns, compact_ranges(missing)))
 
-  print("Submitted %d setup job(s) + %d cycle array(s) x %d cycles%s.\n"
+  print("Submitted %d setup job(s) + %d cycle array(s), target %d cycles/structure%s.\n"
         % (n_setup, n_array, args.numruns,
            " (max %d concurrent)" % args.array_throttle if args.array_throttle > 0 else ""))
 
@@ -380,6 +425,43 @@ def read_analytical(filepath, andir="results_analytical.d"):
             break
     except OSError:
       pass
+
+  # Archived structures: the directory is gone, so recover the value from the
+  # tarball. Without this a structure that finished all its cycles and was then
+  # archived scores PENDING forever. Scanning a gzip stream is slow, so the
+  # result is cached into andir and the scan happens at most once.
+  archived = [os.path.basename(p)[:-7] for p in sorted(glob.glob("*.tar.gz"))]
+  archived = [s for s in archived if s not in vals]
+  if archived:
+    import tarfile
+    for sid in archived:
+      found = None
+      try:
+        with tarfile.open("%s.tar.gz" % sid, "r:gz") as tar:
+          for m in tar:
+            if not m.name.endswith("boresch_analytical.gs"):
+              continue
+            fh = tar.extractfile(m)
+            if fh is not None:
+              for raw in fh:
+                tmp = raw.decode("utf-8", "replace").split()
+                if len(tmp) >= 2 and tmp[0] == "dG_release_kJ_mol":
+                  try:
+                    found = float(tmp[1])
+                  except ValueError:
+                    pass
+                  break
+            break
+      except (OSError, tarfile.TarError):
+        continue
+      if found is not None:
+        vals[sid] = found
+        try:
+          os.makedirs(andir, exist_ok=True)
+          with open(os.path.join(andir, "%s.gs" % sid), "w") as f:
+            f.write("%s %.6f\n" % (sid, found))
+        except OSError:
+          pass
   return vals
 
 def read_works(filepath, workdir="results_fe.d"):

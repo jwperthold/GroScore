@@ -681,7 +681,11 @@ done < numpertres.gs
 # Each cycle: fresh equilibration -> pull -> short NPT -> push.
 # Cycles are independent (each restarts from emin_solv.gro with new velocities),
 # so they can run concurrently as separate array tasks.
-NUMCYCLES=$((MAXRUNS/2))
+# Total number of cycles wanted. GROSCORE_NUMCYCLES (exported by the generated
+# SLURM script) takes precedence over run.gs so the total can be raised later to
+# add cycles -- including for archived structures, whose run.gs cannot be
+# rewritten from outside the tarball.
+NUMCYCLES=${GROSCORE_NUMCYCLES:-$((MAXRUNS/2))}
 if [[ "$MODE" == "cycle" ]]; then
   if [[ $CYCLE_ARG -gt $NUMCYCLES ]]; then
     echo "Cycle $CYCLE_ARG exceeds NUMCYCLES=$NUMCYCLES; nothing to do."
@@ -829,6 +833,14 @@ fi
   # can never delete the source directory (a 0-byte tar once wiped a structure).
   DONE_CYCLES=$(ls -1 results_fe_c*.done 2>/dev/null | wc -l)
   if [[ $DONE_CYCLES -ge $NUMCYCLES ]] && mkdir .archive.lock 2>/dev/null; then
+    # Last chance to lift the analytical term out of the structure directory:
+    # once this is a tarball, boresch_analytical.gs is unreachable to the scorer
+    # and the structure would score PENDING forever despite having every cycle.
+    if [[ -f boresch_analytical.gs ]]; then
+      DGREL=$(awk '$1=="dG_release_kJ_mol"{print $2}' boresch_analytical.gs)
+      mkdir -p ../results_analytical.d
+      echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
+    fi
     cd ..
     if tar -czf "${STRUCT_ID}.tar.gz" "${STRUCT_ID}/" && [[ -s "${STRUCT_ID}.tar.gz" ]]; then
       rm -rf "${STRUCT_ID}/"

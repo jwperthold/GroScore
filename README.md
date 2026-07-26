@@ -317,6 +317,18 @@ Useful options:
 
 Re-running the command later re-submits only what is missing (a structure whose `setup.done` exists gets no new setup job) and re-scores whatever has completed.
 
+### Adding cycles later
+
+`-n` is the **total** number of cycles wanted, so convergence can be extended at any time by asking for more:
+
+```bash
+python3 ../groscore_fe.py -s sp.gs -n 200 --restart      # was -n 50
+```
+
+Only cycles without a complete result are queued — the array is submitted as an explicit index list (e.g. `--array=51-200`), so topping up costs one task per missing cycle instead of re-walking the finished ones. A cycle whose stored result contains `NaN` counts as missing and is recomputed; if its simulation legs are still present this is just re-integration (seconds, no MD).
+
+This works for **archived** structures too: the setup job unpacks the tarball, the new cycles run, and the structure is re-archived once the new total is reached. The requested total is passed to the jobs via `GROSCORE_NUMCYCLES`, since `run.gs` inside a tarball cannot be rewritten. Lower `-n` values are not destructive — they simply queue nothing new.
+
 ### Compute cost
 
 Each cycle runs five switching/hold legs plus one equilibration, all in the same `-d 1.5` box as the classic protocol:
