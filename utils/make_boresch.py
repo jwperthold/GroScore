@@ -49,7 +49,7 @@ parser.add_argument('-f', '--input', type=str, default="npt_init_cluster.gro", h
 parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B (ligand side).")
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
-parser.add_argument('--pull-rate', type=float, default=0.0002, help="Pull rate in nm/ps (default: 0.0002).")
+parser.add_argument('--pull-rate', type=float, default=0.0001, help="Pull rate in nm/ps (default: 0.0001, i.e. 1.0 nm over the 10 ns unbinding leg).")
 args = parser.parse_args()
 
 #------------------------------------------------------
@@ -429,6 +429,10 @@ with open("boresch_analytical.gs", "w") as f:
   f.write("ref_r_bound_nm        %.6f\n" % ref_r)
   f.write("r0_release_nm         %.6f\n" % r0_release)
   f.write("pull_dist_nm          %.6f\n" % args.pull_dist)
+  # Recorded so the work integration always uses the rate this structure was
+  # actually run with: integrate.py multiplies the time integral of the pull
+  # force by the rate, so a mismatch silently rescales every pull work.
+  f.write("pull_rate_nm_ps       %.8f\n" % args.pull_rate)
   f.write("ref_thetaA_deg        %.4f\n" % ref_thA)
   f.write("ref_thetaB_deg        %.4f\n" % ref_thB)
   f.write("ref_phiA_deg          %.4f\n" % ref_phA)

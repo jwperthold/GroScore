@@ -342,14 +342,16 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 | Leg | Purpose | Length |
 |---|---|---|
 | equilibration | NVT 1–5 + 1 ns NPT | ~1.1 ns |
-| `boundfwd` | bound restraints on (dhdl) | 1.5 ns |
-| `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 5 ns |
+| `boundfwd` | bound restraints on (dhdl) | 1 ns |
+| `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 10 ns |
 | `nptrev_fe` | hold unbound | 1 ns |
-| `bindrev_fe` | rebind | 5 ns |
-| `boundrev` | bound restraints off (dhdl) | 1.5 ns |
-| **per cycle** | | **~15 ns** |
+| `bindrev_fe` | rebind | 10 ns |
+| `boundrev` | bound restraints off (dhdl) | 1 ns |
+| **per cycle** | | **~24 ns** |
 
-At the default 5 cycles this is **~76 ns/structure** (≈ 5 × 15 ns + one initial equilibration), about **1.5× the computational cost** for the same cycle count. The bound-restraint legs are only 1.5 ns because that switch converges quickly (small `dG_intro` uncertainty); the unbinding/rebinding legs stay at 5 ns.
+At the default 5 cycles this is **~120 ns/structure** (≈ 5 × 24 ns + one initial equilibration), roughly **2× the computational cost** for the same cycle count.
+
+The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges quickly, so those legs are only 1 ns; the unbinding/rebinding legs dominate the CGI error and get 10 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.0001 nm/ps over 10 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work.
 
 ## Heteroatom Support
 

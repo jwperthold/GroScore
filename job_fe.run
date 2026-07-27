@@ -631,7 +631,7 @@ with open('$CUTOUT_PDB', 'w') as f:
   # pull block to each leg .mdp and emits the analytical Boresch term.
   echo "Generating FE restraints (interface + Boresch + elastic network)."
   cp $MDP_DIR/bind_fe.mdp $MDP_DIR/bindrev_fe.mdp $MDP_DIR/nptrev_fe.mdp $MDP_DIR/boundfwd.mdp $MDP_DIR/boundrev.mdp ./
-  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist 1.0 --pull-rate 0.0002 > numpertres.gs
+  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist 1.0 --pull-rate 0.0001 > numpertres.gs
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
     echo "Boresch anchor selection failed."
@@ -676,6 +676,15 @@ while read -r a b
 do
   NUMPERTRES=$a
 done < numpertres.gs
+
+# Pull rate this structure was set up with. integrate.py turns the time integral
+# of the pull force into work by multiplying by the rate, so it must match the
+# rate written into the .mdp -- read it back rather than hard-coding, so cycles
+# re-integrated later (backfill/repair) use the rate they were actually run at.
+PULL_RATE=$(awk '$1=="pull_rate_nm_ps"{print $2}' boresch_analytical.gs 2>/dev/null)
+if [[ -z "$PULL_RATE" ]]; then
+  PULL_RATE=0.0001
+fi
 
 # Independent equilibration cycles
 # Each cycle: fresh equilibration -> pull -> short NPT -> push.
@@ -804,9 +813,9 @@ fi
       }
       W_intro="NaN"; Wu_pull="NaN"; Wu_dhdl="NaN"; Wr_pull="NaN"; Wr_dhdl="NaN"; W_remove="NaN"
       [[ -f boundfwd_${cycle}_dhdl.xvg ]] && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd)
-      [[ -f bindfwd_${cycle}_pullf.xvg ]] && Wu_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwd_${cycle}_pullf.xvg -nr $NUMPERTRES)
+      [[ -f bindfwd_${cycle}_pullf.xvg ]] && Wu_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwd_${cycle}_pullf.xvg -nr $NUMPERTRES -r $PULL_RATE)
       [[ -f bindfwd_${cycle}_dhdl.xvg ]]  && Wu_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwd_${cycle}_dhdl.xvg --direction fwd)
-      [[ -f bindrev_${cycle}_pullf.xvg ]] && Wr_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrev_${cycle}_pullf.xvg -nr $NUMPERTRES)
+      [[ -f bindrev_${cycle}_pullf.xvg ]] && Wr_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrev_${cycle}_pullf.xvg -nr $NUMPERTRES -r $PULL_RATE)
       [[ -f bindrev_${cycle}_dhdl.xvg ]]  && Wr_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrev_${cycle}_dhdl.xvg --direction rev)
       [[ -f boundrev_${cycle}_dhdl.xvg ]] && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev)
       # One file per cycle rather than appending to a shared results_fe.gs: with

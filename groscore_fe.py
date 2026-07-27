@@ -31,10 +31,12 @@
 #   * dhdl work (integrate_dhdl.py) is the physical switching work along the ramp:
 #       forward  ramp lambda 0->1 : W_fwd = int_0^1 <dH/dl> dl
 #       reverse  ramp lambda 1->0 : W_rev = int_1^0 <dH/dl> dl  (opposite sign)
-#   * pull work (integrate.py) returns -rate*int F dt with rate hard-coded +0.0002.
+#   * pull work (integrate.py) returns -rate * int F dt, where the rate is passed
+#     via -r (job_fe.run reads it back from boresch_analytical.gs, so a cycle is
+#     always integrated with the rate it was actually run at).
 #     Mapping to physical work W = rate_actual * int F dt:
-#       forward leg (rate +0.0002): W_pull_fwd = -(integrate.py output)
-#       reverse leg (rate -0.0002): W_pull_rev = +(integrate.py output)
+#       forward leg (rate +|r|): W_pull_fwd = -(integrate.py output)
+#       reverse leg (rate -|r|): W_pull_rev = +(integrate.py output)
 #   * A forward/reverse pair is combined with Crooks by feeding
 #       pulls  = W_forward
 #       pushes = -W_reverse

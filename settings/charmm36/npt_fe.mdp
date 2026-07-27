@@ -1,4 +1,5 @@
-; boundrev.mdp - Bound-state restraint removal (reverse of boundfwd, lambda 1 -> 0).
+; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before
+; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).
 ;
 ; nsteps 250000 * dt 0.004 = 1000 ps.
 
@@ -13,8 +14,8 @@ compressed-x-precision   = 1000
 nstvout                  = 0
 nstfout                  = 0
 nstenergy                = 2000
-nstlog                   = 10000
-nstcalcenergy            = 100
+nstlog                   = 2000
+nstcalcenergy            = 2000
 
 comm-mode                = linear
 nstcomm                  = 1000
@@ -27,26 +28,26 @@ lincs_order              = 6
 
 cutoff-scheme            = Verlet
 ns_type                  = grid
-rlist                    = 1.0
-rcoulomb                 = 1.0
-rvdw                     = 1.0
+rlist                    = 1.2
+rcoulomb                 = 1.2
+rvdw                     = 1.2
+rvdw-switch              = 1.0
 
 vdwtype                  = cutoff
-vdw-modifier             = Potential-shift
+vdw-modifier             = force-switch
 
 coulombtype              = PME
-fourierspacing           = 0.125
 
-DispCorr                 = EnerPres
+DispCorr                 = no
 
 tcoupl                   = V-rescale
 tc-grps                  = Protein Non-Protein
 tau_t                    = 0.1  0.1
 ref_t                    = 310  310
 
-pcoupl                   = Parrinello-Rahman
+pcoupl                   = Berendsen
 pcoupltype               = isotropic
-tau_p                    = 2.0
+tau_p                    = 0.5
 ref_p                    = 1.0
 compressibility          = 4.5e-5
 refcoord_scaling         = com
@@ -54,22 +55,3 @@ refcoord_scaling         = com
 pbc                      = xyz
 
 gen_vel                  = no
-
-; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
-free-energy              = yes
-init-lambda              = 1
-delta-lambda             = -4.00000000e-06
-dhdl-derivatives         = yes
-nstdhdl                  = 500
-separate-dhdl-file       = yes
-calc-lambda-neighbors    = 0
-sc-alpha                 = 0
-
-; ---- COM pulling (pull block appended by make_boresch.py) ----
-pull                     = yes
-pull-print-com1          = no
-pull-print-com2          = no
-pull-print-ref-value     = no
-pull-print-components    = no
-pull-nstxout             = 0
-pull-nstfout             = 0
