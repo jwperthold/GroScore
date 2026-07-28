@@ -1,9 +1,9 @@
 ; boundrev.mdp - Bound-state restraint removal (reverse of boundfwd, lambda 1 -> 0).
 ;
-; nsteps 250000 * dt 0.004 = 1000 ps.
+; nsteps 375000 * dt 0.004 = 1500 ps.
 
 integrator               = md
-nsteps                   = 250000
+nsteps                   = 375000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -58,7 +58,7 @@ gen_vel                  = no
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 1
-delta-lambda             = -4.00000000e-06
+delta-lambda             = -2.66666667e-06
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

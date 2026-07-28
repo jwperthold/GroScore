@@ -307,6 +307,14 @@ python3 utils/make_fe_mdps.py
 
 Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`.
 
+To inspect convergence, plot the work distributions of every leg — one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right:
+
+```bash
+python3 ../utils/plot_fe_works.py -o fe_works.png
+```
+
+The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means.
+
 ### Job layout (parallel cycles)
 
 Convergence needs many cycles, and cycles are independent — each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
@@ -342,16 +350,16 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 | Leg | Purpose | Length |
 |---|---|---|
 | equilibration | NVT 1–5 + 1 ns NPT | ~1.1 ns |
-| `boundfwd` | bound restraints on (dhdl) | 1 ns |
-| `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 10 ns |
+| `boundfwd` | bound restraints on (dhdl) | 1.5 ns |
+| `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 20 ns |
 | `nptrev_fe` | hold unbound | 1 ns |
-| `bindrev_fe` | rebind | 10 ns |
-| `boundrev` | bound restraints off (dhdl) | 1 ns |
-| **per cycle** | | **~24 ns** |
+| `bindrev_fe` | rebind | 20 ns |
+| `boundrev` | bound restraints off (dhdl) | 1.5 ns |
+| **per cycle** | | **~45 ns** |
 
-At the default 5 cycles this is **~120 ns/structure** (≈ 5 × 24 ns + one initial equilibration), roughly **2× the computational cost** for the same cycle count.
+At the default 5 cycles this is **~226 ns/structure** (≈ 5 × 45 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
 
-The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges quickly, so those legs are only 1 ns; the unbinding/rebinding legs dominate the CGI error and get 10 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.0001 nm/ps over 10 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work.
+The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges well at 1.5 ns — its forward and reverse work distributions overlap — while the unbinding/rebinding legs dominate the CGI error and get 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work.
 
 ## Heteroatom Support
 

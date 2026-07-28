@@ -3,10 +3,10 @@
 ; Boresch-r references move outward at pull-rate to +1.0 nm. The full pull block
 ; (groups + coords) is appended by make_boresch.py.
 ;
-; nsteps 2500000 * dt 0.004 = 10000 ps.
+; nsteps 5000000 * dt 0.004 = 20000 ps.
 
 integrator               = md
-nsteps                   = 2500000
+nsteps                   = 5000000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -59,7 +59,7 @@ gen_vel                  = no
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 0
-delta-lambda             = 4.00000000e-07
+delta-lambda             = 2.00000000e-07
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

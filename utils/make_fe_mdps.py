@@ -8,18 +8,19 @@ SET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8"]
 
 # leg -> (base mdp, ps of simulated time, init-lambda, lambda direction, pull force out)
-#   unbinding/rebinding : 10000 ps (0.0001 nm/ps -> 1.0 nm separation). Lengthened
-#                         from 5 ns because this leg dominates the CGI uncertainty.
-#   bound restraint legs: 1000 ps  (converges quickly, small dG_intro error)
+#   unbinding/rebinding : 20000 ps (0.00005 nm/ps -> 1.0 nm separation). This leg
+#                         dominates the CGI uncertainty: at 10 ns the forward and
+#                         reverse work distributions still had zero overlap.
+#   bound restraint legs: 1500 ps  (converges well; overlapping distributions)
 #   hold / equilibration: 1000 ps
 # NOTE: the pull rate must satisfy rate * unbinding_time = pull distance (1.0 nm).
 # It lives in make_boresch.py (--pull-rate) and is consumed by integrate.py (-r),
 # so all three must be changed together.
 LEGS = {
-    "bind_fe.mdp":    ("bind.mdp",   10000.0, 0, +1, 500),
-    "bindrev_fe.mdp": ("bindrev.mdp", 10000.0, 1, -1, 500),
-    "boundfwd.mdp":   ("bind.mdp",    1000.0, 0, +1, 0),
-    "boundrev.mdp":   ("bind.mdp",    1000.0, 1, -1, 0),
+    "bind_fe.mdp":    ("bind.mdp",   20000.0, 0, +1, 500),
+    "bindrev_fe.mdp": ("bindrev.mdp", 20000.0, 1, -1, 500),
+    "boundfwd.mdp":   ("bind.mdp",    1500.0, 0, +1, 0),
+    "boundrev.mdp":   ("bind.mdp",    1500.0, 1, -1, 0),
     "nptrev_fe.mdp":  ("nptrev.mdp",  1000.0, 1,  0, 0),
     "npt_fe.mdp":     ("npt.mdp",     1000.0, None, None, None),
 }
