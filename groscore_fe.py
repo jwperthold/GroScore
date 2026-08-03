@@ -587,7 +587,7 @@ def main():
   print("")
   print("#################################")
   print("#                               #")
-  print("#       GroScore-FE 0.1         #")
+  print("#          GroScore-FE          #")
   print("#                               #")
   print("#################################")
   print("")
