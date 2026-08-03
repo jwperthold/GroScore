@@ -12,6 +12,7 @@ import numpy as np
 parser = argparse.ArgumentParser(description="Do force integration.")
 parser.add_argument('-f','--file', type=str, default="bind_pullf.xvg", required=True, help="Forces.")
 parser.add_argument('-nr','--numpertres', type=int, default=666, required=True, help="Number of perturbed restraints to integrate.")
+parser.add_argument('-r','--rate', type=float, default=0.0002, required=False, help="Pull rate in nm/ps used in the simulation (default: 0.0002). The trapezoidal sum below is the time integral of the pull force; multiplying by the rate converts it to work, so this MUST match the rate in the .mdp or the work is scaled wrongly.")
 args=parser.parse_args()
 
 #------------------------------------------------------
@@ -59,11 +60,11 @@ f = open(dg_file, "w")
 fb = open(dgdt_file, "w")
 while i < len(temp) - 1:
   DG += (temp[i+1] - temp[i]) * (forces[i] + forces[i+1]) / 2
-  f.write(str(temp[i] + (temp[i+1] - temp[i])/2.0)+"\t"+str(DG*0.0002)+"\n")
+  f.write(str(temp[i] + (temp[i+1] - temp[i])/2.0)+"\t"+str(DG*args.rate)+"\n")
   fb.write(str(temp[i] + (temp[i+1] - temp[i])/2.0)+"\t"+str((forces[i] + forces[i+1]) / 2)+"\n")
   i += 1
 f.close()
 fb.close()
 
-print(-1.0*DG*0.0002)
+print(-1.0*DG*args.rate)
 

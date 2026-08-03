@@ -273,6 +273,93 @@ Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at 300 K
 
 On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per structure for 5 cycles** (including all equilibration legs and 5 × 10 ns of SMD). Cost scales linearly with cycle count and roughly linearly with system size; the interface-cutout mode (default) keeps system size near-constant across most complexes, so per-structure walltimes are tightly clustered. The benchmark directory contains `compute_walltime.py`, which extracts realised walltimes and PFLOP counts from completed SLURM logs.
 
+## Absolute Binding Free Energies (GroScore-FE)
+
+> **Experimental / in development.** Sign conventions and convergence are still being validated; see the caveats at the end of this section.
+
+The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, so the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly — turning the many empirical interface restraints into a rigorous, analytically-correctable restraint scheme, so the result approaches experimentally comparable absolute binding free energies.
+
+During unbinding, the atom–atom interface restraints are gradually switched off while a set of **Boresch orientational restraints** (one distance, two angles, three dihedrals, built on backbone centre-of-mass anchor groups) is switched on. Because the Boresch restraint has a closed-form standard-state free energy (Boresch et al. 2003), its contribution in the separated state is computed analytically rather than simulated. Every leg is run forward and reverse and combined with the Crooks–Gaussian-Intersection estimator, exactly as in the classic engine.
+
+The absolute binding free energy is assembled from a thermodynamic cycle:
+
+```
+dG_bind = -( dG_intro + dG_unbind + dG_release )
+   dG_intro    interface restraints introduced in the bound state   (dhdl)
+   dG_unbind    interface -> Boresch handoff + separation to 1.0 nm  (pull work + dhdl)
+   dG_release   analytical Boresch standard-state term               (closed form)
+```
+
+Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each cycle uses 1 ns equilibration, a 1.0 nm separation, and adds bound-state restraint legs (see [Compute cost](#compute-cost) below).
+
+Run it like the classic engine (same inputs and working-directory layout), substituting the script name:
+
+```bash
+python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
+```
+
+All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm36`, `gromos54a8`). Each one's FE `.mdp` files are derived from its own `bind.mdp` / `npt.mdp` / `nptrev.mdp`, so its nonbonded treatment (cutoffs, vdw modifier, dispersion correction) carries over unchanged and only the free-energy settings are added. If you edit a force field's base mdps, regenerate the FE set with:
+
+```bash
+python3 utils/make_fe_mdps.py
+```
+
+Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`.
+
+To inspect convergence, plot the work distributions of every leg — one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right:
+
+```bash
+python3 ../utils/plot_fe_works.py -o fe_works.png
+```
+
+The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means.
+
+### Job layout (parallel cycles)
+
+Convergence needs many cycles, and cycles are independent — each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
+
+1. a one-off **setup** job (stage 0 + initial equilibration + restraint definition), and
+2. a **cycle job array** (`--array=1-N`), submitted with `--dependency=afterany` on the setup job.
+
+Because all cycles share the restraints (elastic network, interface, Boresch) that only the setup defines, a cycle task that SLURM starts early does **not** terminate — `job_fe.run --cycle N` waits for the setup's `setup.done` marker (polling every 30 s, 6 h cap; override with `GROSCORE_SETUP_WAIT`/`GROSCORE_SETUP_POLL`). If the setup reports a failure, the waiting tasks exit cleanly rather than hanging. Each cycle writes its own `results_fe.d/<id>_c<n>.gs` (no concurrent appends to a shared file), and whichever task finishes last archives the structure — elected atomically via `mkdir`, so two tasks can never tar/delete the same directory.
+
+Useful options:
+
+- `--array-throttle N` — cap concurrent cycle tasks per structure (SLURM `%N`). Rarely needed: several GROMACS processes sharing one GPU give higher *aggregate* throughput than one at a time, because a single small-system run leaves the GPU idle during CPU-side work. Leave it unset unless you run out of GPU memory.
+- `--sequential` — legacy layout: one job per structure running all cycles in sequence.
+
+Re-running the command later re-submits only what is missing (a structure whose `setup.done` exists gets no new setup job) and re-scores whatever has completed.
+
+### Adding cycles later
+
+`-n` is the **total** number of cycles wanted, so convergence can be extended at any time by asking for more:
+
+```bash
+python3 ../groscore_fe.py -s sp.gs -n 200 --restart      # was -n 50
+```
+
+Only cycles without a complete result are queued — the array is submitted as an explicit index list (e.g. `--array=51-200`), so topping up costs one task per missing cycle instead of re-walking the finished ones. A cycle whose stored result contains `NaN` counts as missing and is recomputed; if its simulation legs are still present this is just re-integration (seconds, no MD).
+
+This works for **archived** structures too: the setup job unpacks the tarball, the new cycles run, and the structure is re-archived once the new total is reached. The requested total is passed to the jobs via `GROSCORE_NUMCYCLES`, since `run.gs` inside a tarball cannot be rewritten. Lower `-n` values are not destructive — they simply queue nothing new.
+
+### Compute cost
+
+Each cycle runs five switching/hold legs plus one equilibration, all in the same `-d 1.5` box as the classic protocol:
+
+| Leg | Purpose | Length |
+|---|---|---|
+| equilibration | NVT 1–5 + 1 ns NPT | ~1.1 ns |
+| `boundfwd` | bound restraints on (dhdl) | 1.5 ns |
+| `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 20 ns |
+| `nptrev_fe` | hold unbound | 1 ns |
+| `bindrev_fe` | rebind | 20 ns |
+| `boundrev` | bound restraints off (dhdl) | 1.5 ns |
+| **per cycle** | | **~45 ns** |
+
+At the default 5 cycles this is **~226 ns/structure** (≈ 5 × 45 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
+
+The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges well at 1.5 ns — its forward and reverse work distributions overlap — while the unbinding/rebinding legs dominate the CGI error and get 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work.
+
 ## Heteroatom Support
 
 ### Crystal Waters
