@@ -25,6 +25,7 @@ GroScore estimates binding affinities between protein pairs using short steered 
 - **Elastic Network Restraints** - Maintains protein stability when simulating only interface-proximal atoms (within a distance cutoff) for faster computation
 - **Smart Fragment Handling** - Chain break detection, small gap filling (< 4 residues), minimum fragment size enforcement, isolated cap removal, and chain boundary protection
 - **Structure Validation** - Built-in checks for broken loops and topological knots
+- **Rebinding QC** - Every cycle is checked for whether the push leg actually restored the original complex; structures that did not re-bind are flagged in the score files
 
 ## Requirements
 
@@ -145,6 +146,7 @@ python ../groscore.py
 - `--slurm` - SLURM template name from `slurm/` directory (default: `workstation`). Templates are plain `#SBATCH`-prefixed shell scripts; ship with `slurm/workstation.sh` (single workstation) and `slurm/vsc5.sh` (VSC-5 cluster). To target a different system, drop a new `<name>.sh` template into `slurm/` and pass `--slurm <name>`.
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 - `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures (skipped by default)
+- `--rmsd-warn` - Threshold in Å for the [rebinding QC](#rebinding-sanity-check-qc) (default: 10.0). Only flags structures, never changes a score
 
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
@@ -179,6 +181,63 @@ Note that CGI requires at least 20 cycles to fit forward and reverse work distri
 - **Units**: kJ·mol⁻¹. The score is the integrated pulling work along the unbinding/rebinding coordinate, averaged over cycles.
 - **Convert to pKd**: use the linear fits provided per force field in the [Benchmark Data](#benchmark-data-haddocking-protein-protein-affinity-benchmark) section, e.g. for AMBER19SB/OPC3: `pKd ≈ -0.0176 × score + 3.4513`. These coefficients are calibrated on the HADDOCKING benchmark.
 - **Uncertainty**: the `CI95` column is a 95 % confidence interval on the score from the between-cycle scatter.
+- **Trustworthiness**: check the `RMSD_flag` column before using a score — see [Rebinding Sanity Check (QC)](#rebinding-sanity-check-qc) below.
+
+## Rebinding Sanity Check (QC)
+
+A cycle's work only describes the intended binding event if the push leg actually put the complex back together. If the partners re-associate in a different pose — or drift apart and never return — the integrated force curve is still a number, just not the number you wanted. Every cycle of both engines is therefore checked automatically; no extra command is needed.
+
+`utils/rebound_rmsd.py` measures the **backbone RMSD between the bound state the cycle was equilibrated in and the state the rebinding leg ended in**:
+
+| Engine | Reference (bound) | Query (re-bound) | Stored in |
+|--------|-------------------|------------------|-----------|
+| `groscore.py` (classic) | `npt_c<N>.gro` | `bindrev_<2N>.gro` | 3rd column of `results_<2N>.gs` |
+| `groscore_fe.py` (FE) | `npt_c<N>.gro` | `bindrev_<N>.gro` | 9th column of `results_fe.d/<id>_c<N>.gs` |
+
+### Reading the result
+
+`groscore.py` adds three columns to `scores_avg.gs` / `scores_cgi.gs` (and to the per-cycle `scores_*_c<N>.gs`), summarising exactly the cycles that entered the score:
+
+```
+# Structure_ID  Score  CI95  Cycles_Used  RMSD_mean_A  RMSD_max_A  RMSD_flag
+1A2K   -117.9   2.5   5   1.75   1.98   OK
+2OOB    -92.4   2.1   5  11.45  18.70   HIGH_RMSD
+```
+
+and closes the run with a summary of what went wrong, if anything:
+
+```
+Rebinding sanity check (backbone RMSD of the re-bound structure, warn > 10.0 A):
+  25 simulations analyzed: mean 2.14 A, median 1.88 A, max 18.70 A
+
+  WARNING: 1 structure did not re-bind properly in at least one cycle.
+  Their scores are reported but should be treated with caution
+  (flagged HIGH_RMSD in scores_avg.gs / scores_cgi.gs):
+    2OOB                 c1=18.7, c4=12.3
+```
+
+The console stays short whatever the screen size: one aggregate line, then the ten worst structures (five bad cycles each) and a count of the rest. `grep HIGH_RMSD scores_avg.gs` gives the complete list. Individual per-cycle values are printed once each into the structure's own SLURM log, not into the summary.
+
+`groscore_fe.py` behaves the same way, with `RMSD_mean_A` / `RMSD_max_A` columns and a `HIGH_RMSD` entry in the `Note` column of `scores_fe.gs`. There the check has a second meaning: the thermodynamic cycle is only closed if the rebinding leg returned the system to the state the bound leg started from.
+
+### Interpretation
+
+| RMSD | Meaning |
+|------|---------|
+| 1–5 Å | Normal. Thermal fluctuation plus whatever the interface relaxed into during the cycle. |
+| 5–10 Å | Worth a look. Partial rebinding, a shifted interface, or a flexible loop that did not recover. |
+| > 10 Å | `HIGH_RMSD`. The partners did not return to the original pose. |
+| `nan` | Not measured — a run that predates the check, or a failed measurement. Never an error. |
+
+The threshold is `--rmsd-warn` (default 10.0 Å) on both engines. **Scores and free energies are always computed and reported**: the check never aborts a simulation, never drops a cycle and never changes a number. It tells you which results to distrust — with a handful of flagged cycles, the usual response is to add cycles (`-n` plus `--restart`) and see whether the structure's score is dominated by them.
+
+A single measurement can also be taken by hand from inside a structure directory (`<project>/<structure_id>/`):
+
+```bash
+python3 ../../utils/rebound_rmsd.py --ref npt_c3.gro --query bindrev_6.gro -v
+# 1.9750
+# rebound_rmsd: [ref=sf, query=sf]
+```
 
 ## Benchmark Data (HADDOCKING Protein-Protein Affinity Benchmark)
 
@@ -252,15 +311,18 @@ Independent Cycles (N cycles, default 5)
 ├── Cycle 1:
 │   ├── Fresh full equilibration (NVT 1-5 + NPT)
 │   ├── Pull (unbinding SMD)
-│   └── Short NPT + Push (binding SMD)
+│   ├── Short NPT + Push (binding SMD)
+│   └── Rebinding QC (backbone RMSD, re-bound vs. bound)
 ├── Cycle 2:
 │   ├── Fresh full equilibration (NVT 1-5 + NPT)
 │   ├── Pull (unbinding SMD)
-│   └── Short NPT + Push (binding SMD)
+│   ├── Short NPT + Push (binding SMD)
+│   └── Rebinding QC (backbone RMSD, re-bound vs. bound)
 └── ... (each cycle independent, new random velocities)
 
 Final: Analysis
-└── Statistical scoring (2 methods)
+├── Statistical scoring (2 methods)
+└── Rebinding QC summary (flags HIGH_RMSD structures)
 ```
 
 Each cycle starts fresh from `emin_solv.gro` with independent equilibration, providing statistically independent samples for robust scoring.
@@ -304,7 +366,7 @@ All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm3
 python3 utils/make_fe_mdps.py
 ```
 
-Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`.
+Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc) — the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, so `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
 
 To inspect convergence, plot the work distributions of every leg — one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right:
 
@@ -448,7 +510,7 @@ This ensures proper topology generation even for structures with missing loops o
 
 ## File Formats
 
-- `.gs` - GroScore data files (tab-separated, `#` for comments)
+- `.gs` - GroScore data files (tab-separated, `#` for comments). Per-cycle results carry the work value plus the [rebinding QC](#rebinding-sanity-check-qc) RMSD; score files carry `Score`, `CI95`, `Cycles_Used` and the QC columns
 - `.mdp` - GROMACS molecular dynamics parameter files
 - `.gro` - GROMACS coordinate files
 - `.xvg` - GROMACS output data (force curves)
@@ -490,7 +552,8 @@ GroScore/
     ├── check_entangledloops.py      # Topological knot detection
     ├── make_cutout.py               # Interface region extraction
     ├── make_disres_en.py            # Distance restraints & elastic network
-    └── integrate.py                 # Force curve integration
+    ├── integrate.py                 # Force curve integration
+    └── rebound_rmsd.py              # Rebinding QC (re-bound vs. bound backbone RMSD)
 ```
 
 ## Troubleshooting
@@ -502,6 +565,10 @@ GroScore/
 **ENTANGLED status**: Topological knots detected. The protein structure may have threading artifacts that would invalidate pulling simulations.
 
 **FAILED status**: Stage-0 setup or energy minimization did not complete — e.g. `emin_vac.gro` was not produced (grompp hit a topology/coordinate mismatch) or the entanglement check returned no result. Check the structure's SLURM output for the first GROMACS error. Any status other than `OK` excludes the structure from scoring.
+
+**HIGH_RMSD flag**: The [rebinding QC](#rebinding-sanity-check-qc) found at least one cycle whose complex did not return to the bound pose. The score is still reported — inspect the flagged cycles (`RMSD_max_A` in the score files, per-cycle values in the third column of `results_<even>.gs`), add cycles with `-n <more> --restart` and check whether the score moves.
+
+**RMSD reported as `nan`**: The measurement was not made — either the run predates the check, or `gmx trjconv`/`gmx rms` failed for that cycle. It never affects the score. Reproduce the failure with `python3 ../../utils/rebound_rmsd.py --ref npt_c<N>.gro --query bindrev_<2N>.gro -v` inside the structure directory; the reason is printed to stderr.
 
 **Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment.
 

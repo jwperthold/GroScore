@@ -637,16 +637,38 @@ with open('$CUTOUT_PDB', 'w') as f:
     if [[ ! -f bindrev_${PUSH_IDX}.gro ]]; then
       gmx mdrun -nt $nt -deffnm bindrev_${PUSH_IDX}
     fi
+    # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state this
+    # cycle was equilibrated in and the state the push leg ended in. A large value
+    # means the partners did not return to the original pose, so the work of this
+    # cycle does not describe the intended binding event. Always computed, never
+    # fatal -- groscore.py flags it (see --rmsd-warn).
+    # A resubmitted job re-walks the cycles it already finished, so a value that
+    # was measured before is read back from the results file rather than paid for
+    # again (the check costs a dozen gmx calls). Only a real number is reused: a
+    # NaN means the measurement never succeeded and is retried.
+    RMSD=$(awk -v s="$STRUCT_ID" '$1==s && NF>=3 && $3!="NaN"{v=$3} END{if(v!="") print v}' \
+             ../results_${PUSH_IDX}.gs 2>/dev/null)
+    if [[ -z "$RMSD" ]]; then
+      RMSD="NaN"
+      if [[ -f npt_c${cycle}.gro && -f bindrev_${PUSH_IDX}.gro ]]; then
+        RMSD=$(python3 ../../utils/rebound_rmsd.py --ref npt_c${cycle}.gro \
+                 --query bindrev_${PUSH_IDX}.gro -s emin_solv.tpr -n index.ndx \
+                 --tag c${cycle}) || RMSD="NaN"
+        [[ -z "$RMSD" ]] && RMSD="NaN"
+        echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+      fi
+    fi
+
     # Decompress if gzipped from a previous run
     if [[ ! -f bindrev_${PUSH_IDX}.xvg && -f bindrev_${PUSH_IDX}.xvg.gz ]]; then
       gunzip bindrev_${PUSH_IDX}.xvg.gz
     fi
     if [[ -f bindrev_${PUSH_IDX}.xvg ]]; then
       dG=$(python3 ../../utils/integrate.py -f bindrev_${PUSH_IDX}.xvg -nr $NUMPERTRES)
-      echo $STRUCT_ID $dG >> ../results_${PUSH_IDX}.gs
+      echo $STRUCT_ID $dG $RMSD >> ../results_${PUSH_IDX}.gs
       gzip bindrev_${PUSH_IDX}.xvg
     else
-      echo $STRUCT_ID "NaN" >> ../results_${PUSH_IDX}.gs
+      echo $STRUCT_ID "NaN" $RMSD >> ../results_${PUSH_IDX}.gs
     fi
 
     cycle=$((cycle+1))

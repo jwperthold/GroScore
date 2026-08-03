@@ -69,6 +69,10 @@ parser.add_argument('--restart', action='store_true',
                          "and, with a larger -n, adds new ones.")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job_fe.run into archived (.tar.gz) structures.")
 parser.add_argument('--temp', type=float, default=310.0, help="Temperature in K (default: 310).")
+parser.add_argument('--rmsd-warn', type=float, default=10.0, metavar='A',
+                    help="Warn about cycles whose re-bound backbone RMSD exceeds this "
+                         "value in Angstrom (default: 10.0). Free energies are always "
+                         "reported; the check only flags them.")
 parser.add_argument('--array-throttle', type=int, default=0, metavar='N',
                     help="Max cycle-array tasks running concurrently per structure "
                          "(SLURM %%N). Use 1 on a single-GPU workstation; 0 = no limit (default).")
@@ -79,6 +83,11 @@ parser.set_defaults(cutout=True, ligand_param=True)
 args = parser.parse_args()
 
 RT = 0.00831446261815324 * args.temp  # kJ/mol
+
+# How much of the rebinding-QC warning is printed. The full picture is always in
+# scores_fe.gs; the console only needs enough to know what to look at.
+MAX_FLAGGED_SHOWN = 10   # structures listed in the warning
+MAX_CYCLES_SHOWN  = 5    # bad cycles listed per structure
 
 # Sign toggles to flip during first-run validation if the diagnostic requires it.
 SIGN_PULL_FWD = -1.0   # W_pull_fwd = SIGN_PULL_FWD * integrate.py(fwd)
@@ -468,7 +477,12 @@ def read_analytical(filepath, andir="results_analytical.d"):
 
 def read_works(filepath, workdir="results_fe.d"):
   """-> {struct_id: [ (cycle, W_intro, Wu_pull, Wu_dhdl, Wr_pull, Wr_dhdl,
-  W_remove), ... ]}, keeping only rows whose values are all numeric.
+  W_remove, rebound_rmsd), ... ]}, keeping only rows whose WORK values are all
+  numeric.
+
+  The RMSD is the rebinding sanity check (9th column, Angstrom); it is diagnostic
+  only, so a row whose RMSD is missing or NaN is still a valid result and is kept
+  with nan in that slot.
 
   Reads the per-cycle files written by the cycle array (results_fe.d/<sid>_c<n>.gs,
   one line each -- parallel tasks must not append to a shared file) as well as any
@@ -488,7 +502,13 @@ def read_works(filepath, workdir="results_fe.d"):
       return
     if any(math.isnan(v) for v in vals):
       return
-    works.setdefault(tmp[0], []).append((cyc, *vals))
+    rmsd = float('nan')
+    if len(tmp) >= 9:
+      try:
+        rmsd = float(tmp[8])
+      except ValueError:
+        pass
+    works.setdefault(tmp[0], []).append((cyc, *vals, rmsd))
 
   if os.path.isfile(filepath):
     with open(filepath) as f:
@@ -511,6 +531,8 @@ def score(structids):
   works = read_works("results_fe.gs")
 
   rows = []  # (sid, result_dict_or_None, dG_release_or_None, ncyc, note)
+  bad_cycles = {}   # sid -> [(cycle, rmsd), …] that failed the rebinding check
+  all_rmsds = []    # every measured cycle, for the summary statistics
   for sid in structids:
     if sid in status:
       rows.append((sid, None, None, 0, status[sid]))
@@ -538,7 +560,18 @@ def score(structids):
 
     dG_release = analytical[sid]
     r = score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release)
-    rows.append((sid, r, dG_release, len(cycles), ""))
+
+    # Rebinding sanity check: the thermodynamic cycle only closes if the
+    # rebinding leg put the partners back into the pose the bound leg started
+    # from. Diagnostic only -- the free energies are reported either way.
+    rmsds = [(c[0], c[7]) for c in cycles if not math.isnan(c[7])]
+    r['rmsd_mean'] = float(np.mean([v for _, v in rmsds])) if rmsds else float('nan')
+    r['rmsd_max']  = float(np.max([v for _, v in rmsds])) if rmsds else float('nan')
+    all_rmsds.extend(v for _, v in rmsds)
+    bad = [(c, v) for c, v in rmsds if v > args.rmsd_warn]
+    if bad:
+      bad_cycles[sid] = bad
+    rows.append((sid, r, dG_release, len(cycles), "HIGH_RMSD" if bad else ""))
 
   # Report binding free energies in kJ/mol and as pKD (never kcal/mol).
   # dG_bind = -RT ln(Ka) = RT ln(KD)  =>  pKD = -log10(KD) = -dG_bind / (RT ln 10).
@@ -558,16 +591,18 @@ def score(structids):
   # CGI estimators, each with its own 95% CI. The dG_bind CIs come from the joint
   # cycle bootstrap (they include the dG_intro/dG_unbind covariance, so they are
   # NOT simply the quadrature of the component CIs).
+  # RMSD_mean/RMSD_max are the rebinding sanity check (Angstrom); a structure with
+  # any cycle above --rmsd-warn additionally carries HIGH_RMSD in Note.
   cols = ("dGbind_avg  dGbind_avg_CI  pKD_avg  pKD_avg_CI  dGbind_cgi  dGbind_cgi_CI  pKD_cgi  pKD_cgi_CI  "
           "dG_intro_avg  dG_intro_avg_CI  dG_intro_cgi  dG_intro_cgi_CI  "
           "dG_unbind_avg  dG_unbind_avg_CI  dG_unbind_cgi  dG_unbind_cgi_CI  "
-          "dG_release  Ncycles  Note")
+          "dG_release  RMSD_mean_A  RMSD_max_A  Ncycles  Note")
   with open("scores_fe.gs", "w") as f:
     f.write("# GroScore-FE absolute binding free energies (kJ/mol; pKD dimensionless, T=%.1f K)\n" % args.temp)
     f.write("# Structure_ID  " + "  ".join(cols.split()) + "\n")
     for sid, r, gr, n, note in rows:
       if r is None:
-        f.write("\t".join([sid] + ["nan"] * 17 + [str(n), note or ""]) + "\n")
+        f.write("\t".join([sid] + ["nan"] * 19 + [str(n), note or ""]) + "\n")
       else:
         vals = [cell(r['bind_avg']), cell(r['bind_avg_ci']), cell(pkd(r['bind_avg'])), cell(pkd_ci(r['bind_avg_ci'])),
                 cell(r['bind_cgi']), cell(r['bind_cgi_ci']), cell(pkd(r['bind_cgi'])), cell(pkd_ci(r['bind_cgi_ci'])),
@@ -575,11 +610,44 @@ def score(structids):
                 cell(r['intro_cgi']), cell(r['intro_cgi_ci']),
                 cell(r['unb_avg']), cell(r['unb_avg_ci']),
                 cell(r['unb_cgi']), cell(r['unb_cgi_ci']),
-                cell(gr)]
+                cell(gr), cell(r['rmsd_mean']), cell(r['rmsd_max'])]
         f.write("\t".join([sid] + vals + [str(n), note]) + "\n")
 
   done = len(rows_valid)
   print("Scored %d/%d structures with complete cycles. Wrote scores_fe.gs." % (done, len(structids)))
+
+  # ── rebinding sanity check summary ──────────────────────────────────────────
+  # Every cycle separates the partners and pushes them back; the backbone RMSD
+  # between the bound equilibration and the end of the rebinding leg says whether
+  # the cycle actually closed on the state it started from.
+  print("")
+  print("Rebinding sanity check (backbone RMSD of the re-bound structure, warn > %.1f A):"
+        % args.rmsd_warn)
+  if not all_rmsds:
+    print("  No RMSD values available yet (no cycle has finished, or the runs predate this check).")
+  else:
+    vals = np.asarray(all_rmsds, float)
+    print("  %d simulations analyzed: mean %.2f A, median %.2f A, max %.2f A"
+          % (vals.size, float(vals.mean()), float(np.median(vals)), float(vals.max())))
+    if not bad_cycles:
+      print("  All measured cycles re-bound within the threshold.")
+    else:
+      print("")
+      print("  WARNING: %d structure%s did not re-bind properly in at least one cycle."
+            % (len(bad_cycles), "s" if len(bad_cycles) > 1 else ""))
+      print("  Their free energies are reported but should be treated with caution")
+      print("  (flagged HIGH_RMSD in scores_fe.gs):")
+      # Worst first and truncated -- scores_fe.gs holds the full list.
+      worst = sorted(bad_cycles.items(), key=lambda kv: max(v for _, v in kv[1]), reverse=True)
+      for sid, bad in worst[:MAX_FLAGGED_SHOWN]:
+        detail = ", ".join("c%d=%.1f" % (c, v) for c, v in bad[:MAX_CYCLES_SHOWN])
+        if len(bad) > MAX_CYCLES_SHOWN:
+          detail += ", +%d more" % (len(bad) - MAX_CYCLES_SHOWN)
+        print("    %-20s %s" % (sid, detail))
+      if len(worst) > MAX_FLAGGED_SHOWN:
+        print("    ... and %d more (grep HIGH_RMSD scores_fe.gs for the full list)"
+              % (len(worst) - MAX_FLAGGED_SHOWN))
+  print("")
 
 #------------------------------------------------------
 

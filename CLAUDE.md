@@ -37,6 +37,7 @@ python groscore.py --no-cutout
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
+- `--rmsd-warn` - Rebinding sanity-check threshold in Å (default: 10.0); only flags, never changes a score
 
 After initial run, jobs are submitted via auto-generated `array_submit.run`.
 
@@ -59,6 +60,7 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 | `make_cutout.py` | Extracts interface region, enforces minimum 3-residue fragments |
 | `make_disres_en.py` | Generates distance restraints and elastic network |
 | `integrate.py` | Integrates force curves from pulling simulations |
+| `rebound_rmsd.py` | Rebinding sanity check: backbone RMSD of the re-bound structure vs. the bound reference |
 
 ### Simulation Pipeline
 
@@ -68,11 +70,23 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
    - Fresh full equilibration (NVT 1-5 + NPT) from `emin_solv.gro` with new random velocities
    - Pull simulation (unbinding)
    - Short NPT re-equilibration + Push simulation (binding)
+   - Rebinding sanity check (`rebound_rmsd.py`), appended to the cycle's results file
 4. **Final**: Statistical analysis producing two ranking methods:
    - `scores_avg.gs` - Simple average of pulls/pushes
    - `scores_cgi.gs` - Crooks Gaussian Intersection
 
 This architecture ensures statistically independent samples by starting each pull/push cycle from a fresh equilibration.
+
+### Rebinding Sanity Check
+
+Each cycle's work values only describe the intended binding event if the push leg actually restored the original complex. `utils/rebound_rmsd.py` measures the backbone RMSD between the bound state the cycle was equilibrated in and the state the push/rebinding leg ended in:
+
+| Engine | Reference | Query | Written to |
+|--------|-----------|-------|------------|
+| `job.run` (classic) | `npt_c<N>.gro` | `bindrev_<2N>.gro` | 3rd column of `results_<2N>.gs` |
+| `job_fe.run` (FE) | `npt_c<N>.gro` | `bindrev_<N>.gro` | 9th column of `results_fe.d/<id>_c<N>.gs` |
+
+Both frames are made whole, reduced to the `Protein` group and image-corrected three ways each (self-fix, `pbc cluster`, combined); the minimum of the 3×3 RMSD grid is taken, so a chain sitting in the wrong periodic image cannot fake a large value. Values are always computed and never abort a run — `groscore.py` / `groscore_fe.py` summarise them, add `RMSD_mean_A` / `RMSD_max_A` columns to the score files, and flag structures above `--rmsd-warn` (default 10 Å) as `HIGH_RMSD`. A missing or failed measurement is recorded as `nan` and changes nothing.
 
 ### Cutout Mode
 

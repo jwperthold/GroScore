@@ -779,8 +779,9 @@ fi
     fi
 
     # --- Work integration: one results_fe.gs line per completed cycle ---
-    # Columns: STRUCT_ID cycle W_intro Wunbind_pull Wunbind_dhdl Wrebind_pull Wrebind_dhdl W_remove
-    # (all in kJ/mol; groscore_fe.py combines them via the thermodynamic cycle.)
+    # Columns: STRUCT_ID cycle W_intro Wunbind_pull Wunbind_dhdl Wrebind_pull Wrebind_dhdl W_remove RMSD_A
+    # (works in kJ/mol; groscore_fe.py combines them via the thermodynamic cycle.
+    #  RMSD_A is the rebinding sanity check, in Angstrom -- see below.)
     # Recompute whenever this cycle's result file is missing or still holds NaN --
     # not merely when the cycle is new. Two cases the .done marker alone misses:
     #   * a cycle finished by an earlier run has its values only in the legacy
@@ -789,11 +790,14 @@ fi
     #     values were never repaired after the legs were re-run.
     # Integration is cheap (the .xvg.gz are kept), so this backfills in seconds.
     RESFILE=../results_fe.d/${STRUCT_ID}_c${cycle}.gs
-    # A stored result counts as final only if it is a complete 8-field line with
-    # no NaN; anything else (missing, truncated by a failed integration, or NaN
-    # from a leg that had not finished) is recomputed.
+    # A stored result counts as final only if it is a complete 9-field line whose
+    # six work values are numeric; anything else (missing, truncated by a failed
+    # integration, NaN from a leg that had not finished, or an 8-field line from
+    # before the RMSD column existed) is recomputed. Only fields 3-8 are checked
+    # for NaN: a cycle whose RMSD could not be computed is still a valid result
+    # and must not be re-integrated on every restart.
     NEEDS_RESULT=1
-    if [[ -f $RESFILE ]] && awk 'NR==1 && NF==8 && $0 !~ /NaN/{ok=1} END{exit !ok}' $RESFILE; then
+    if [[ -f $RESFILE ]] && awk 'NR==1 && NF>=9{ok=1; for(i=3;i<=8;i++) if($i=="NaN"||$i=="nan") ok=0} END{exit !ok}' $RESFILE; then
       NEEDS_RESULT=0
     fi
     if [[ $NEEDS_RESULT -eq 1 ]]; then
@@ -818,11 +822,24 @@ fi
       [[ -f bindrev_${cycle}_pullf.xvg ]] && Wr_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrev_${cycle}_pullf.xvg -nr $NUMPERTRES -r $PULL_RATE)
       [[ -f bindrev_${cycle}_dhdl.xvg ]]  && Wr_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrev_${cycle}_dhdl.xvg --direction rev)
       [[ -f boundrev_${cycle}_dhdl.xvg ]] && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev)
+      # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state
+      # this cycle was equilibrated in (npt_c$cycle) and the end of the rebinding
+      # leg (bindrev_$cycle). A large value means the partners did not return to
+      # the original pose, so the thermodynamic cycle did not close on the state
+      # it started from. Always computed, never fatal -- groscore_fe.py flags it
+      # (see --rmsd-warn).
+      RMSD="NaN"
+      if [[ -f npt_c${cycle}.gro && -f bindrev_${cycle}.gro ]]; then
+        RMSD=$(integrate_or_nan python3 ../../utils/rebound_rmsd.py \
+                 --ref npt_c${cycle}.gro --query bindrev_${cycle}.gro \
+                 -s emin_solv.tpr -n index.ndx --tag c${cycle})
+        echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+      fi
       # One file per cycle rather than appending to a shared results_fe.gs: with
       # cycles running as parallel array tasks, many writers would race on the
       # same file. groscore_fe.py merges results_fe.d/ with any legacy file.
       mkdir -p ../results_fe.d
-      echo "$STRUCT_ID $cycle $W_intro $Wu_pull $Wu_dhdl $Wr_pull $Wr_dhdl $W_remove" \
+      echo "$STRUCT_ID $cycle $W_intro $Wu_pull $Wu_dhdl $Wr_pull $Wr_dhdl $W_remove $RMSD" \
         > $RESFILE
       gzip -f boundfwd_${cycle}_dhdl.xvg bindfwd_${cycle}_pullf.xvg bindfwd_${cycle}_dhdl.xvg \
               bindrev_${cycle}_pullf.xvg bindrev_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg 2>/dev/null

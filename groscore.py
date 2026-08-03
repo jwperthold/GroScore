@@ -16,6 +16,10 @@ parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_fals
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ directory (default: workstation)")
 parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job.run into archived (.tar.gz) structures")
+parser.add_argument('--rmsd-warn', type=float, default=10.0, metavar='A',
+                    help="Warn about cycles whose re-bound backbone RMSD exceeds this "
+                         "value in Angstrom (default: 10.0). Scores are always reported; "
+                         "the check only flags them.")
 parser.set_defaults(cutout=True, ligand_param=True)
 
 args=parser.parse_args()
@@ -82,6 +86,32 @@ def readtwocolumnsfloat(filepath):
     return ids, vals
   else:
     return False
+
+#------------------------------------------------------
+
+def readcolumnfloat(filepath, col):
+  """Read (id, float(column `col`)) pairs from a results file.
+
+  Used for the re-bound RMSD, which job.run appends as a third column to the
+  push results files. Rows written before the column existed, or whose value is
+  the literal NaN, yield nan rather than being dropped.
+  """
+  ids = []
+  vals = []
+  if os.path.isfile(filepath):
+    with open(filepath, "r") as f:
+      for line in f:
+        if line.strip().startswith("#"):
+          continue
+        tmp = line.split()
+        if len(tmp) < 2:
+          continue
+        ids.append(tmp[0])
+        try:
+          vals.append(float(tmp[col]))
+        except (IndexError, ValueError, TypeError):
+          vals.append(float('nan'))
+  return ids, vals
 
 #------------------------------------------------------
 
@@ -174,7 +204,8 @@ def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
 
 #------------------------------------------------------
 
-def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data=False):
+def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data=False,
+                     rmsdstruct=None):
   """Calculate scores for structures with at least num_cycles complete cycles.
 
   Args:
@@ -183,10 +214,13 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
     numstructs: Number of structures
     num_cycles: Number of cycles to use (or minimum if use_max_data=True)
     use_max_data: If True, use all available data; if False, use only first num_cycles
+    rmsdstruct: Optional array of re-bound backbone RMSDs [numstructs x numruns],
+      summarised over exactly the cycles that entered the score
 
   Returns:
-    fren: List of (struct_id, avg_score, ci95, num_cycles_used) tuples (only structures with >= num_cycles)
-    frencgi: List of (struct_id, cgi_score, ci95, num_cycles_used) tuples (only structures with >= num_cycles)
+    fren: List of (struct_id, avg_score, ci95, num_cycles_used, rmsd_mean, rmsd_max) tuples
+      (only structures with >= num_cycles)
+    frencgi: Same, with the CGI score
   """
   fren = []
   frencgi = []
@@ -207,7 +241,7 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
 
         # Only include if BOTH pull and push exist for this cycle
         if not np.isnan(pull_val) and not np.isnan(push_val):
-          complete_cycles.append((pull_val, push_val))
+          complete_cycles.append((cycle_idx, pull_val, push_val))
 
     num_complete_cycles = len(complete_cycles)
 
@@ -225,8 +259,11 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
       num_cycles_used = num_complete_cycles
 
     # Extract pulls and pushes from selected cycles
-    pulls = [cycle[0] for cycle in cycles_to_use]
-    pushes = [cycle[1] for cycle in cycles_to_use]
+    pulls = [cycle[1] for cycle in cycles_to_use]
+    pushes = [cycle[2] for cycle in cycles_to_use]
+
+    # Re-bound RMSD over exactly those cycles (see rebound_rmsd.py)
+    rmsd_mean, rmsd_max = rmsd_stats(rmsdstruct, i, [c[0] for c in cycles_to_use])
 
     avg_score = float('nan')
     avg_ci95 = float('nan')
@@ -267,10 +304,61 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
       if not np.isnan(cgi_stderr):
         cgi_ci95 = 1.96 * cgi_stderr
 
-    fren.append((structids[i], avg_score, avg_ci95, num_cycles_used))
-    frencgi.append((structids[i], cgi_score, cgi_ci95, num_cycles_used))
+    fren.append((structids[i], avg_score, avg_ci95, num_cycles_used, rmsd_mean, rmsd_max))
+    frencgi.append((structids[i], cgi_score, cgi_ci95, num_cycles_used, rmsd_mean, rmsd_max))
 
   return fren, frencgi
+
+#------------------------------------------------------
+
+def rmsd_stats(rmsdstruct, struct_idx, cycle_indices):
+  """(mean, max) re-bound RMSD over the given cycles of one structure."""
+  if rmsdstruct is None or not len(cycle_indices):
+    return float('nan'), float('nan')
+  vals = [rmsdstruct[struct_idx, c] for c in cycle_indices
+          if c < rmsdstruct.shape[1] and not np.isnan(rmsdstruct[struct_idx, c])]
+  if not vals:
+    return float('nan'), float('nan')
+  return float(np.mean(vals)), float(np.max(vals))
+
+#------------------------------------------------------
+
+# How much of the rebinding-QC warning is printed. The full picture is always in
+# the score files; the console only needs enough to know what to look at.
+MAX_FLAGGED_SHOWN = 10   # structures listed in the warning
+MAX_CYCLES_SHOWN  = 5    # bad cycles listed per structure
+
+def rmsd_cell(value):
+  return "nan" if np.isnan(value) else "%.2f"%value
+
+def rmsd_flag(rmsd_max, threshold):
+  """Verdict of the rebinding sanity check for one structure."""
+  if np.isnan(rmsd_max):
+    return "nan"
+  return "HIGH_RMSD" if rmsd_max > threshold else "OK"
+
+#------------------------------------------------------
+
+def write_score_file(path, header, structids, scored, struct_status, threshold):
+  """Write one scores_*.gs file.
+
+  scored: {struct_id: (score, ci95, ncycles, rmsd_mean, rmsd_max)} for the
+  structures that produced data; every other structure is written with its
+  stage-0 status so the file always lists all of sp.gs.
+  """
+  with open(path, "w") as f:
+    f.write(header)
+    f.write("# Structure_ID  Score  CI95  Cycles_Used  RMSD_mean_A  RMSD_max_A  RMSD_flag\n")
+    for struct_id in structids:
+      if struct_id in scored:
+        score, ci95, nc, rmean, rmax = scored[struct_id]
+        score_cols = ("nan\tnan" if np.isnan(score) else "%.1f\t%.1f"%(score, ci95))
+        f.write("%s\t%s\t%d\t%s\t%s\t%s\n"%(struct_id, score_cols, nc,
+                                            rmsd_cell(rmean), rmsd_cell(rmax),
+                                            rmsd_flag(rmax, threshold)))
+      else:
+        status = struct_status.get(struct_id, "nan")
+        f.write("%s\t%s\t%s\t0\tnan\tnan\tnan\n"%(struct_id, status, status))
 
 #------------------------------------------------------
 
@@ -292,6 +380,11 @@ calcstruct[:] = 1.0
 struct_status = {}  # struct_id -> failure reason (BROKEN, ENTANGLED, NODIR) or None for OK
 frenstruct = np.zeros(shape=(numstructs,args.numruns*2))
 frenstruct[:,:] = "NaN"
+# Re-bound backbone RMSD per structure and cycle (Angstrom), third column of the
+# push results files. Purely diagnostic: it never changes a score, it only flags
+# cycles in which the partners failed to return to the bound pose.
+rmsdstruct = np.zeros(shape=(numstructs,args.numruns))
+rmsdstruct[:,:] = "NaN"
 print("Reading input parameters finished.")
 print("GroScore will calculate a binding free energy estimate for " + str(numstructs) + " structures.")
 print("Each structure will undergo " + str(args.numruns) + " independent equilibration cycles (each cycle = 1 pull + 1 push).")
@@ -430,6 +523,15 @@ while j <= args.numruns*2:
       k += 1
     np.savetxt("frenstruct.gs",frenstruct,delimiter="\t")
 
+    # Re-bound RMSD of this cycle (push files only, third column)
+    if j % 2 == 0:
+      rmsd1, rmsd2 = readcolumnfloat("results_%.0f.gs"%(j), 2)
+      for k in range(len(rmsd1)):
+        for l in range(numstructs):
+          if structids[l] == rmsd1[k]:
+            rmsdstruct[l,j//2-1] = rmsd2[k]
+      np.savetxt("rmsdstruct.gs",rmsdstruct,delimiter="\t")
+
     # Check if we have a complete cycle (pull + push pair)
     # j is the result number (1-indexed), so j=2,4,6,... means a cycle just completed
     if j >= 2 and j % 2 == 0:
@@ -441,82 +543,34 @@ while j <= args.numruns*2:
       # Write score files for each cycle threshold (1 to current_cycle)
       for cycle_threshold in range(1, current_cycle + 1):
         # Calculate scores using only first cycle_threshold cycles (for convergence tracking)
-        fren, frencgi = calculate_scores(frenstruct, structids, numstructs, cycle_threshold, use_max_data=False)
-
-        # Sort by score (NaN values go to end)
-        fren.sort(key=lambda x: (math.isnan(x[1]), x[1]))
-        frencgi.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+        fren, frencgi = calculate_scores(frenstruct, structids, numstructs, cycle_threshold,
+                                         use_max_data=False, rmsdstruct=rmsdstruct)
 
         # Write scores for this cycle threshold (all structures, nan for missing)
-        avg_c = {s: (sc, ci, nc) for s, sc, ci, nc in fren}
-        cgi_c = {s: (sc, ci, nc) for s, sc, ci, nc in frencgi}
-
-        with open("scores_avg_c%d.gs"%cycle_threshold, "w") as f:
-          f.write("# Scores using first %d cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
-          f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-          for struct_id in structids:
-            if struct_id in avg_c:
-              score, ci95, nc = avg_c[struct_id]
-              if not np.isnan(score):
-                f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
-              else:
-                f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
-            else:
-              status = struct_status.get(struct_id, "nan")
-              f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
-
-        with open("scores_cgi_c%d.gs"%cycle_threshold, "w") as f:
-          f.write("# Scores using first %d cycle%s\n"%(cycle_threshold, "s" if cycle_threshold > 1 else ""))
-          f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-          for struct_id in structids:
-            if struct_id in cgi_c:
-              score, ci95, nc = cgi_c[struct_id]
-              if not np.isnan(score):
-                f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
-              else:
-                f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
-            else:
-              status = struct_status.get(struct_id, "nan")
-              f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
+        avg_c = {s: rest for s, *rest in fren}
+        cgi_c = {s: rest for s, *rest in frencgi}
+        cyc_header = "# Scores using first %d cycle%s\n"%(cycle_threshold,
+                                                          "s" if cycle_threshold > 1 else "")
+        write_score_file("scores_avg_c%d.gs"%cycle_threshold, cyc_header,
+                         structids, avg_c, struct_status, args.rmsd_warn)
+        write_score_file("scores_cgi_c%d.gs"%cycle_threshold, cyc_header,
+                         structids, cgi_c, struct_status, args.rmsd_warn)
 
       # Update main score files (all structures using their maximum available data)
       # Include all structures with at least 1 complete cycle, each using all its available data
-      fren_max, frencgi_max = calculate_scores(frenstruct, structids, numstructs, num_cycles=1, use_max_data=True)
-      fren_max.sort(key=lambda x: (math.isnan(x[1]), x[1]))
-      frencgi_max.sort(key=lambda x: (math.isnan(x[1]), x[1]))
+      fren_max, frencgi_max = calculate_scores(frenstruct, structids, numstructs, num_cycles=1,
+                                               use_max_data=True, rmsdstruct=rmsdstruct)
 
       # Build lookup dicts for scores (keyed by struct_id)
-      avg_scores = {s: (sc, ci, nc) for s, sc, ci, nc in fren_max}
-      cgi_scores = {s: (sc, ci, nc) for s, sc, ci, nc in frencgi_max}
+      avg_scores = {s: rest for s, *rest in fren_max}
+      cgi_scores = {s: rest for s, *rest in frencgi_max}
 
       # Write all structures (matching sp.gs order), nan for missing data
-      with open("scores_avg.gs", "w") as f:
-        f.write("# Scores for all structures (each using maximum available data)\n")
-        f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-        for struct_id in structids:
-          if struct_id in avg_scores:
-            score, ci95, nc = avg_scores[struct_id]
-            if not np.isnan(score):
-              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
-            else:
-              f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
-          else:
-            status = struct_status.get(struct_id, "nan")
-            f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
-
-      with open("scores_cgi.gs", "w") as f:
-        f.write("# Scores for all structures (each using maximum available data)\n")
-        f.write("# Structure_ID  Score  CI95  Cycles_Used\n")
-        for struct_id in structids:
-          if struct_id in cgi_scores:
-            score, ci95, nc = cgi_scores[struct_id]
-            if not np.isnan(score):
-              f.write("%s\t%.1f\t%.1f\t%d\n"%(struct_id, score, ci95, nc))
-            else:
-              f.write("%s\tnan\tnan\t%d\n"%(struct_id, nc))
-          else:
-            status = struct_status.get(struct_id, "nan")
-            f.write("%s\t%s\t%s\t0\n"%(struct_id, status, status))
+      max_header = "# Scores for all structures (each using maximum available data)\n"
+      write_score_file("scores_avg.gs", max_header, structids, avg_scores,
+                       struct_status, args.rmsd_warn)
+      write_score_file("scores_cgi.gs", max_header, structids, cgi_scores,
+                       struct_status, args.rmsd_warn)
 
       print("Done!")
 
@@ -526,3 +580,47 @@ while j <= args.numruns*2:
         print("All %d requested cycles are complete!"%args.numruns)
         print("")
   j += 1
+
+#------------------------------------------------------
+# Rebinding sanity check
+#
+# Every cycle pulls the partners apart and pushes them back together; job.run
+# measures how well the re-bound structure superimposes on the bound state the
+# cycle started from. Cycles that did not find their way back describe a
+# different (or no) binding event, so their work values are suspect even though
+# they are still scored and reported.
+
+print("")
+print("Rebinding sanity check (backbone RMSD of the re-bound structure, warn > %.1f A):"%args.rmsd_warn)
+allvals = rmsdstruct[~np.isnan(rmsdstruct)]
+if allvals.size == 0:
+  print("  No RMSD values available yet (no cycle has finished, or the runs predate this check).")
+else:
+  print("  %d simulations analyzed: mean %.2f A, median %.2f A, max %.2f A"
+        %(allvals.size, np.mean(allvals), np.median(allvals), np.max(allvals)))
+  flagged = []
+  for i in range(numstructs):
+    bad = [(c+1, rmsdstruct[i,c]) for c in range(rmsdstruct.shape[1])
+           if not np.isnan(rmsdstruct[i,c]) and rmsdstruct[i,c] > args.rmsd_warn]
+    if bad:
+      flagged.append((structids[i], bad))
+  if not flagged:
+    print("  All measured cycles re-bound within the threshold.")
+  else:
+    print("")
+    print("  WARNING: %d structure%s did not re-bind properly in at least one cycle."
+          %(len(flagged), "s" if len(flagged) > 1 else ""))
+    print("  Their scores are reported but should be treated with caution")
+    print("  (flagged HIGH_RMSD in scores_avg.gs / scores_cgi.gs):")
+    # Worst first and truncated: a large screen can flag hundreds of poses, and a
+    # wall of them buries the summary above. The score files hold the full list.
+    flagged.sort(key=lambda x: max(v for _, v in x[1]), reverse=True)
+    for struct_id, bad in flagged[:MAX_FLAGGED_SHOWN]:
+      detail = ", ".join("c%d=%.1f"%(c, v) for c, v in bad[:MAX_CYCLES_SHOWN])
+      if len(bad) > MAX_CYCLES_SHOWN:
+        detail += ", +%d more"%(len(bad) - MAX_CYCLES_SHOWN)
+      print("    %-20s %s"%(struct_id, detail))
+    if len(flagged) > MAX_FLAGGED_SHOWN:
+      print("    ... and %d more (grep HIGH_RMSD scores_avg.gs for the full list)"
+            %(len(flagged) - MAX_FLAGGED_SHOWN))
+print("")
