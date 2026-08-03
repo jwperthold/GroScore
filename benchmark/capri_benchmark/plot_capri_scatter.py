@@ -120,7 +120,7 @@ def draw_joint(fig, cell, x, y, title, roc, native=None):
 
     ax_top.axis("off")
     ax_right.axis("off")
-    ax_top.set_title("%s  (N=%d)" % (title, len(x)), fontsize=11, fontweight="bold")
+    ax_top.set_title("%s  (N=%d)" % (title, len(x)), fontsize=12, fontweight="bold", pad=6)
     ax_main.set_xlabel(XLABEL, fontsize=9)
     ax_main.set_ylabel("GroScore [kJ/mol]", fontsize=9)
     ax_main.tick_params(labelsize=8)
@@ -184,7 +184,7 @@ for i, t in enumerate(targets):
     draw_joint(fig, outer[i // ncols, i % ncols], x, y, t, roc, native)
 
 fig.suptitle("GroScore vs %s — CAPRI Score_set" % XLABEL,
-             fontsize=14, fontweight="bold", y=1.0)
+             fontsize=14, fontweight="bold", y=1.01)
 
 out = args.out or os.path.join(
     cc.REPO_ROOT, "benchmark", "results",
