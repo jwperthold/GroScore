@@ -112,7 +112,7 @@ fig, axes = plt.subplots(2, 2, figsize=(11, 9))
 title = 'Backbone RMSD: Rebinding Quality — Cutout vs No-Cutout'
 if partial:
     title += '  [PARTIAL DATA]'
-fig.suptitle(title, fontsize=12, y=1.01)
+fig.suptitle(title, fontsize=14, fontweight='bold', y=1.01)
 
 for ax, ff in zip(axes.flat, FORCEFIELDS):
     for key, label, color in [
