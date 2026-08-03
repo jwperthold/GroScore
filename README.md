@@ -6,7 +6,6 @@
 
 **Computational Chemistry Toolkit for Protein-Protein Affinity Scoring with MD**
 
-[![Version](https://img.shields.io/badge/version-0.99-blue.svg)](https://github.com/jwperthold/GroScore)
 [![Python](https://img.shields.io/badge/python-3.10-green.svg)](https://www.python.org/)
 [![GROMACS](https://img.shields.io/badge/GROMACS-2026-orange.svg)](https://www.gromacs.org/)
 

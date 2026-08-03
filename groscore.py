@@ -275,11 +275,11 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
 #------------------------------------------------------
 
 print("")
-print("#################################")
-print("#                               #")
-print("#         GroScore 0.98         #")
-print("#                               #")
-print("#################################")
+print("##################################")
+print("#                                #")
+print("#            GroScore            #")
+print("#                                #")
+print("##################################")
 print("")
 
 structids, structchains = readstructparams(args.structparams)
