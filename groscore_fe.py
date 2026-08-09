@@ -70,9 +70,12 @@ parser.add_argument('--run-local', dest='run_local', action='store_true',
                          "local GPUs, for single multi-GPU workstations. Requires --ngpus.")
 parser.add_argument('--ngpus', type=int, default=0, metavar='N',
                     help="Number of GPUs to distribute local jobs over (mandatory with --run-local).")
-parser.add_argument('--jobs-per-gpu', dest='jobs_per_gpu', type=int, default=1, metavar='N',
-                    help="Concurrent jobs per GPU in --run-local mode (default: 1); the rest "
-                         "queue and start as slots free up. 0 starts every job at once.")
+parser.add_argument('--jobs-per-gpu', dest='jobs_per_gpu', type=int, default=8, metavar='N',
+                    help="Concurrent jobs per GPU in --run-local mode (default: 8); the rest "
+                         "queue and start as slots free up. One cutout-sized system leaves the "
+                         "GPU idle during CPU-side work, so stacking jobs raises aggregate "
+                         "throughput. Lower it if you run out of GPU or host memory; "
+                         "0 starts every job at once.")
 parser.add_argument('--threads-per-job', dest='threads_per_job', type=int, default=1, metavar='N',
                     help="CPU threads per local job, i.e. gmx mdrun -nt (default: 1).")
 parser.add_argument('--restart', action='store_true',

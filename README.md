@@ -148,7 +148,7 @@ python ../groscore.py
 - `--slurm` - SLURM template name from `slurm/` directory (default: `workstation`). Templates are plain `#SBATCH`-prefixed shell scripts; ship with `slurm/workstation.sh` (single workstation) and `slurm/vsc5.sh` (VSC-5 cluster). To target a different system, drop a new `<name>.sh` template into `slurm/` and pass `--slurm <name>`.
 - `--run-local` - Run on this machine instead of submitting to SLURM, spreading jobs over the local GPUs. Requires `--ngpus`. See [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation)
 - `--ngpus N` - Number of GPUs to distribute local jobs over (mandatory with `--run-local`)
-- `--jobs-per-gpu N` - Concurrent jobs per GPU in local mode (default: 1; `0` starts every job at once)
+- `--jobs-per-gpu N` - Concurrent jobs per GPU in local mode (default: 8; `0` starts every job at once)
 - `--threads-per-job N` - CPU threads per local job, i.e. `gmx mdrun -nt` (default: 1)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 - `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures (skipped by default)
@@ -201,13 +201,15 @@ python ../groscore.py -n 5 --run-local --ngpus 8
 
 Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate — GroScore systems are small enough to run essentially GPU-resident (nonbonded, PME and the update/constraints all offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor.
 
-**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default one job runs per GPU at a time (`--jobs-per-gpu 1`) and the remaining structures wait in a queue, starting as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically rather than pre-assigned, so a slow structure cannot leave its GPU idle at the end of the run.
+**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default 8 jobs share each GPU (`--jobs-per-gpu 8`) — a single cutout-sized system leaves the GPU idle during CPU-side work, so stacking jobs raises *aggregate* throughput well past what one job per device achieves. Anything beyond `--ngpus × --jobs-per-gpu` waits in a queue and starts as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically rather than pre-assigned, so a slow structure cannot leave its GPU idle at the end of the run.
 
 | Option | Effect |
 |---|---|
 | `--ngpus N` | GPUs to distribute over (mandatory with `--run-local`) |
-| `--jobs-per-gpu N` | Concurrent jobs per GPU (default `1`). `2`–`4` often raises *aggregate* throughput, since one small system leaves the GPU idle during CPU-side work — at the cost of GPU memory. `0` starts every job immediately, no queue |
+| `--jobs-per-gpu N` | Concurrent jobs per GPU (default `8`), trading GPU memory and host RAM for throughput. Lower it for `--no-cutout` runs or on GPUs with little memory. `0` starts every job immediately, no queue |
 | `--threads-per-job N` | `gmx mdrun -nt` per job (default `1`). Raise it only if you have far more cores than concurrent jobs |
+
+The defaults assume a cloud-style node: `--ngpus 8 --jobs-per-gpu 8` is 64 concurrent single-threaded jobs, which wants ~64 CPU cores and enough GPU memory for 8 solvated systems per device. On a workstation with fewer cores than that, either lower `--jobs-per-gpu` or accept that the jobs share cores.
 
 **Monitoring.** The runner is detached from the launching terminal, so simulations survive closing the shell or losing the SSH connection. Two files in the project directory track it:
 

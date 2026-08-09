@@ -41,7 +41,7 @@ python groscore.py --run-local --ngpus 8
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
 - `--rmsd-warn` - Rebinding sanity-check threshold in Å (default: 10.0); only flags, never changes a score
-- `--run-local` - Run locally instead of via SLURM; requires `--ngpus N`. Optional: `--jobs-per-gpu N` (default 1, 0 = start everything), `--threads-per-job N` (default 1)
+- `--run-local` - Run locally instead of via SLURM; requires `--ngpus N`. Optional: `--jobs-per-gpu N` (default 8, 0 = start everything), `--threads-per-job N` (default 1)
 
 After initial run, jobs are submitted via auto-generated `array_submit.run` — or, with `--run-local`, handed to a detached `utils/local_runner.py` process.
 
