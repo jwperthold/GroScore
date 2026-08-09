@@ -14,6 +14,17 @@ parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", ch
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Disable small molecule parametrization with OpenFF (AMBER forcefields)")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ directory (default: workstation)")
+parser.add_argument('--run-local', dest='run_local', action='store_true',
+                    help="Run on this machine instead of submitting to SLURM. Jobs are "
+                         "started in the background and spread round-robin over the local "
+                         "GPUs, for single multi-GPU workstations. Requires --ngpus.")
+parser.add_argument('--ngpus', type=int, default=0, metavar='N',
+                    help="Number of GPUs to distribute local jobs over (mandatory with --run-local).")
+parser.add_argument('--jobs-per-gpu', dest='jobs_per_gpu', type=int, default=1, metavar='N',
+                    help="Concurrent jobs per GPU in --run-local mode (default: 1); the rest "
+                         "queue and start as slots free up. 0 starts every job at once.")
+parser.add_argument('--threads-per-job', dest='threads_per_job', type=int, default=1, metavar='N',
+                    help="CPU threads per local job, i.e. gmx mdrun -nt (default: 1).")
 parser.add_argument('--restart', action='store_true', help="Restart: resubmit jobs even if run.gs exists")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job.run into archived (.tar.gz) structures")
 parser.add_argument('--rmsd-warn', type=float, default=10.0, metavar='A',
@@ -23,6 +34,14 @@ parser.add_argument('--rmsd-warn', type=float, default=10.0, metavar='A',
 parser.set_defaults(cutout=True, ligand_param=True)
 
 args=parser.parse_args()
+
+if args.run_local and args.ngpus < 1:
+  parser.error("--run-local needs --ngpus N: the number of GPUs the jobs are distributed over")
+if args.ngpus and not args.run_local:
+  parser.error("--ngpus only applies to --run-local; SLURM allocates GPUs itself")
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
+from local_runner import launch_local, print_local_status
 
 #------------------------------------------------------
 
@@ -414,9 +433,11 @@ while j <= args.numruns*2:
     if not os.path.isfile(job_run_src):
       print("Error: job.run not found in %s"%script_dir)
       exit(1)
+    live = []  # structures that exist as a directory or an archive, i.e. are runnable
     i = 0
     while i < numstructs:
       if os.path.exists("./%s"%structids[i]):
+        live.append(structids[i])
         print("Setting up %s."%structids[i])
         # Only write run.gs if NOT in restart mode
         if not args.restart:
@@ -431,6 +452,7 @@ while j <= args.numruns*2:
         shutil.copy(job_run_src, job_run_dst)
         os.chmod(job_run_dst, 0o755)
       elif os.path.isfile("./%s.tar.gz"%structids[i]):
+        live.append(structids[i])
         if args.inject_job_run:
           sys.stdout.write("Setting up %s.tar.gz. "%structids[i])
           sys.stdout.flush()
@@ -461,30 +483,38 @@ while j <= args.numruns*2:
         f.write("%s NODIR\n"%structids[i])
         f.close()
       i += 1
-    #SBATCH array
-    slurm_template = os.path.join(script_dir, "slurm", args.slurm + ".sh")
-    if not os.path.isfile(slurm_template):
-      print("Error: SLURM template not found: %s"%slurm_template)
-      exit(1)
-    with open(slurm_template, "r") as tmpl:
-      template_lines = tmpl.read()
-    f = open("array_submit.run", "w")
-    f.write(template_lines.rstrip("\n") + "\n")
-    f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
-    f.write("\n")
-    f.write("# Read structure ID from mapping file\n")
-    f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
-    f.write("# Extract archived structure if needed (for restarts)\n")
-    f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
-    f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n")
-    f.write("  rm \"${STRUCT_ID}.tar.gz\"\n")
-    f.write("fi\n")
-    f.write("cd $STRUCT_ID\n")
-    f.write("./job.run\n")
-    f.close()
-    os.system("sbatch array_submit.run")
-    print("Submitted all simulation jobs.")
-    print("")
+    if args.run_local:
+      # Single workstation, no scheduler: one job per structure, executed by
+      # utils/local_runner.py in a bounded pool with one GPU pinned per slot.
+      jobs = [{"name": sid, "dir": sid, "argv": ["./job.run"],
+               "archive": "%s.tar.gz"%sid, "log": "job_local.out"} for sid in live]
+      launch_local(jobs, args.ngpus, args.jobs_per_gpu, args.threads_per_job)
+      print("")
+    else:
+      #SBATCH array
+      slurm_template = os.path.join(script_dir, "slurm", args.slurm + ".sh")
+      if not os.path.isfile(slurm_template):
+        print("Error: SLURM template not found: %s"%slurm_template)
+        exit(1)
+      with open(slurm_template, "r") as tmpl:
+        template_lines = tmpl.read()
+      f = open("array_submit.run", "w")
+      f.write(template_lines.rstrip("\n") + "\n")
+      f.write("#SBATCH --array=0-%d\n"%(numstructs-1))
+      f.write("\n")
+      f.write("# Read structure ID from mapping file\n")
+      f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
+      f.write("# Extract archived structure if needed (for restarts)\n")
+      f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
+      f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n")
+      f.write("  rm \"${STRUCT_ID}.tar.gz\"\n")
+      f.write("fi\n")
+      f.write("cd $STRUCT_ID\n")
+      f.write("./job.run\n")
+      f.close()
+      os.system("sbatch array_submit.run")
+      print("Submitted all simulation jobs.")
+      print("")
   # stage 0
   if j == 0 and os.path.isfile("results_%.0f.gs"%j):
     results1, results2 = readtwocolumns("results_%.0f.gs"%(j))
@@ -589,6 +619,10 @@ while j <= args.numruns*2:
 # cycle started from. Cycles that did not find their way back describe a
 # different (or no) binding event, so their work values are suspect even though
 # they are still scored and reported.
+
+# Progress of a --run-local run. No-op when the jobs went to SLURM instead.
+print("")
+print_local_status()
 
 print("")
 print("Rebinding sanity check (backbone RMSD of the re-bound structure, warn > %.1f A):"%args.rmsd_warn)

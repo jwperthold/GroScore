@@ -30,6 +30,9 @@ python groscore.py -s myparams.gs
 
 # Disable interface cutout (use full protein structure)
 python groscore.py --no-cutout
+
+# Run on a single 8-GPU workstation instead of SLURM
+python groscore.py --run-local --ngpus 8
 ```
 
 **Command-line options:**
@@ -38,15 +41,30 @@ python groscore.py --no-cutout
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
 - `--rmsd-warn` - Rebinding sanity-check threshold in Å (default: 10.0); only flags, never changes a score
+- `--run-local` - Run locally instead of via SLURM; requires `--ngpus N`. Optional: `--jobs-per-gpu N` (default 1, 0 = start everything), `--threads-per-job N` (default 1)
 
-After initial run, jobs are submitted via auto-generated `array_submit.run`.
+After initial run, jobs are submitted via auto-generated `array_submit.run` — or, with `--run-local`, handed to a detached `utils/local_runner.py` process.
+
+### Execution Backends
+
+Both orchestrators submit to SLURM by default and run locally with `--run-local --ngpus N`.
+
+| | SLURM (default) | `--run-local` |
+|---|---|---|
+| Dispatch | `sbatch array_submit.run` (job array) | detached `utils/local_runner.py` |
+| Threads | `SLURM_CPUS_PER_TASK` | `GROSCORE_NT` (`--threads-per-job`, default 1) |
+| GPU | scheduler allocation | `GROSCORE_GPU_ID` → `mdrun -gpu_id`, round-robin over `--ngpus` |
+| Concurrency | queue / `--array-throttle` | `--ngpus × --jobs-per-gpu` worker slots |
+| Monitoring | `squeue` | `local_status.gs`, `local_runner.log`, `<struct>/job_local.out` |
+
+`job.run` / `job_fe.run` read both env vars and build `GPUOPT="-gpu_id N -pin off"`, empty under SLURM. `local_runner.py` runs a bounded worker pool (one thread per slot, slot k pinned to GPU k % ngpus), pulls jobs from a shared queue, honours "after any" dependencies (GroScore-FE: cycles wait for their structure's setup job), unpacks archived structures, and writes `local_runner.pid` so a second submission into an active run is refused.
 
 ## Architecture
 
 ### Main Components
 
-- **groscore.py** - Main orchestrator that reads structure parameters, generates SLURM submission scripts, monitors job completion, and performs final statistical analysis
-- **job.run** - Bash script executed per structure as SLURM array task; runs the complete MD workflow
+- **groscore.py** - Main orchestrator that reads structure parameters, dispatches jobs (SLURM submission scripts, or a local GPU pool with `--run-local`), monitors job completion, and performs final statistical analysis
+- **job.run** - Bash script executed per structure, as a SLURM array task or a local pool job; runs the complete MD workflow
 
 ### Utility Scripts (utils/)
 
@@ -61,6 +79,7 @@ After initial run, jobs are submitted via auto-generated `array_submit.run`.
 | `make_disres_en.py` | Generates distance restraints and elastic network |
 | `integrate.py` | Integrates force curves from pulling simulations |
 | `rebound_rmsd.py` | Rebinding sanity check: backbone RMSD of the re-bound structure vs. the bound reference |
+| `local_runner.py` | `--run-local` backend: bounded job pool with one GPU pinned per worker slot (also importable: `launch_local`, `print_local_status`) |
 
 ### Simulation Pipeline
 

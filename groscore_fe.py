@@ -64,6 +64,17 @@ parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout.")
 parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Disable OpenFF small-molecule parametrization.")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ (default: workstation).")
+parser.add_argument('--run-local', dest='run_local', action='store_true',
+                    help="Run on this machine instead of submitting to SLURM. Setup jobs and "
+                         "cycles are started in the background and spread round-robin over the "
+                         "local GPUs, for single multi-GPU workstations. Requires --ngpus.")
+parser.add_argument('--ngpus', type=int, default=0, metavar='N',
+                    help="Number of GPUs to distribute local jobs over (mandatory with --run-local).")
+parser.add_argument('--jobs-per-gpu', dest='jobs_per_gpu', type=int, default=1, metavar='N',
+                    help="Concurrent jobs per GPU in --run-local mode (default: 1); the rest "
+                         "queue and start as slots free up. 0 starts every job at once.")
+parser.add_argument('--threads-per-job', dest='threads_per_job', type=int, default=1, metavar='N',
+                    help="CPU threads per local job, i.e. gmx mdrun -nt (default: 1).")
 parser.add_argument('--restart', action='store_true',
                     help="Submit again for an existing run: re-queues missing/failed cycles "
                          "and, with a larger -n, adds new ones.")
@@ -81,6 +92,14 @@ parser.add_argument('--sequential', action='store_true',
                          "sequentially, instead of a setup job + per-cycle job array.")
 parser.set_defaults(cutout=True, ligand_param=True)
 args = parser.parse_args()
+
+if args.run_local and args.ngpus < 1:
+  parser.error("--run-local needs --ngpus N: the number of GPUs the jobs are distributed over")
+if args.ngpus and not args.run_local:
+  parser.error("--ngpus only applies to --run-local; SLURM allocates GPUs itself")
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
+from local_runner import launch_local, print_local_status
 
 RT = 0.00831446261815324 * args.temp  # kJ/mol
 
@@ -299,8 +318,14 @@ def setup_and_submit(structids, structchains):
             "  rm -rf \"%s/.archive.lock\"\nfi\n" % (sid, sid, sid, sid, sid))
 
   if args.sequential:
-    # Legacy layout: one array task per structure, running setup + all cycles
+    # Legacy layout: one task per structure, running setup + all cycles
     # sequentially inside a single job.
+    if args.run_local:
+      jobs = [{"name": sid, "dir": sid, "argv": ["./job.run"],
+               "archive": "%s.tar.gz" % sid, "log": "job_local.out"} for sid in live]
+      launch_local(jobs, args.ngpus, args.jobs_per_gpu, args.threads_per_job)
+      print("")
+      return
     with open("array_submit.run", "w") as f:
       f.write(template + "\n")
       f.write("#SBATCH --array=0-%d\n\n" % (len(structids) - 1))
@@ -320,7 +345,8 @@ def setup_and_submit(structids, structchains):
   # sitting pending forever with an unsatisfiable dependency. job.run --cycle
   # additionally waits on setup.done, covering the case where a task is released
   # or started before the setup files are in place.
-  os.makedirs("slurm_fe", exist_ok=True)
+  if not args.run_local:
+    os.makedirs("slurm_fe", exist_ok=True)
   throttle = ("%%%d" % args.array_throttle) if args.array_throttle > 0 else ""
 
   # -n is the TOTAL number of cycles wanted, so re-running with a larger -n adds
@@ -333,12 +359,36 @@ def setup_and_submit(structids, structchains):
   for sid, rows_ in read_works("results_fe.gs").items():
     done_cycles[sid] = {int(r[0]) for r in rows_}
 
+  local_jobs = []
   n_setup = n_array = 0
   for sid in live:
     have = done_cycles.get(sid, set())
     missing = [c for c in range(1, args.numruns + 1) if c not in have]
     if not missing:
       print("  %s: all %d cycles complete, nothing to submit." % (sid, args.numruns))
+      continue
+
+    if args.run_local:
+      # Same shape as the SLURM path: one setup job, then the missing cycles
+      # depending on it. The dependency is "after any", like --dependency=afterany
+      # above, so a cycle whose setup failed still starts, reads the stage-0
+      # status and exits cleanly instead of waiting forever.
+      deps = []
+      if not os.path.isfile("./%s/setup.done" % sid):
+        local_jobs.append({"name": "setup_%s" % sid, "dir": sid,
+                           "argv": ["./job.run", "--setup"],
+                           "archive": "%s.tar.gz" % sid, "log": "job_local.out"})
+        deps = ["setup_%s" % sid]
+        n_setup += 1
+      for c in missing:
+        local_jobs.append({"name": "cycle_%s_c%d" % (sid, c), "dir": sid,
+                           "argv": ["./job.run", "--cycle", str(c)], "deps": deps,
+                           "env": {"GROSCORE_NUMCYCLES": str(args.numruns)},
+                           "archive": "%s.tar.gz" % sid,
+                           "log": "job_local_c%d.out" % c})
+      n_array += len(missing)
+      print("  %s: queueing %d of %d cycles (%s)"
+            % (sid, len(missing), args.numruns, compact_ranges(missing)))
       continue
 
     setup_path = os.path.join("slurm_fe", "setup_%s.run" % sid)
@@ -368,6 +418,14 @@ def setup_and_submit(structids, structchains):
       n_array += 1
       print("  %s: submitting %d of %d cycles (%s)"
             % (sid, len(missing), args.numruns, compact_ranges(missing)))
+
+  if args.run_local:
+    # array-throttle is a SLURM array feature; locally the pool size is the cap.
+    if args.array_throttle > 0:
+      print("  (--array-throttle is ignored locally; --jobs-per-gpu sets the limit)")
+    launch_local(local_jobs, args.ngpus, args.jobs_per_gpu, args.threads_per_job)
+    print("")
+    return
 
   print("Submitted %d setup job(s) + %d cycle array(s), target %d cycles/structure%s.\n"
         % (n_setup, n_array, args.numruns,
@@ -671,6 +729,9 @@ def main():
       with open("results_0.gs", "w") as f:
         f.write("# Stage-0 setup status\n")
     setup_and_submit(structids, structchains)
+
+  # Progress of a --run-local run. No-op when the jobs went to SLURM instead.
+  print_local_status()
 
   # Score whatever results are currently available.
   score(structids)

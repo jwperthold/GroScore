@@ -1,7 +1,17 @@
 #!/bin/bash
 #
 
-nt=${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-4}}
+nt=${GROSCORE_NT:-${SLURM_CPUS_PER_TASK:-${SLURM_NTASKS:-4}}}
+
+# Local multi-GPU mode (groscore.py --run-local): utils/local_runner.py runs many
+# structures side by side on one workstation and pins each of them to a single
+# GPU. Under SLURM the variable is unset, mdrun keeps its default device choice
+# and the scheduler's GPU allocation applies. -pin off because several jobs share
+# the node here, so mdrun must not claim a fixed set of cores for itself.
+GPUOPT=""
+if [[ -n "${GROSCORE_GPU_ID:-}" ]]; then
+  GPUOPT="-gpu_id $GROSCORE_GPU_ID -pin off"
+fi
 
 # Safety check: Exit if any files were modified within the last 70 minutes
 # This prevents running simulations while setup is still in progress
@@ -416,7 +426,7 @@ with open('$CUTOUT_PDB', 'w') as f:
       gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 2
     fi
     if [[ ! -f emin_vac.gro ]]; then
-      gmx mdrun -nt $nt -deffnm emin_vac
+      gmx mdrun -nt $nt $GPUOPT -deffnm emin_vac
     fi
     # Guard: if vacuum grompp/mdrun did not produce emin_vac.gro, stage 0 failed
     # (e.g. topology/coordinate mismatch). Do NOT fall through to the entangled-loop
@@ -451,14 +461,14 @@ with open('$CUTOUT_PDB', 'w') as f:
         gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv_sd -maxwarn 2
       fi
       if [[ ! -f emin_solv_sd.gro ]]; then
-        gmx mdrun -nt $nt -deffnm emin_solv_sd
+        gmx mdrun -nt $nt $GPUOPT -deffnm emin_solv_sd
       fi
       # Conjugate gradient refinement (resolves clashes that SD can't escape)
       if [[ ! -f emin_solv.tpr ]]; then
         gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv_cg.mdp -c emin_solv_sd.gro -o emin_solv -maxwarn 2
       fi
       if [[ ! -f emin_solv.gro ]]; then
-        gmx mdrun -nt $nt -deffnm emin_solv
+        gmx mdrun -nt $nt $GPUOPT -deffnm emin_solv
       fi
     elif [[ "$et" == "1" ]]; then
       echo "after equilibration entangled loops were found."
@@ -500,37 +510,37 @@ with open('$CUTOUT_PDB', 'w') as f:
     gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_init -maxwarn 10
   fi
   if [[ ! -f nvt_1_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_1_init
+    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_1_init
   fi
   if [[ ! -f nvt_2_init.tpr ]]; then
     gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_init.tpr -t nvt_1_init.cpt -p topol.top -o nvt_2_init -maxwarn 10
   fi
   if [[ ! -f nvt_2_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_2_init
+    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_2_init
   fi
   if [[ ! -f nvt_3_init.tpr ]]; then
     gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_init.tpr -t nvt_2_init.cpt -p topol.top -o nvt_3_init -maxwarn 10
   fi
   if [[ ! -f nvt_3_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_3_init
+    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_3_init
   fi
   if [[ ! -f nvt_4_init.tpr ]]; then
     gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_init.tpr -t nvt_3_init.cpt -p topol.top -o nvt_4_init -maxwarn 10
   fi
   if [[ ! -f nvt_4_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_4_init
+    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_4_init
   fi
   if [[ ! -f nvt_5_init.tpr ]]; then
     gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_init.tpr -t nvt_4_init.cpt -p topol.top -o nvt_5_init -n index.ndx -maxwarn 10
   fi
   if [[ ! -f nvt_5_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_5_init
+    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_init
   fi
   if [[ ! -f npt_init.tpr ]]; then
     gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
   fi
   if [[ ! -f npt_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt -deffnm npt_init
+    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_init
   fi
   if [[ ! -f npt_init_whole.gro ]]; then
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
@@ -571,37 +581,37 @@ with open('$CUTOUT_PDB', 'w') as f:
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_1_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_1_c${cycle}
+        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_1_c${cycle}
       fi
       if [[ ! -f nvt_2_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_c${cycle}.tpr -t nvt_1_c${cycle}.cpt -p topol.top -o nvt_2_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_2_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_2_c${cycle}
+        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_2_c${cycle}
       fi
       if [[ ! -f nvt_3_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_c${cycle}.tpr -t nvt_2_c${cycle}.cpt -p topol.top -o nvt_3_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_3_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_3_c${cycle}
+        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_3_c${cycle}
       fi
       if [[ ! -f nvt_4_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_c${cycle}.tpr -t nvt_3_c${cycle}.cpt -p topol.top -o nvt_4_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_4_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_4_c${cycle}
+        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_4_c${cycle}
       fi
       if [[ ! -f nvt_5_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_c${cycle}.tpr -t nvt_4_c${cycle}.cpt -p topol.top -o nvt_5_c${cycle} -n index.ndx -maxwarn 10
       fi
       if [[ ! -f nvt_5_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt -deffnm nvt_5_c${cycle}
+        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_c${cycle}
       fi
       if [[ ! -f npt_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/npt.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
       fi
       if [[ ! -f npt_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt -deffnm npt_c${cycle}
+        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_c${cycle}
       fi
     fi
 
@@ -610,7 +620,7 @@ with open('$CUTOUT_PDB', 'w') as f:
       gmx grompp -r emin_solv.gro -f bind.mdp -c npt_c${cycle}.tpr -t npt_c${cycle}.cpt -p topol.top -o bindfwd_${PULL_IDX} -n index.ndx -maxwarn 10
     fi
     if [[ ! -f bindfwd_${PULL_IDX}.gro ]]; then
-      gmx mdrun -nt $nt -deffnm bindfwd_${PULL_IDX}
+      gmx mdrun -nt $nt $GPUOPT -deffnm bindfwd_${PULL_IDX}
     fi
     # Decompress if gzipped from a previous run
     if [[ ! -f bindfwd_${PULL_IDX}.xvg && -f bindfwd_${PULL_IDX}.xvg.gz ]]; then
@@ -629,13 +639,13 @@ with open('$CUTOUT_PDB', 'w') as f:
       gmx grompp -r emin_solv.gro -f nptrev.mdp -c bindfwd_${PULL_IDX}.tpr -t bindfwd_${PULL_IDX}.cpt -p topol.top -o nptrev_${PUSH_IDX} -n index.ndx -maxwarn 10
     fi
     if [[ ! -f nptrev_${PUSH_IDX}.gro ]]; then
-      gmx mdrun -nt $nt -deffnm nptrev_${PUSH_IDX}
+      gmx mdrun -nt $nt $GPUOPT -deffnm nptrev_${PUSH_IDX}
     fi
     if [[ ! -f bindrev_${PUSH_IDX}.tpr ]]; then
       gmx grompp -r emin_solv.gro -f bindrev.mdp -c nptrev_${PUSH_IDX}.tpr -t nptrev_${PUSH_IDX}.cpt -p topol.top -o bindrev_${PUSH_IDX} -n index.ndx -maxwarn 10
     fi
     if [[ ! -f bindrev_${PUSH_IDX}.gro ]]; then
-      gmx mdrun -nt $nt -deffnm bindrev_${PUSH_IDX}
+      gmx mdrun -nt $nt $GPUOPT -deffnm bindrev_${PUSH_IDX}
     fi
     # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state this
     # cycle was equilibrated in and the state the push leg ended in. A large value

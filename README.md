@@ -81,6 +81,8 @@ conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-
 
 ### SLURM
 
+**Optional.** On a single multi-GPU machine you can skip SLURM entirely and use `--run-local` instead — see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation).
+
 On HPC clusters SLURM is managed by the system administrators — verify with `squeue --version`. On a local workstation (Ubuntu/Debian):
 
 ```bash
@@ -144,6 +146,10 @@ python ../groscore.py
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
 - `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields).
 - `--slurm` - SLURM template name from `slurm/` directory (default: `workstation`). Templates are plain `#SBATCH`-prefixed shell scripts; ship with `slurm/workstation.sh` (single workstation) and `slurm/vsc5.sh` (VSC-5 cluster). To target a different system, drop a new `<name>.sh` template into `slurm/` and pass `--slurm <name>`.
+- `--run-local` - Run on this machine instead of submitting to SLURM, spreading jobs over the local GPUs. Requires `--ngpus`. See [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation)
+- `--ngpus N` - Number of GPUs to distribute local jobs over (mandatory with `--run-local`)
+- `--jobs-per-gpu N` - Concurrent jobs per GPU in local mode (default: 1; `0` starts every job at once)
+- `--threads-per-job N` - CPU threads per local job, i.e. `gmx mdrun -nt` (default: 1)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 - `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures (skipped by default)
 - `--rmsd-warn` - Threshold in Å for the [rebinding QC](#rebinding-sanity-check-qc) (default: 10.0). Only flags structures, never changes a score
@@ -161,6 +167,8 @@ GroScore uses SLURM job arrays to run simulations in parallel. Monitor with:
 ```bash
 squeue -u $USER
 ```
+
+With `--run-local` there is no queue to inspect; use `local_status.gs` and `local_runner.log` instead (see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation)).
 
 Re-run `python ../groscore.py` periodically to check progress and collect results.
 
@@ -182,6 +190,37 @@ Note that CGI requires at least 20 cycles to fit forward and reverse work distri
 - **Convert to pKd**: use the linear fits provided per force field in the [Benchmark Data](#benchmark-data-haddocking-protein-protein-affinity-benchmark) section, e.g. for AMBER19SB/OPC3: `pKd ≈ -0.0176 × score + 3.4513`. These coefficients are calibrated on the HADDOCKING benchmark.
 - **Uncertainty**: the `CI95` column is a 95 % confidence interval on the score from the between-cycle scatter.
 - **Trustworthiness**: check the `RMSD_flag` column before using a score — see [Rebinding Sanity Check (QC)](#rebinding-sanity-check-qc) below.
+
+## Running Without SLURM (Single Multi-GPU Workstation)
+
+GPU cloud providers typically rent out one fat machine — 4 or 8 GPUs in a single box — with no scheduler installed. `--run-local` replaces the SLURM job array with a background runner that starts the jobs itself and pins each of them to one GPU:
+
+```bash
+python ../groscore.py -n 5 --run-local --ngpus 8
+```
+
+Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate — GroScore systems are small enough to run essentially GPU-resident (nonbonded, PME and the update/constraints all offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor.
+
+**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default one job runs per GPU at a time (`--jobs-per-gpu 1`) and the remaining structures wait in a queue, starting as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically rather than pre-assigned, so a slow structure cannot leave its GPU idle at the end of the run.
+
+| Option | Effect |
+|---|---|
+| `--ngpus N` | GPUs to distribute over (mandatory with `--run-local`) |
+| `--jobs-per-gpu N` | Concurrent jobs per GPU (default `1`). `2`–`4` often raises *aggregate* throughput, since one small system leaves the GPU idle during CPU-side work — at the cost of GPU memory. `0` starts every job immediately, no queue |
+| `--threads-per-job N` | `gmx mdrun -nt` per job (default `1`). Raise it only if you have far more cores than concurrent jobs |
+
+**Monitoring.** The runner is detached from the launching terminal, so simulations survive closing the shell or losing the SSH connection. Two files in the project directory track it:
+
+```bash
+cat local_status.gs      # counts: total / done / failed / running / pending
+tail -f local_runner.log # per-job start and exit lines, with the GPU used
+```
+
+Re-running `python ../groscore.py --run-local --ngpus 8` while a runner is active is safe: it refuses to start a second one and just re-scores whatever has finished, printing a one-line progress summary. Each structure's own output goes to `<structure>/job_local.out`, the local equivalent of a SLURM job log.
+
+To stop a run, `kill` the pid in `local_runner.pid` — the runner terminates its running jobs and exits. Since every stage of `job.run` is restart-safe, re-launching later resumes from the last completed step.
+
+**Caveats.** `--ngpus` must match the machine: a job assigned to a non-existent device fails in `mdrun` (GroScore warns if `nvidia-smi` reports fewer GPUs than requested). The runner uses `mdrun -gpu_id`, so device numbering follows `nvidia-smi`; it does not set `CUDA_VISIBLE_DEVICES`. And unlike SLURM there is no memory accounting — with a high `--jobs-per-gpu` on large no-cutout systems the machine can run out of host RAM or GPU memory.
 
 ## Rebinding Sanity Check (QC)
 
@@ -389,6 +428,7 @@ Useful options:
 
 - `--array-throttle N` — cap concurrent cycle tasks per structure (SLURM `%N`). Rarely needed: several GROMACS processes sharing one GPU give higher *aggregate* throughput than one at a time, because a single small-system run leaves the GPU idle during CPU-side work. Leave it unset unless you run out of GPU memory.
 - `--sequential` — legacy layout: one job per structure running all cycles in sequence.
+- `--run-local --ngpus N` — run on this machine instead of SLURM, see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation). The same two-stage layout applies: the setup job runs first and its cycles only start once it has finished, on whichever GPU frees up. `--array-throttle` has no effect locally — `--jobs-per-gpu` is the concurrency limit there.
 
 Re-running the command later re-submits only what is missing (a structure whose `setup.done` exists gets no new setup job) and re-scores whatever has completed.
 
@@ -553,7 +593,8 @@ GroScore/
     ├── make_cutout.py               # Interface region extraction
     ├── make_disres_en.py            # Distance restraints & elastic network
     ├── integrate.py                 # Force curve integration
-    └── rebound_rmsd.py              # Rebinding QC (re-bound vs. bound backbone RMSD)
+    ├── rebound_rmsd.py              # Rebinding QC (re-bound vs. bound backbone RMSD)
+    └── local_runner.py              # --run-local: background job pool, one GPU per slot
 ```
 
 ## Troubleshooting

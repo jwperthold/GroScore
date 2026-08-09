@@ -5,3 +5,7 @@ __pycache__/
 .claude/
 test*/
 bm_*/
+local_jobs.json
+local_runner.log
+local_runner.pid
+job_local*.out
