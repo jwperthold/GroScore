@@ -46,7 +46,12 @@ def prepare(target, pdb):
     src = os.path.join(SRC, pdb + ".pdb")
     d = os.path.join(OUT, target)
     os.makedirs(d, exist_ok=True)
-    atoms = [ln for ln in open(src) if ln.startswith(("ATOM", "HETATM", "TER"))]
+    # Some scoreset target PDBs carry a stray 'CD' atom in leucine (LEU has CD1/CD2,
+    # not a plain CD), which makes gmx pdb2gmx abort in stage 0 — drop it.
+    atoms = [ln for ln in open(src)
+             if ln.startswith(("ATOM", "HETATM", "TER"))
+             and not (ln.startswith("ATOM") and ln[12:16].strip() == "CD"
+                      and ln[17:20].strip() == "LEU")]
     with open(os.path.join(d, "input.pdb"), "w") as g:
         g.writelines(atoms)
         g.write("END\n")
