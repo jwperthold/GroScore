@@ -21,6 +21,7 @@
 #
 
 import os, re, sys, math, glob, argparse
+from statistics import NormalDist
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -171,6 +172,105 @@ def panel(ax, fwd, rev, title, nbins):
             "sd_f": float(np.std(fwd)), "sd_r": float(np.std(rev_al))}
 
 
+# Two equally wide Gaussians cross halfway between their means, i.e. sep/2 sigma
+# out in either tail, so "is the crossing sampled?" is really "does a run of n
+# cycles reach sep/2 sigma?". The most extreme of n standard normals sits near
+# z_n = Phi^-1(1 - 1/n), so the crossing only leaves the sampled region once
+# sep > 2 * z_n. That limit tightens when there are few cycles and relaxes when
+# there are many, which a flat threshold cannot do -- the old fixed 2.0 flagged
+# legs whose tails comfortably covered the gap. The cap stops a long run from
+# licensing an arbitrarily wide gap: past 4 sigma two Gaussians share about 5%
+# of their area no matter how many samples each has.
+SEP_CAP = 4.0
+
+
+def sep_limit(n):
+    """Largest mean gap, in pooled sigma, that n cycles per direction can span."""
+    if n < N_MIN_SEP:
+        return float("nan")          # too few cycles to speak of a tail at all
+    return min(SEP_CAP, 2.0 * NormalDist().inv_cdf(1.0 - 1.0 / n))
+
+
+# A metric computed from too few cycles is not evidence either way, and a flag
+# raised on one is noise dressed up as a finding. Each check therefore reports
+# one of three states -- ok, flagged, or n/a -- instead of collapsing "no data"
+# into "failed": a leg with a single cycle used to come back FD+VAR purely
+# because 0/0 is not a number.
+N_MIN_WIDTH = 3     # below this a std. dev. is not a width
+N_MIN_SEP = 4       # sep_limit's extreme-value argument needs a tail to reach
+CHECKS = ("FD", "VAR", "SEP")
+
+# FD and VAR both compare a measured ratio against 1 and both allow a factor of
+# TOL either way: a leg has to dissipate twice what its own widths permit, or
+# run twice as wide in one direction as in the other, before the two-Gaussian
+# picture is called broken. That tolerance says how much mismatch MATTERS and
+# does not depend on n. What does depend on n is how much mismatch noise alone
+# produces -- a std. dev. from 6 cycles is worth about +-45%, so an apparent
+# factor of two there is unremarkable. Each band is therefore the wider of the
+# two: the material tolerance, or a Z_NOISE-sigma sampling band. At n = 16 the
+# FD sampling band comes out at 0.50-2.00, so the tolerance is what a leg of
+# that length would have been judged against anyway; the widening only bites on
+# short runs. It never tightens BELOW the tolerance either, so a very long run
+# cannot report a 5% mismatch as a defect just because it is resolvable.
+TOL = 2.0           # factor-two material tolerance, both directions
+Z_NOISE = 2.0       # sampling bands quoted at two sigma
+
+
+def tol_band(sigma_log):
+    """Multiplicative band around 1: factor TOL, widened to Z_NOISE sigma."""
+    hw = max(math.log(TOL), Z_NOISE * sigma_log)
+    return math.exp(-hw), math.exp(hw)
+
+
+def band(value, lo, hi, testable=True):
+    """ok / flag / n/a for a metric that must sit inside [lo, hi].
+
+    A nan bound means the band itself could not be formed, which is as much a
+    reason to abstain as a nan value.
+    """
+    if not (testable and np.isfinite(value) and not (math.isnan(lo) or math.isnan(hi))):
+        return "n/a"
+    return "ok" if lo <= value <= hi else "flag"
+
+
+def fd_check(sd_f, sd_r, diss, ratio, n):
+    """FD state, plus the band it was judged against.
+
+    diss_pred inherits the sampling noise of the two variances and diss that of
+    the two means; for a normal sample those two are independent, so their
+    relative variances add. Near equilibrium diss is not resolved from zero at
+    all and the ratio is 0/0 -- a leg that does not measurably dissipate cannot
+    be tested against its own widths, which is n/a rather than a failure.
+    """
+    nan = float("nan")
+    v2 = sd_f ** 2 + sd_r ** 2
+    if n < N_MIN_WIDTH or v2 <= 0:
+        return "n/a", nan, nan
+    sd_diss = math.sqrt(v2 / (4.0 * n))
+    if abs(diss) <= Z_NOISE * sd_diss:
+        return "n/a", nan, nan
+    if diss < 0:
+        # Resolved NEGATIVE dissipation: the two directions are not the same
+        # process (or the works are mis-signed). No band can rescue that.
+        return "flag", nan, nan
+    rel_pred = 2.0 * (sd_f ** 4 + sd_r ** 4) / ((n - 1) * v2 ** 2)
+    lo, hi = tol_band(math.sqrt(rel_pred + (sd_diss / diss) ** 2))
+    return band(ratio, lo, hi), lo, hi
+
+
+def var_check(sd_f, sd_r, widths, n):
+    """VAR state, plus the band it was judged against.
+
+    Var(ln s) = 1/(2(n-1)) for a normal sample, and the two directions are
+    independent, so ln(sf/sr) carries a sampling sigma of 1/sqrt(n-1).
+    """
+    nan = float("nan")
+    if n < N_MIN_WIDTH or sd_f <= 0 or sd_r <= 0:
+        return "n/a", nan, nan
+    lo, hi = tol_band(1.0 / math.sqrt(n - 1))
+    return band(widths, lo, hi), lo, hi
+
+
 def gaussian_check(st, rt):
     """Near-equilibrium consistency of one leg.
 
@@ -184,26 +284,41 @@ def gaussian_check(st, rt):
       VAR  the two directions have very different widths; the equal split behind
            the reported dissipation is then unjustified, and CGI and the average
            estimator will disagree
-      SEP  the histograms sit more than ~2 pooled sigma apart, i.e. barely
-           overlap, so the CGI crossing is extrapolated into a gap where neither
-           distribution has samples
+      SEP  the histograms sit further apart than the cycles can span -- more
+           than 2 * z_n pooled sigma, z_n = Phi^-1(1 - 1/n) -- so the CGI
+           crossing is extrapolated into a gap where neither has samples
+
+    Every threshold is referred to the sampling noise of n cycles, so none of
+    the three can fire on a mismatch that n cycles would produce by chance. A
+    check whose input is undefined at that n reports n/a and takes part in no
+    verdict.
     """
-    sd_f, sd_r, diss = st["sd_f"], st["sd_r"], st["diss"]
+    sd_f, sd_r, diss, n = st["sd_f"], st["sd_r"], st["diss"], st["n"]
     pred = (sd_f ** 2 + sd_r ** 2) / (4.0 * rt)
     pooled = math.sqrt((sd_f ** 2 + sd_r ** 2) / 2.0)
     ratio = diss / pred if pred > 0 else float("nan")
     widths = sd_f / sd_r if sd_r > 0 else float("nan")
     sep = 2.0 * diss / pooled if pooled > 0 else float("nan")   # gap = 2*diss
+    lim = sep_limit(n)
 
-    flags = []
-    if not (np.isfinite(ratio) and 0.5 <= ratio <= 2.0):
-        flags.append("FD")
-    if not (np.isfinite(widths) and 0.5 <= widths <= 2.0):
-        flags.append("VAR")
-    if np.isfinite(sep) and sep > 2.0:
-        flags.append("SEP")
-    st.update(pred=pred, ratio=ratio, widths=widths, sep=sep,
-              verdict="+".join(flags) if flags else "OK")
+    fd_state, fd_lo, fd_hi = fd_check(sd_f, sd_r, diss, ratio, n)
+    var_state, var_lo, var_hi = var_check(sd_f, sd_r, widths, n)
+    state = {"FD": fd_state, "VAR": var_state,
+             # One-sided: a negative sep means the two means have crossed over,
+             # which puts the crossing between them -- sampled, not extrapolated.
+             "SEP": band(sep, -math.inf, lim)}
+    flags = [c for c in CHECKS if state[c] == "flag"]
+    skipped = [c for c in CHECKS if state[c] == "n/a"]
+
+    if len(skipped) == len(CHECKS):
+        verdict = "n/a (n=%d)" % n
+    else:
+        verdict = ("+".join(flags) if flags else "OK")
+        if skipped:
+            verdict += " (%s n/a)" % ",".join(skipped)
+    st.update(pred=pred, ratio=ratio, widths=widths, sep=sep, sep_lim=lim,
+              fd_band=(fd_lo, fd_hi), var_band=(var_lo, var_hi),
+              state=state, flags=flags, skipped=skipped, verdict=verdict)
     return st
 
 
@@ -263,7 +378,23 @@ print("Wrote %s  (%d structure%s: %s)"
 # This table tests all three; it is diagnostic only and changes no result.
 
 def cell(x, fmt="%8.2f"):
-    return "     nan" if not np.isfinite(x) else fmt % x
+    """Format a metric, or right-align 'n/a' in the same width if it has none."""
+    if np.isfinite(x):
+        return fmt % x
+    return "n/a".rjust(int(re.match(r"%(\d+)", fmt).group(1)))
+
+
+def why_na(check, st):
+    """Why a check abstained on this leg, in a few words."""
+    n = st["n"]
+    if check == "SEP":
+        return "n < %d" % N_MIN_SEP
+    if n < N_MIN_WIDTH:
+        return "n < %d" % N_MIN_WIDTH
+    if st["sd_f"] <= 0 or st["sd_r"] <= 0:
+        return "a width is zero"
+    return "diss %.1f not resolved from zero (+-%.1f)" % (
+        st["diss"], Z_NOISE * math.sqrt((st["sd_f"] ** 2 + st["sd_r"] ** 2) / (4.0 * n)))
 
 # Long-form explanation of each flag, printed only for the flags that actually
 # fired. The maths is short enough to state in full, and the failure modes are
@@ -289,6 +420,13 @@ FLAG_HELP = {
  "  directions gives diss_pred = (sf^2 + sr^2) / 4RT, so ratio = diss / diss_pred",
  "  must sit near 1 wherever the Gaussian picture holds.",
  "",
+ "  'Near' means a factor of two, or the 2-sigma sampling band of n cycles where",
+ "  that is wider. Both ends of the ratio carry noise -- diss_pred from the two",
+ "  sample variances, diss from the two sample means -- and at n = 16 they combine",
+ "  to a band of 0.50-2.00, so a factor of two is simply what a run of that length",
+ "  can resolve. At n = 6 the same noise spans roughly 0.4-2.4 and the check backs",
+ "  off accordingly, rather than reporting the shortness of the run as a defect.",
+ "",
  "  ratio >> 1  the leg dissipates far more than its own spread permits. The real",
  "              distribution is skewed, with a long low-work tail that N cycles",
  "              never reach; the fitted Gaussian is too narrow and sits too far",
@@ -306,6 +444,12 @@ FLAG_HELP = {
  "  splitting the hysteresis evenly between them -- which is precisely what the",
  "  single 'diss' number does -- has no justification, and CGI and the average",
  "  estimator will not agree.",
+ "",
+ "  'Strongly' is again a factor of two, or the 2-sigma sampling band where that is",
+ "  wider. A sample std. dev. carries Var(ln s) = 1/(2(n-1)), so ln(sf/sr) has a",
+ "  sampling sigma of 1/sqrt(n-1) -- 0.26 at n = 16, a 2-sigma band of 0.60-1.68",
+ "  that sits comfortably inside the factor of two. Only below about n = 10 does",
+ "  the noise band overtake the tolerance and become what the check enforces.",
  "",
  "  The opposite limit deserves a warning of its own. CGI locates the crossing via",
  "",
@@ -325,10 +469,18 @@ FLAG_HELP = {
  "        <W_f> - <-W_r>  =  <W_f> + <W_r>  =  2 * diss",
  "",
  "  and sep divides that gap by the pooled width sqrt((sf^2 + sr^2)/2), expressing",
- "  the hysteresis in units of the distributions' own spread. Above about 2 the two",
- "  curves meet only in their tails, where neither has samples: the reported crossing",
- "  is then produced by extrapolating the Gaussian fit into empty space, and it moves",
- "  as soon as one more cycle lands anywhere near it.",
+ "  the hysteresis in units of the distributions' own spread. Two equally wide",
+ "  Gaussians cross halfway between their means, so the crossing lies sep/2 sigma",
+ "  into either tail -- measured only if the cycles actually reach that far out.",
+ "  The most extreme of n samples sits near",
+ "",
+ "        z_n  =  Phi^-1( 1 - 1/n )        1.53 at n = 16, 1.64 at n = 20",
+ "",
+ "  so the leg is flagged once sep exceeds 2 * z_n (capped at 4.0). Past that the",
+ "  reported crossing is produced by extrapolating the Gaussian fit into empty",
+ "  space, and it moves as soon as one more cycle lands anywhere near it. The",
+ "  limit tightens with few cycles and relaxes with many, because what decides",
+ "  the question is not the size of the gap but whether the samples span it.",
  "",
  "  This is not a defect of CGI in particular. Every bidirectional estimator (CGI,",
  "  BAR, Crooks) needs the forward and reverse work ensembles to overlap, because dG",
@@ -344,7 +496,8 @@ print("Gaussian / near-equilibrium consistency  (RT = %.3f kJ/mol at %.1f K)"
 print("-" * 78)
 print("CGI fits a Gaussian to each work distribution and reports where the two curves")
 print("cross. That crossing is dG only if the works really are Gaussian, comparably")
-print("wide, and overlapping. The three flags test exactly those preconditions.")
+print("wide, and overlapping. The three flags test exactly those preconditions, and")
+print("report n/a for whichever of them the cycle count cannot answer.")
 print("")
 print("  W_f, W_r    forward / reverse work of the leg, one value per cycle")
 print("  diss        ( <W_f> + <W_r> ) / 2        dissipated work; dG cancels from the sum")
@@ -353,30 +506,37 @@ print("  sf, sr      std. dev. of the forward / sign-aligned reverse works")
 print("  diss_pred   ( sf^2 + sr^2 ) / 4RT        linear-response prediction for diss")
 print("  ratio       diss / diss_pred             1.0 if the works are Gaussian")
 print("  sep         2 * diss / sqrt( (sf^2 + sr^2) / 2 )   mean gap, in pooled sigma")
+print("  sep_max     2 * Phi^-1( 1 - 1/n ), capped at 4.0   how far n cycles reach")
 print("")
-print("  %-10s %-13s %4s %9s %9s %7s %7s %6s %8s   %s"
+print("ratio and sf/sr are flagged outside a factor of %.1f, widened to a %.0f-sigma"
+      % (TOL, Z_NOISE))
+print("sampling band wherever n is small enough for noise alone to reach that far.")
+print("")
+print("  %-10s %-13s %4s %9s %9s %7s %7s %6s %8s %8s   %s"
       % ("structure", "leg", "n", "diss", "diss_pred", "ratio", "sf/sr", "sep",
-         "diss/RT", "verdict"))
+         "sep_max", "diss/RT", "verdict"))
 for sid, leg, st in stats:
-    print("  %-10s %-13s %4d %9s %9s %7s %7s %6s %8s   %s"
+    print("  %-10s %-13s %4d %9s %9s %7s %7s %6s %8s %8s   %s"
           % (sid, leg, st["n"], cell(st["diss"]), cell(st["pred"]),
              cell(st["ratio"], "%7.2f"), cell(st["widths"], "%7.2f"),
-             cell(st["sep"], "%6.1f"), cell(st["diss"] / RT, "%8.1f"), st["verdict"]))
+             cell(st["sep"], "%6.1f"), cell(st["sep_lim"], "%8.1f"),
+             cell(st["diss"] / RT, "%8.1f"), st["verdict"]))
 
-bad = [(sid, leg, st) for sid, leg, st in stats if st["verdict"] != "OK"]
+bad = [(sid, leg, st) for sid, leg, st in stats if st["flags"]]
+thin = [(sid, leg, st) for sid, leg, st in stats if st["skipped"]]
 print("")
 if not bad:
-    print("All %d legs are consistent with the Gaussian assumption: the dissipation" % len(stats))
-    print("matches the width of the distributions, the two directions are comparably")
-    print("wide, and the histograms overlap. The CGI crossings are measured, not")
-    print("extrapolated, and can be read at face value.")
+    print("No leg failed a check it had the cycles to answer: where testable, the")
+    print("dissipation matches the width of the distributions, the two directions are")
+    print("comparably wide, and the histograms overlap. Those CGI crossings are")
+    print("measured, not extrapolated, and can be read at face value.")
 else:
     print("%d of %d legs failed at least one check." % (len(bad), len(stats)))
 
     # One block per flag that fired anywhere, each listing the legs it applies to
     # with the number that triggered it.
-    for flag in ("FD", "VAR", "SEP"):
-        hits = [(sid, leg, st) for sid, leg, st in bad if flag in st["verdict"].split("+")]
+    for flag in CHECKS:
+        hits = [(sid, leg, st) for sid, leg, st in bad if flag in st["flags"]]
         if not hits:
             continue
         print("")
@@ -386,14 +546,20 @@ else:
         print("")
         print("  affected legs:")
         for sid, leg, st in hits:
-            if flag == "FD":
-                detail = "ratio %.2f (diss %.1f vs %.1f predicted)" % (
-                    st["ratio"], st["diss"], st["pred"])
+            if flag == "FD" and not np.isfinite(st["fd_band"][1]):
+                detail = "dissipation %.1f kJ/mol (%.0f RT) is resolved and NEGATIVE" % (
+                    st["diss"], st["diss"] / RT)
+            elif flag == "FD":
+                detail = "ratio %.2f, outside %.2f-%.2f (diss %.1f vs %.1f predicted)" % (
+                    st["ratio"], st["fd_band"][0], st["fd_band"][1],
+                    st["diss"], st["pred"])
             elif flag == "VAR":
-                detail = "sf/sr %.2f (sf %.1f, sr %.1f)" % (st["widths"], st["sd_f"], st["sd_r"])
+                detail = "sf/sr %.2f, outside %.2f-%.2f (sf %.1f, sr %.1f)" % (
+                    st["widths"], st["var_band"][0], st["var_band"][1],
+                    st["sd_f"], st["sd_r"])
             else:
-                detail = "sep %.1f sigma (diss %.1f = %.0f RT)" % (
-                    st["sep"], st["diss"], st["diss"] / RT)
+                detail = "sep %.1f sigma vs %.1f reachable at n=%d (diss %.1f = %.0f RT)" % (
+                    st["sep"], st["sep_lim"], st["n"], st["diss"], st["diss"] / RT)
             print("    %-10s %-13s  %s" % (sid, leg, detail))
 
     print("")
@@ -415,3 +581,31 @@ else:
     print("  confidence interval around whatever the estimator converges to; they do")
     print("  not reduce the hysteresis that separates the two distributions, which is")
     print("  set by the switching rate alone.")
+
+# Skipped checks are reported separately from failed ones: a leg that has not
+# run enough cycles has not been judged, and saying so is the only honest
+# summary. This block also fires when nothing was flagged.
+if thin:
+    print("")
+    print("-" * 78)
+    print("n/a -- the check has no answer on this leg")
+    print("")
+    print("  FD and VAR are read off the widths of the two work distributions, and SEP")
+    print("  asks how far those widths let the sampled tails reach. A std. dev. from")
+    print("  fewer than %d cycles is not a width, so FD and VAR abstain below that; SEP" % N_MIN_WIDTH)
+    print("  needs %d, because 2 * Phi^-1(1 - 1/n) is not a tail position until there is" % N_MIN_SEP)
+    print("  a tail. FD abstains for one further reason: a leg whose dissipation is not")
+    print("  resolved from zero has no ratio to test, diss / diss_pred being 0/0 there.")
+    print("")
+    print("  An abstaining check is neither a pass nor a failure -- the leg is simply")
+    print("  untested on that point, and the CGI crossing carries no evidence for or")
+    print("  against it. More cycles turn these into real verdicts; a leg that abstains")
+    print("  only because it barely dissipates is in no trouble to begin with.")
+    print("")
+    print("  untested legs:")
+    for sid, leg, st in thin:
+        grouped = {}
+        for check in st["skipped"]:
+            grouped.setdefault(why_na(check, st), []).append(check)
+        for reason, checks in grouped.items():
+            print("    %-10s %-13s  %-11s  %s" % (sid, leg, ",".join(checks), reason))
