@@ -41,7 +41,12 @@ ap.add_argument("-r", "--results", default="results_fe.gs", help="legacy results
 ap.add_argument("-d", "--resultsdir", default="results_fe.d", help="per-cycle results dir")
 ap.add_argument("-o", "--out", default="fe_works.png", help="output image (default: fe_works.png)")
 ap.add_argument("--bins", type=int, default=0, help="histogram bins (0 = automatic)")
+ap.add_argument("--temp", type=float, default=310.0,
+                help="temperature in K for the sigma^2/2RT check (default: 310, "
+                     "must match groscore_fe.py --temp)")
 args = ap.parse_args()
+
+RT = 0.00831446261815324 * args.temp  # kJ/mol, same constant as groscore_fe.py
 
 
 def read_works(filepath, workdir):
@@ -94,7 +99,10 @@ def cgi_point(fwd, rev_aligned):
 
 
 def panel(ax, fwd, rev, title, nbins):
-    """Forward vs sign-aligned reverse histogram with estimate rules."""
+    """Forward vs sign-aligned reverse histogram with estimate rules.
+
+    Returns the leg statistics that gaussian_check() turns into a verdict.
+    """
     rev_al = [-w for w in rev]
     lo = min(min(fwd), min(rev_al))
     hi = max(max(fwd), max(rev_al))
@@ -149,6 +157,45 @@ def panel(ax, fwd, rev, title, nbins):
                     facecolor=SURFACE, edgecolor="none", framealpha=0.92)
     leg.set_zorder(5)
 
+    return {"n": len(fwd), "avg": avg, "cgi": cgi, "diss": diss,
+            "sd_f": float(np.std(fwd)), "sd_r": float(np.std(rev_al))}
+
+
+def gaussian_check(st, rt):
+    """Near-equilibrium consistency of one leg.
+
+    Linear response (Gaussian work distributions) gives W_diss = sigma^2 / 2RT
+    per direction. The plotted dissipation averages the two directions, so the
+    prediction it should be compared against is (sf^2 + sr^2) / 4RT. Three ways
+    the leg can fail, all of which undermine the CGI estimate:
+
+      FD   measured dissipation does not match the width of the distributions,
+           so the works are not Gaussian and CGI's two-Gaussian model is wrong
+      VAR  the two directions have very different widths; the equal split behind
+           the reported dissipation is then unjustified, and CGI and the average
+           estimator will disagree
+      SEP  the histograms sit more than ~2 pooled sigma apart, i.e. barely
+           overlap, so the CGI crossing is extrapolated into a gap where neither
+           distribution has samples
+    """
+    sd_f, sd_r, diss = st["sd_f"], st["sd_r"], st["diss"]
+    pred = (sd_f ** 2 + sd_r ** 2) / (4.0 * rt)
+    pooled = math.sqrt((sd_f ** 2 + sd_r ** 2) / 2.0)
+    ratio = diss / pred if pred > 0 else float("nan")
+    widths = sd_f / sd_r if sd_r > 0 else float("nan")
+    sep = 2.0 * diss / pooled if pooled > 0 else float("nan")   # gap = 2*diss
+
+    flags = []
+    if not (np.isfinite(ratio) and 0.5 <= ratio <= 2.0):
+        flags.append("FD")
+    if not (np.isfinite(widths) and 0.5 <= widths <= 2.0):
+        flags.append("VAR")
+    if np.isfinite(sep) and sep > 2.0:
+        flags.append("SEP")
+    st.update(pred=pred, ratio=ratio, widths=widths, sep=sep,
+              verdict="+".join(flags) if flags else "OK")
+    return st
+
 
 # ---- collect ----------------------------------------------------------------
 works = read_works(args.results, args.resultsdir)
@@ -164,6 +211,7 @@ if not order:
 
 # ---- figure -----------------------------------------------------------------
 n = len(order)
+stats = []          # (struct_id, leg, stats dict) in plot order
 fig, axes = plt.subplots(n, 2, figsize=(11, 3.4 * n), squeeze=False,
                          facecolor=SURFACE)
 for row, sid in enumerate(order):
@@ -183,10 +231,12 @@ for row, sid in enumerate(order):
     nb = args.bins if args.bins > 0 else max(6, min(25, len(keys) // 3 + 4))
     for ax in axes[row]:
         ax.set_facecolor(SURFACE)
-    panel(axes[row][0], W_intro, W_remove,
-          "%s — bound-state restraints (dhdl)" % sid, nb)
-    panel(axes[row][1], Wtot_f, Wtot_r,
-          "%s — unbinding / rebinding (pull + dhdl)" % sid, nb)
+    stats.append((sid, "restraints",
+                  gaussian_check(panel(axes[row][0], W_intro, W_remove,
+                                       "%s — bound-state restraints (dhdl)" % sid, nb), RT)))
+    stats.append((sid, "unbind/rebind",
+                  gaussian_check(panel(axes[row][1], Wtot_f, Wtot_r,
+                                       "%s — unbinding / rebinding (pull + dhdl)" % sid, nb), RT)))
 
 fig.suptitle("GroScore-FE leg work distributions — forward vs sign-aligned reverse",
              fontsize=13, fontweight="bold", color=INK, y=0.997)
@@ -194,5 +244,164 @@ fig.tight_layout(rect=[0, 0, 1, 0.985])
 fig.savefig(args.out, dpi=180, facecolor=SURFACE)
 print("Wrote %s  (%d structure%s: %s)"
       % (args.out, n, "" if n == 1 else "s", ", ".join(order)))
-for sid in order:
-    print("  %-8s %d cycles" % (sid, len(works[sid])))
+
+# ---- Gaussian / near-equilibrium consistency --------------------------------
+#
+# CGI models both work distributions as Gaussians and reports where they cross.
+# That is only meaningful if the works really are Gaussian, if the two directions
+# have comparable widths, and if the crossing lies inside the sampled region.
+# This table tests all three; it is diagnostic only and changes no result.
+
+def cell(x, fmt="%8.2f"):
+    return "     nan" if not np.isfinite(x) else fmt % x
+
+# Long-form explanation of each flag, printed only for the flags that actually
+# fired. The maths is short enough to state in full, and the failure modes are
+# distinct enough that "which one fired" changes what you should do next.
+FLAG_HELP = {
+"FD": [
+ "FD -- the work distributions are not Gaussian",
+ "",
+ "  Crooks' fluctuation theorem relates the two directions of the same switching",
+ "  process,",
+ "",
+ "        P_f(W) / P_r(-W)  =  exp( (W - dG) / RT )",
+ "",
+ "  Impose that on two Gaussians and the model becomes very rigid: the exponent of",
+ "  a Gaussian is quadratic in W, so matching both sides term by term forces the",
+ "  two distributions to share one width, and ties the dissipation to that width",
+ "  alone,",
+ "",
+ "        W_diss  =  <W> -/+ dG  =  sigma^2 / (2 RT)      in each direction",
+ "",
+ "  That is the fluctuation-dissipation relation: once the works are Gaussian, the",
+ "  spread of a leg fully determines how much it dissipates. Averaging over the two",
+ "  directions gives diss_pred = (sf^2 + sr^2) / 4RT, so ratio = diss / diss_pred",
+ "  must sit near 1 wherever the Gaussian picture holds.",
+ "",
+ "  ratio >> 1  the leg dissipates far more than its own spread permits. The real",
+ "              distribution is skewed, with a long low-work tail that N cycles",
+ "              never reach; the fitted Gaussian is too narrow and sits too far",
+ "              out. This is the signature of switching too fast, and it biases",
+ "              the CGI crossing away from dG.",
+ "  ratio << 1  the spread is too large for the observed dissipation. That usually",
+ "              means outlier cycles or cycles that are not independent, i.e. a",
+ "              sampling problem rather than a protocol problem.",
+],
+"VAR": [
+ "VAR -- the two directions have very different widths",
+ "",
+ "  The same Crooks-plus-Gaussian argument demands sf = sr exactly. Strongly unequal",
+ "  widths mean the forward and reverse legs are not exploring the same process, so",
+ "  splitting the hysteresis evenly between them -- which is precisely what the",
+ "  single 'diss' number does -- has no justification, and CGI and the average",
+ "  estimator will not agree.",
+ "",
+ "  The opposite limit deserves a warning of its own. CGI locates the crossing via",
+ "",
+ "        dG  =  [ <W_f>/sf^2 - <-W_r>/sr^2  -/+ sqrt(...) ] / ( 1/sf^2 - 1/sr^2 )",
+ "",
+ "  whose denominator vanishes as sf -> sr. In that limit two equally wide Gaussians",
+ "  cross exactly at their midpoint, which is dG_avg -- so CGI carries no extra",
+ "  information there, and computing it as a ratio of two vanishing numbers only",
+ "  amplifies noise. When sf/sr is close to 1, prefer dG_avg and read CGI as",
+ "  confirmation, not as an independent estimate.",
+],
+"SEP": [
+ "SEP -- the histograms barely overlap",
+ "",
+ "  The distance between the plotted means is",
+ "",
+ "        <W_f> - <-W_r>  =  <W_f> + <W_r>  =  2 * diss",
+ "",
+ "  and sep divides that gap by the pooled width sqrt((sf^2 + sr^2)/2), expressing",
+ "  the hysteresis in units of the distributions' own spread. Above about 2 the two",
+ "  curves meet only in their tails, where neither has samples: the reported crossing",
+ "  is then produced by extrapolating the Gaussian fit into empty space, and it moves",
+ "  as soon as one more cycle lands anywhere near it.",
+ "",
+ "  This is not a defect of CGI in particular. Every bidirectional estimator (CGI,",
+ "  BAR, Crooks) needs the forward and reverse work ensembles to overlap, because dG",
+ "  is extracted from the region where both are populated. The natural scale is RT:",
+ "  a leg dissipating a few RT converges comfortably, one dissipating tens of RT",
+ "  needs exponentially many cycles to sample the tail that carries the answer.",
+],
+}
+
+print("")
+print("Gaussian / near-equilibrium consistency  (RT = %.3f kJ/mol at %.1f K)"
+      % (RT, args.temp))
+print("-" * 78)
+print("CGI fits a Gaussian to each work distribution and reports where the two curves")
+print("cross. That crossing is dG only if the works really are Gaussian, comparably")
+print("wide, and overlapping. The three flags test exactly those preconditions.")
+print("")
+print("  W_f, W_r    forward / reverse work of the leg, one value per cycle")
+print("  diss        ( <W_f> + <W_r> ) / 2        dissipated work; dG cancels from the sum")
+print("  dG_avg      ( <W_f> - <W_r> ) / 2        the antisymmetric partner of diss")
+print("  sf, sr      std. dev. of the forward / sign-aligned reverse works")
+print("  diss_pred   ( sf^2 + sr^2 ) / 4RT        linear-response prediction for diss")
+print("  ratio       diss / diss_pred             1.0 if the works are Gaussian")
+print("  sep         2 * diss / sqrt( (sf^2 + sr^2) / 2 )   mean gap, in pooled sigma")
+print("")
+print("  %-10s %-13s %4s %9s %9s %7s %7s %6s %8s   %s"
+      % ("structure", "leg", "n", "diss", "diss_pred", "ratio", "sf/sr", "sep",
+         "diss/RT", "verdict"))
+for sid, leg, st in stats:
+    print("  %-10s %-13s %4d %9s %9s %7s %7s %6s %8s   %s"
+          % (sid, leg, st["n"], cell(st["diss"]), cell(st["pred"]),
+             cell(st["ratio"], "%7.2f"), cell(st["widths"], "%7.2f"),
+             cell(st["sep"], "%6.1f"), cell(st["diss"] / RT, "%8.1f"), st["verdict"]))
+
+bad = [(sid, leg, st) for sid, leg, st in stats if st["verdict"] != "OK"]
+print("")
+if not bad:
+    print("All %d legs are consistent with the Gaussian assumption: the dissipation" % len(stats))
+    print("matches the width of the distributions, the two directions are comparably")
+    print("wide, and the histograms overlap. The CGI crossings are measured, not")
+    print("extrapolated, and can be read at face value.")
+else:
+    print("%d of %d legs failed at least one check." % (len(bad), len(stats)))
+
+    # One block per flag that fired anywhere, each listing the legs it applies to
+    # with the number that triggered it.
+    for flag in ("FD", "VAR", "SEP"):
+        hits = [(sid, leg, st) for sid, leg, st in bad if flag in st["verdict"].split("+")]
+        if not hits:
+            continue
+        print("")
+        print("-" * 78)
+        for line in FLAG_HELP[flag]:
+            print(line)
+        print("")
+        print("  affected legs:")
+        for sid, leg, st in hits:
+            if flag == "FD":
+                detail = "ratio %.2f (diss %.1f vs %.1f predicted)" % (
+                    st["ratio"], st["diss"], st["pred"])
+            elif flag == "VAR":
+                detail = "sf/sr %.2f (sf %.1f, sr %.1f)" % (st["widths"], st["sd_f"], st["sd_r"])
+            else:
+                detail = "sep %.1f sigma (diss %.1f = %.0f RT)" % (
+                    st["sep"], st["diss"], st["diss"] / RT)
+            print("    %-10s %-13s  %s" % (sid, leg, detail))
+
+    print("")
+    print("-" * 78)
+    print("What to do about it")
+    print("")
+    print("  Prefer dG_avg over CGI on the flagged legs: the average estimator makes no")
+    print("  Gaussian assumption and degrades gracefully, whereas a CGI crossing drawn")
+    print("  from unsampled tails can land anywhere.")
+    print("")
+    print("  To fix the physics rather than the readout, dissipate less by switching")
+    print("  more SLOWLY -- longer legs at a proportionally lower pull rate. Dissipated")
+    print("  work falls roughly linearly with the switching time in the near-equilibrium")
+    print("  regime, and narrower, less separated distributions follow. Leg length and")
+    print("  rate are coupled by rate x time = 1.0 nm, so nsteps in the leg mdp and")
+    print("  --pull-rate in make_boresch.py must always be changed together.")
+    print("")
+    print("  Running more cycles will NOT clear these flags. More cycles shrink the")
+    print("  confidence interval around whatever the estimator converges to; they do")
+    print("  not reduce the hysteresis that separates the two distributions, which is")
+    print("  set by the switching rate alone.")

@@ -415,7 +415,17 @@ To inspect convergence, plot the work distributions of every leg — one row per
 python3 ../utils/plot_fe_works.py -o fe_works.png
 ```
 
-The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means.
+The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2` — the free energy cancels out of that sum, so it measures hysteresis without assuming any ΔG estimate.
+
+The same command also prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
+
+```
+  structure  leg              n      diss diss_pred   ratio   sf/sr    sep   verdict
+  T30        restraints      60      4.12      3.58    1.15    1.05    1.9   OK
+  T30        unbind/rebind   60    148.49     16.70    8.89    0.94   32.0   FD+SEP
+```
+
+CGI models both distributions as Gaussians and reports where they cross, which is only meaningful if three things hold. Near equilibrium, linear response gives `W_diss = σ²/2RT` per direction, so the plotted dissipation should match `diss_pred = (σ_f² + σ_r²)/4RT` — `ratio` far from 1 raises **FD** (the works are not Gaussian). `sf/sr` far from 1 raises **VAR** (the two directions have very different widths, so the even split behind the reported dissipation is unjustified and CGI will disagree with the average estimator). And `sep`, the gap between the histogram means in pooled σ, raises **SEP** above 2 (the distributions barely overlap, so the crossing is extrapolated into a region neither samples). Thresholds are deliberately loose because both `diss` and `σ` carry sampling noise at typical cycle counts. Pass `--temp` to match a run that used a non-default temperature; the table is diagnostic only and changes no result.
 
 ### Job layout (parallel cycles)
 
