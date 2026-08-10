@@ -58,8 +58,12 @@ def cgi_paper(wf, sf, wr_aligned, sr):
     return s2 if abs(mid - s1) > abs(mid - s2) else s1
 
 
-def cgi_shipped(wf, sf, wr_aligned, sr):
-    """The expression as it appears in groscore.py / groscore_fe.py today."""
+def cgi_shipped(wf, sf, wr_aligned, sr, fallback=True):
+    """The expression as it appears in groscore.py / groscore_fe.py today.
+
+    fallback=False returns the raw crossing, so the tests can check the
+    intersection property itself without the degenerate-case substitution.
+    """
     vp, vq = sf ** 2, sr ** 2
     dinv = 1.0 / vp - 1.0 / vq
     t1 = wf / vp - wr_aligned / vq
@@ -69,7 +73,10 @@ def cgi_shipped(wf, sf, wr_aligned, sr):
     t2 = math.sqrt(inner)
     s1, s2 = (t1 + t2) / dinv, (t1 - t2) / dinv
     mid = (wf + wr_aligned) / 2.0
-    return s2 if abs(mid - s1) > abs(mid - s2) else s1
+    pick = s2 if abs(mid - s1) > abs(mid - s2) else s1
+    if fallback and not (min(wf, wr_aligned) <= pick <= max(wf, wr_aligned)):
+        return mid                      # Goette & Grubmueller p. 449
+    return pick
 
 
 def cross_numeric(wf, sf, wr_aligned, sr):
@@ -97,14 +104,15 @@ def logpdf(x, m, s):
 
 rng = np.random.default_rng(20260810)
 worst_paper = worst_cross = 0.0
-n_cmp = n_between = 0
+n_cmp = n_between = n_fb_bad = 0
 for _ in range(20000):
     wf = rng.uniform(-200, 200)
     wr = wf + rng.uniform(-150, 150)
     sf, sr = rng.uniform(1, 60), rng.uniform(1, 60)
     if abs(sf - sr) < 1e-3:
         continue                                   # denominator -> 0, guarded in callers
-    a, b = cgi_shipped(wf, sf, wr, sr), cgi_paper(wf, sf, wr, sr)
+    a = cgi_shipped(wf, sf, wr, sr, fallback=False)
+    b = cgi_paper(wf, sf, wr, sr)
     if not (np.isfinite(a) and np.isfinite(b)):
         continue
     n_cmp += 1
@@ -112,9 +120,13 @@ for _ in range(20000):
     # The defining property: the answer is a point where the two densities are
     # equal. Compared in log space, which stays accurate far into the tails.
     worst_cross = max(worst_cross, abs(logpdf(a, wf, sf) - logpdf(a, wr, sr)))
-    c = cross_numeric(wf, sf, wr, sr)
-    if np.isfinite(c) and abs(a - c) < 1e-4:
-        n_between += 1
+    # Fallback bookkeeping: does the raw crossing lie between the two means?
+    inside = min(wf, wr) <= a <= max(wf, wr)
+    n_between += int(inside)
+    got = cgi_shipped(wf, sf, wr, sr, fallback=True)
+    want = a if inside else (wf + wr) / 2.0
+    if abs(got - want) > 1e-9:
+        n_fb_bad += 1
 check("shipped vs paper eq. (12) over %d random pairs" % n_cmp,
       worst_paper < TOL, "max |diff| = %.3e" % worst_paper)
 
@@ -124,10 +136,28 @@ print("2. the returned value really is a Gaussian intersection")
 # (Wf - Wr)/2, which is usually the one between the means but in extreme cases is
 # the tail root -- so the invariant to test is P_f = P_r at the answer, not that
 # the answer sits between the means.
-check("log P_f == log P_r at the returned crossing",
+check("log P_f == log P_r at the raw crossing",
       worst_cross < 1e-6, "max |diff| = %.3e" % worst_cross)
-print("       (%d of %d picked the root between the means, %d the tail root)"
+
+print("")
+print("3. degenerate-crossing fallback (Goette & Grubmueller p. 449)")
+check("fallback fires exactly when no root lies between the means",
+      n_fb_bad == 0, "%d mismatches" % n_fb_bad)
+print("       (%d of %d crossings lie between the means, %d fall back to the mean)"
       % (n_between, n_cmp, n_cmp - n_between))
+
+# A concrete degenerate pair: nearly coincident means, very different widths.
+wf_d, sf_d, wr_d, sr_d = 10.0, 4.0, 10.4, 22.0
+raw = cgi_shipped(wf_d, sf_d, wr_d, sr_d, fallback=False)
+got = cgi_shipped(wf_d, sf_d, wr_d, sr_d, fallback=True)
+check("means 10.0/10.4, sigma 4/22: raw crossing %.1f -> mean %.2f" % (raw, (wf_d + wr_d) / 2),
+      abs(got - (wf_d + wr_d) / 2.0) < 1e-9, "got %.2f" % got)
+
+# A well-behaved pair must be untouched by the fallback.
+raw_ok = cgi_shipped(188.6, 40.4, 117.3, 11.6, fallback=False)
+got_ok = cgi_shipped(188.6, 40.4, 117.3, 11.6, fallback=True)
+check("well-separated pair is not altered by the fallback",
+      abs(raw_ok - got_ok) < 1e-12, "%.3f" % got_ok)
 
 # The panel that exposed the bug: 2KTF bound-state restraints.
 wf, sf, wr, sr = 188.6, 40.4, 117.3, 11.6
@@ -149,7 +179,7 @@ check("the pre-2026-08-10 expression is genuinely different",
       "buggy %.3f vs true %.3f" % (cgi_buggy(wf, sf, wr, sr), want))
 
 print("")
-print("3. end to end: groscore.py -> scores_cgi.gs")
+print("4. end to end: groscore.py -> scores_cgi.gs")
 # 20 cycles of pull/push works with deliberately unequal spread, where the old
 # and new formulas disagree by several kJ/mol.
 NP = 24

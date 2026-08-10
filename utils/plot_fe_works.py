@@ -98,7 +98,14 @@ def cgi_point(fwd, rev_aligned):
     t2 = math.sqrt(inner)
     s1, s2 = (t1 + t2) / dinv, (t1 - t2) / dinv
     mid = (ap_ + aq) / 2.0
-    return s2 if abs(mid - s1) > abs(mid - s2) else s1
+    pick = s2 if abs(mid - s1) > abs(mid - s2) else s1
+    # Degenerate-crossing fallback (Goette & Grubmueller p. 449): neither root
+    # between the means means the Gaussians are too close to intersect
+    # meaningfully, and the mean of both is the better estimate. The drawn CGI
+    # rule then coincides with the avg rule, which is the honest picture.
+    if not (min(ap_, aq) <= pick <= max(ap_, aq)):
+        return mid
+    return pick
 
 
 def panel(ax, fwd, rev, title, nbins):

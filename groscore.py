@@ -223,6 +223,11 @@ def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
     distii = np.abs(avg_mid - tmpcgii)
 
     bootstrap_scores = np.where(disti > distii, tmpcgii, tmpcgi)
+    # Degenerate-crossing fallback, see calculate_scores.
+    lo = np.minimum(avgpulls, avgpushes)
+    hi = np.maximum(avgpulls, avgpushes)
+    bootstrap_scores = np.where((bootstrap_scores < lo) | (bootstrap_scores > hi),
+                                avg_mid, bootstrap_scores)
     return np.std(bootstrap_scores)
 
   return float('nan')
@@ -335,6 +340,18 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
         cgi_score = tmpcgii
       else:
         cgi_score = tmpcgi
+
+      # Degenerate-crossing fallback, Goette & Grubmueller p. 449: "If both
+      # Gaussians were too close to compute a proper intersection point, i.e. if
+      # Wf and -Wr were closer to each other than to one of the two intersection
+      # values, we empirically chose the mean of both as the best estimate."
+      # Operationally that is the case in which neither root falls between the
+      # two means: the paper's selection rule always prefers the root between
+      # them when one exists, because the midpoint lies between them too. Both
+      # roots then sit far out in the tails, where the Gaussian approximation is
+      # known to fail, and the crossing carries no information.
+      if not (min(avgpulls, avgpushes) <= cgi_score <= max(avgpulls, avgpushes)):
+        cgi_score = (avgpulls + avgpushes) / 2.0
 
       # Bootstrap error estimation for CGI method
       cgi_stderr = bootstrap_score(pulls, pushes, n_bootstrap=50000, method='cgi')

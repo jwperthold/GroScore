@@ -155,7 +155,13 @@ def _stream_cgi(fwd, rev):
     s1 = (t1 + t2) / dinv
     s2 = (t1 - t2) / dinv
     mid = (apm + aqm) / 2.0
-    out[m] = np.where(np.abs(mid - s1) > np.abs(mid - s2), s2, s1)
+    pick = np.where(np.abs(mid - s1) > np.abs(mid - s2), s2, s1)
+    # Degenerate-crossing fallback (Goette & Grubmueller p. 449): when neither
+    # root lies between the two means the Gaussians are too close to locate a
+    # meaningful intersection, and the mean of both is used instead. See the
+    # long comment in groscore.py calculate_scores.
+    lo, hi = np.minimum(apm, aqm), np.maximum(apm, aqm)
+    out[m] = np.where((pick < lo) | (pick > hi), mid, pick)
   return out
 
 def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
