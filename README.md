@@ -409,23 +409,26 @@ python3 utils/make_fe_mdps.py
 
 Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc) — the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, so `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
 
-To inspect convergence, plot the work distributions of every leg — one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right:
-
-```bash
-python3 ../utils/plot_fe_works.py -o fe_works.png
-```
+Every scoring pass also writes **`fe_works.png`** — the work distributions of every leg, one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right. No second command to remember: it appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run.
 
 The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2` — the free energy cancels out of that sum, so it measures hysteresis without assuming any ΔG estimate.
 
-The same command also prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
+Scoring then prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
 
 ```
-  structure  leg              n      diss diss_pred   ratio   sf/sr    sep   verdict
-  T30        restraints      60      4.12      3.58    1.15    1.05    1.9   OK
-  T30        unbind/rebind   60    148.49     16.70    8.89    0.94   32.0   FD+SEP
+  structure  leg              n      diss diss_pred   ratio   sf/sr    sep  sep_max  diss/RT   verdict
+  T30        restraints      60      4.12      3.58    1.15    1.05    1.9      4.0      1.6   OK
+  T30        unbind/rebind   60    148.49     16.70    8.89    0.94   32.0      4.0     57.6   FD+SEP
 ```
 
-CGI models both distributions as Gaussians and reports where they cross, which is only meaningful if three things hold. Near equilibrium, linear response gives `W_diss = σ²/2RT` per direction, so the plotted dissipation should match `diss_pred = (σ_f² + σ_r²)/4RT` — `ratio` far from 1 raises **FD** (the works are not Gaussian). `sf/sr` far from 1 raises **VAR** (the two directions have very different widths, so the even split behind the reported dissipation is unjustified and CGI will disagree with the average estimator). And `sep`, the gap between the histogram means in pooled σ, raises **SEP** above 2 (the distributions barely overlap, so the crossing is extrapolated into a region neither samples). Thresholds are deliberately loose because both `diss` and `σ` carry sampling noise at typical cycle counts. Pass `--temp` to match a run that used a non-default temperature; the table is diagnostic only and changes no result.
+CGI models both distributions as Gaussians and reports where they cross, which is only meaningful if three things hold. Near equilibrium, linear response gives `W_diss = σ²/2RT` per direction, so the dissipation should match `diss_pred = (σ_f² + σ_r²)/4RT` — `ratio` far from 1 raises **FD** (the works are not Gaussian). `sf/sr` far from 1 raises **VAR** (the two directions have very different widths, so the even split behind the reported dissipation is unjustified and CGI will disagree with the average estimator). And `sep`, the gap between the histogram means in pooled σ, raises **SEP** (the distributions barely overlap, so the crossing is extrapolated into a region neither samples).
+
+Every threshold is referred to the **sampling noise of `n` cycles**, so none of the three can fire on a mismatch that `n` cycles would produce by chance:
+
+- **SEP** — the crossing sits `sep/2` σ into either tail, and the most extreme of `n` samples reaches `z_n = Φ⁻¹(1 − 1/n)`, so the limit is `sep_max = 2·z_n` (capped at 4.0): 2.3 at n=8, 3.1 at n=16, 4.0 from n≈43. More cycles reach further, so more separation is tolerable.
+- **FD** and **VAR** — a factor of two, widened to the 2σ sampling band wherever that is wider. At n=16 the FD band works out to 0.50–2.00 and VAR's to 0.60–1.68, so the factor of two is what a run of that length can resolve anyway; the widening only bites below about n=10, and never tightens below the factor of two.
+
+A check the cycle count cannot answer reports **n/a** rather than failing: `FD`/`VAR` need `n ≥ 3` for a width, `SEP` needs `n ≥ 4` for a tail, and `FD` also abstains when the dissipation is not resolved from zero (the ratio is then 0/0). Whichever flags fired are followed by their full derivation and a per-leg breakdown. Pass `--temp` to match a run that used a non-default temperature; the figure and the table are diagnostic only and change no result.
 
 ### Job layout (parallel cycles)
 

@@ -2,9 +2,10 @@
 """Regression test for the Crooks Gaussian Intersection estimator.
 
 The CGI crossing is implemented in three places (groscore.py twice, once scalar
-and once vectorised for the bootstrap; groscore_fe.py; utils/plot_fe_works.py).
-They cannot share a helper without restructuring the entry points, so this test
-pins the maths down instead, three ways:
+and once vectorised for the bootstrap; groscore_fe.py once, vectorised, which
+its work-distribution diagnostic reuses). They cannot share a helper without
+restructuring the entry points, so this test pins the maths down instead, three
+ways:
 
   1. against eq. (12) of Goette & Grubmueller, J Comput Chem 30, 447-456 (2009),
      transcribed literally in the paper's own standard-deviation form,
