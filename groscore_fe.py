@@ -148,7 +148,10 @@ def _stream_cgi(fwd, rev):
     apm, vpm, aqm, vqm = ap[m], vp[m], aq[m], vq[m]
     dinv = 1.0 / vpm - 1.0 / vqm
     t1 = apm / vpm - aqm / vqm
-    t2 = np.sqrt((apm - aqm)**2 / (vpm * vqm) + 2.0 * dinv * np.log(vqm / vpm))
+    # Discriminant of Goette & Grubmueller eq. (12). Their log is of the SIGMA
+    # ratio with a factor 2; ln of the VARIANCE ratio already absorbs it, so no
+    # extra 2 here. See groscore.py calculate_scores and tests/test_cgi.py.
+    t2 = np.sqrt((apm - aqm)**2 / (vpm * vqm) + dinv * np.log(vqm / vpm))
     s1 = (t1 + t2) / dinv
     s2 = (t1 - t2) / dinv
     mid = (apm + aqm) / 2.0

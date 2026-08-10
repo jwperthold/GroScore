@@ -4,6 +4,7 @@ __pycache__/
 *.gs
 .claude/
 test*/
+!tests/
 bm_*/
 local_jobs.json
 local_runner.log

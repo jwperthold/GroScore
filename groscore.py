@@ -206,9 +206,12 @@ def bootstrap_score(pulls, pushes, n_bootstrap=1000, method='avg'):
     diff_inv_var = inv_varpulls - inv_varpushes
 
     term1 = avgpulls * inv_varpulls - avgpushes * inv_varpushes
+    # Discriminant of Goette & Grubmueller eq. (12); see calculate_scores. The
+    # log is of the variance ratio here, which already absorbs the paper's
+    # factor 2 on ln(sigma2/sigma1).
     term2_sqrt = np.sqrt(
       (avgpulls - avgpushes)**2 / (varpulls * varpushes) +
-      2.0 * diff_inv_var * np.log(varpushes / varpulls)
+      diff_inv_var * np.log(varpushes / varpulls)
     )
 
     tmpcgi = (term1 + term2_sqrt) / diff_inv_var
@@ -310,9 +313,21 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
       avgpushes = np.average(pushes)
       varpushes = np.var(pushes)
 
-      # Crooks Gaussian Intersection
-      tmpcgi = (avgpulls/varpulls - avgpushes/varpushes + math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
-      tmpcgii = (avgpulls/varpulls - avgpushes/varpushes - math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + 2.0 * (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
+      # Crooks Gaussian Intersection: the work at which the two fitted Gaussians
+      # cross. Goette & Grubmueller, J Comput Chem 30, 447-456 (2009), eq. (12):
+      #
+      #   dF = [ Wf/s1^2 - (-Wr)/s2^2 +- sqrt( (Wf+Wr)^2/(s1^2 s2^2)
+      #                                        + 2 (1/s1^2 - 1/s2^2) ln(s2/s1) ) ]
+      #        / (1/s1^2 - 1/s2^2)
+      #
+      # NOTE the paper's logarithm is of the STANDARD DEVIATION ratio. Because
+      # 2*ln(s2/s1) = ln(v2/v1), the factor 2 belongs to the sigma form only.
+      # Until 2026-08-10 this code kept the 2 while taking the log of the
+      # VARIANCE ratio, applying it twice; the reported crossing then drifted off
+      # the true intersection whenever the two work distributions differed in
+      # width (~2.5 kJ/mol at sigma ratio 2, ~6.8 at ratio 5). See tests/test_cgi.py.
+      tmpcgi = (avgpulls/varpulls - avgpushes/varpushes + math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
+      tmpcgii = (avgpulls/varpulls - avgpushes/varpushes - math.sqrt(1.0/(varpulls*varpushes) * (avgpulls-avgpushes)**2.0 + (1.0/varpulls - 1.0/varpushes) * math.log(varpushes/varpulls))) / (1.0/varpulls - 1.0/varpushes)
       disti = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgi)
       distii = math.fabs((avgpulls+avgpushes)/2.0 - tmpcgii)
 

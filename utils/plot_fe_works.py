@@ -89,7 +89,10 @@ def cgi_point(fwd, rev_aligned):
         return float("nan")
     dinv = 1.0 / vp - 1.0 / vq
     t1 = ap_ / vp - aq / vq
-    inner = (ap_ - aq) ** 2 / (vp * vq) + 2.0 * dinv * math.log(vq / vp)
+    # Discriminant of Goette & Grubmueller eq. (12). Their log is of the SIGMA
+    # ratio with a factor 2; ln of the VARIANCE ratio already absorbs it, so no
+    # extra 2 here. See groscore.py calculate_scores and tests/test_cgi.py.
+    inner = (ap_ - aq) ** 2 / (vp * vq) + dinv * math.log(vq / vp)
     if inner < 0:
         return float("nan")
     t2 = math.sqrt(inner)
