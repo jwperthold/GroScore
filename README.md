@@ -416,19 +416,23 @@ The reverse distribution is drawn sign-aligned (`−W`), so the forward and reve
 Scoring then prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
 
 ```
-  structure  leg              n      diss diss_pred   ratio   sf/sr    sep  sep_max  diss/RT   verdict
-  T30        restraints      60      4.12      3.58    1.15    1.05    1.9      4.0      1.6   OK
-  T30        unbind/rebind   60    148.49     16.70    8.89    0.94   32.0      4.0     57.6   FD+SEP
+  structure  leg              n      diss   ratio   sf/sr   p_fwd   p_rev    sep  sep_max  diss/RT   verdict
+  T30        restraints      60      4.12    1.15    1.05   0.618   0.412    1.9      4.0      1.6   OK
+  T30        unbind/rebind   60    148.49    8.89    0.94 3.3e-05   0.089   32.0      4.0     57.6   FD+SEP
 ```
 
-CGI models both distributions as Gaussians and reports where they cross, which is only meaningful if three things hold. Near equilibrium, linear response gives `W_diss = σ²/2RT` per direction, so the dissipation should match `diss_pred = (σ_f² + σ_r²)/4RT` — `ratio` far from 1 raises **FD** (the works are not Gaussian). `sf/sr` far from 1 raises **VAR** (the two directions have very different widths, so the even split behind the reported dissipation is unjustified and CGI will disagree with the average estimator). And `sep`, the gap between the histogram means in pooled σ, raises **SEP** (the distributions barely overlap, so the crossing is extrapolated into a region neither samples).
+CGI fits **one Gaussian to each distribution** and reports where the two curves cross, so exactly two things have to hold — and each is tested where the assumption is actually made:
 
-Every threshold is referred to the **sampling noise of `n` cycles**, so none of the three can fire on a mismatch that `n` cycles would produce by chance:
-
+- **FD** — a **Shapiro–Wilk test of each work distribution alone**, `p_fwd` and `p_rev`. The leg is flagged if either falls below `α/2` (two tests per leg, Bonferroni-corrected, so the leg misfires only 5 % of the time on genuinely Gaussian works). A leg switched too fast breaks normality from the tail inward: the rare low-dissipation cycles that carry ΔG are exponentially unlikely, `n` cycles never reach that far, and the sampled distribution comes out skewed — so the fitted Gaussian is too narrow and sits too far out.
 - **SEP** — the crossing sits `sep/2` σ into either tail, and the most extreme of `n` samples reaches `z_n = Φ⁻¹(1 − 1/n)`, so the limit is `sep_max = 2·z_n` (capped at 4.0): 2.3 at n=8, 3.1 at n=16, 4.0 from n≈43. More cycles reach further, so more separation is tolerable.
-- **FD** and **VAR** — a factor of two, widened to the 2σ sampling band wherever that is wider. At n=16 the FD band works out to 0.50–2.00 and VAR's to 0.60–1.68, so the factor of two is what a run of that length can resolve anyway; the widening only bites below about n=10, and never tightens below the factor of two.
 
-A check the cycle count cannot answer reports **n/a** rather than failing: `FD`/`VAR` need `n ≥ 3` for a width, `SEP` needs `n ≥ 4` for a tail, and `FD` also abstains when the dissipation is not resolved from zero (the ratio is then 0/0). Whichever flags fired are followed by their full derivation and a per-leg breakdown. Pass `--temp` to match a run that used a non-default temperature; the figure and the table are diagnostic only and change no result.
+`ratio = diss / ((σ_f² + σ_r²)/4RT)` is the linear-response consistency — `W_diss = σ²/2RT` holds near equilibrium, so 1 is the ideal. It is reported for information but **is not a flag**: it moves for reasons other than the shape of either distribution, and testing it conflated the Gaussian assumption with Crooks and with linear response, so a failure never said which of the three had broken. `sf/sr` is likewise descriptive.
+
+A check the cycle count cannot answer reports **n/a** rather than failing: `FD` needs `n ≥ 3` (Shapiro–Wilk's minimum) and both distributions non-degenerate, `SEP` needs `n ≥ 4` for a tail. Whichever flags fired are followed by their full derivation and a per-leg breakdown.
+
+> **Read a passing FD as the absence of evidence it is.** At these sample sizes Shapiro–Wilk has little power — n=16 detects only gross departures — so `OK` means *not detectably non-Gaussian at n cycles*, not *Gaussian*. `sep` and the figure carry more information at low cycle counts.
+
+Pass `--temp` to match a run that used a non-default temperature; the figure and the table are diagnostic only and change no result.
 
 ### Job layout (parallel cycles)
 

@@ -626,11 +626,17 @@ MAX_PLOT_ROWS = 24
 # A metric computed from too few cycles is not evidence either way, and a flag
 # raised on one is noise dressed up as a finding. Each check therefore reports
 # one of three states -- ok, flagged, or n/a -- instead of collapsing "no data"
-# into "failed": a leg with a single cycle would otherwise come back FD+VAR
+# into "failed": a leg with a single cycle would otherwise come back failed
 # purely because 0/0 is not a number.
-N_MIN_WIDTH = 3     # below this a std. dev. is not a width
+N_MIN_NORM = 3      # Shapiro-Wilk is defined from three samples up
 N_MIN_SEP = 4       # _sep_limit's extreme-value argument needs a tail to reach
-CHECKS = ("FD", "VAR", "SEP")
+CHECKS = ("FD", "SEP")
+
+# Family-wise false-positive rate allowed per leg. FD runs one normality test on
+# each of the leg's two work distributions, so the per-test level is Bonferroni-
+# corrected to ALPHA/2 and the leg as a whole still misfires only ALPHA of the
+# time when the works really are Gaussian.
+ALPHA = 0.05
 
 # Two equally wide Gaussians cross halfway between their means, i.e. sep/2 sigma
 # out in either tail, so "is the crossing sampled?" is really "does a run of n
@@ -642,31 +648,11 @@ CHECKS = ("FD", "VAR", "SEP")
 # of their area no matter how many samples each has.
 SEP_CAP = 4.0
 
-# FD and VAR both compare a measured ratio against 1 and both allow a factor of
-# TOL either way: a leg has to dissipate twice what its own widths permit, or
-# run twice as wide in one direction as in the other, before the two-Gaussian
-# picture is called broken. That tolerance says how much mismatch MATTERS and
-# does not depend on n. What does depend on n is how much mismatch noise alone
-# produces -- a std. dev. from 6 cycles is worth about +-45%, so an apparent
-# factor of two there is unremarkable. Each band is therefore the wider of the
-# two: the material tolerance, or a Z_NOISE-sigma sampling band. At n = 16 the
-# FD sampling band comes out at 0.50-2.00, so the tolerance is what a leg of
-# that length would have been judged against anyway; the widening only bites on
-# short runs. It never tightens BELOW the tolerance either, so a very long run
-# cannot report a 5% mismatch as a defect just because it is resolvable.
-TOL = 2.0           # factor-two material tolerance, both directions
-Z_NOISE = 2.0       # sampling bands quoted at two sigma
-
 def _sep_limit(n):
   """Largest mean gap, in pooled sigma, that n cycles per direction can span."""
   if n < N_MIN_SEP:
     return float('nan')            # too few cycles to speak of a tail at all
   return min(SEP_CAP, 2.0 * NormalDist().inv_cdf(1.0 - 1.0 / n))
-
-def _tol_band(sigma_log):
-  """Multiplicative band around 1: factor TOL, widened to Z_NOISE sigma."""
-  hw = max(math.log(TOL), Z_NOISE * sigma_log)
-  return math.exp(-hw), math.exp(hw)
 
 def _band(value, lo, hi):
   """ok / flag / n/a for a metric that must sit inside [lo, hi].
@@ -677,71 +663,63 @@ def _band(value, lo, hi):
     return "n/a"
   return "ok" if lo <= value <= hi else "flag"
 
-def _fd_check(sd_f, sd_r, diss, ratio, n):
-  """FD state, plus the band it was judged against.
+def _normality(x):
+  """Shapiro-Wilk p-value for one work distribution, or nan if it cannot be run.
 
-  diss_pred inherits the sampling noise of the two variances and diss that of
-  the two means; for a normal sample those two are independent, so their
-  relative variances add. Near equilibrium diss is not resolved from zero at all
-  and the ratio is 0/0 -- a leg that does not measurably dissipate cannot be
-  tested against its own widths, which is n/a rather than a failure."""
-  nan = float('nan')
-  v2 = sd_f ** 2 + sd_r ** 2
-  if n < N_MIN_WIDTH or v2 <= 0:
-    return "n/a", nan, nan
-  sd_diss = math.sqrt(v2 / (4.0 * n))
-  if abs(diss) <= Z_NOISE * sd_diss:
-    return "n/a", nan, nan
-  if diss < 0:
-    # Resolved NEGATIVE dissipation: the two directions are not the same process
-    # (or the works are mis-signed). No band can rescue that.
-    return "flag", nan, nan
-  rel_pred = 2.0 * (sd_f ** 4 + sd_r ** 4) / ((n - 1) * v2 ** 2)
-  lo, hi = _tol_band(math.sqrt(rel_pred + (sd_diss / diss) ** 2))
-  return _band(ratio, lo, hi), lo, hi
+  Shapiro-Wilk is the standard omnibus test of normality and the most powerful
+  one at the sample sizes a cycle count gives; it is defined from n = 3 up,
+  unlike the skew/kurtosis tests, which need n >= 20 before their asymptotics
+  mean anything. scipy is imported here rather than at module scope so that
+  submitting jobs never pays for it."""
+  from scipy.stats import shapiro
+  d = np.asarray(x, float)
+  if len(d) < N_MIN_NORM or d.std() <= 0:
+    return float('nan')
+  return float(shapiro(d).pvalue)
 
-def _var_check(sd_f, sd_r, widths, n):
-  """VAR state, plus the band it was judged against.
+def _fd_check(p_f, p_r):
+  """FD state from the two per-distribution normality p-values.
 
-  Var(ln s) = 1/(2(n-1)) for a normal sample, and the two directions are
-  independent, so ln(sf/sr) carries a sampling sigma of 1/sqrt(n-1)."""
-  nan = float('nan')
-  if n < N_MIN_WIDTH or sd_f <= 0 or sd_r <= 0:
-    return "n/a", nan, nan
-  lo, hi = _tol_band(1.0 / math.sqrt(n - 1))
-  return _band(widths, lo, hi), lo, hi
+  Each work distribution is tested on its own, which is the only way to ask
+  whether IT is Gaussian: the previous ratio test compared the dissipation
+  against (sf^2+sr^2)/4RT, i.e. it tested the Gaussian assumption, Crooks and
+  linear response jointly and could not say which of the three had failed.
+
+  Both directions must be testable, since a leg with one degenerate distribution
+  says nothing about the pair."""
+  ps = [p for p in (p_f, p_r) if np.isfinite(p)]
+  if len(ps) < 2:
+    return "n/a"
+  return "flag" if min(ps) < ALPHA / 2.0 else "ok"
 
 def gaussian_check(st):
   """Near-equilibrium consistency of one leg.
 
-  Linear response (Gaussian work distributions) gives W_diss = sigma^2 / 2RT per
-  direction. The reported dissipation averages the two directions, so the
-  prediction it should be compared against is (sf^2 + sr^2) / 4RT. Three ways the
-  leg can fail, all of which undermine the CGI estimate:
+  CGI models both work distributions as Gaussians, so two things have to hold:
 
-    FD   measured dissipation does not match the width of the distributions, so
-         the works are not Gaussian and CGI's two-Gaussian model is wrong
-    VAR  the two directions have very different widths; the equal split behind
-         the reported dissipation is then unjustified, and CGI and the average
-         estimator will disagree
-    SEP  the histograms sit further apart than the cycles can span -- more than
-         2 * z_n pooled sigma, z_n = Phi^-1(1 - 1/n) -- so the CGI crossing is
+    FD   each distribution is separately consistent with a Gaussian, by a
+         Shapiro-Wilk test of that distribution alone. CGI's model is fitted to
+         each one individually, so that is where the assumption has to be tested
+    SEP  the histograms sit no further apart than the cycles can span -- at most
+         2 * z_n pooled sigma, z_n = Phi^-1(1 - 1/n) -- or the CGI crossing is
          extrapolated into a gap where neither distribution has samples
 
-  Every threshold is referred to the sampling noise of n cycles, so none of the
-  three can fire on a mismatch that n cycles would produce by chance. A check
-  whose input is undefined at that n reports n/a and takes part in no verdict."""
+  Both are referred to the sampling noise of n cycles, so neither fires on a
+  departure that n cycles would produce by chance. A check whose input is
+  undefined at that n reports n/a and takes part in no verdict."""
   sd_f, sd_r, diss, n = st['sd_f'], st['sd_r'], st['diss'], st['n']
   pred = (sd_f ** 2 + sd_r ** 2) / (4.0 * RT)
   pooled = math.sqrt((sd_f ** 2 + sd_r ** 2) / 2.0)
+  # Descriptive only, no longer a flag: the linear-response prediction for the
+  # dissipation. Far from 1 says the leg is out of the near-equilibrium regime,
+  # which is worth seeing even though it does not by itself impugn either
+  # distribution's shape.
   ratio = diss / pred if pred > 0 else float('nan')
   widths = sd_f / sd_r if sd_r > 0 else float('nan')
   sep = 2.0 * diss / pooled if pooled > 0 else float('nan')   # gap = 2*diss
   lim = _sep_limit(n)
 
-  fd_state, fd_lo, fd_hi = _fd_check(sd_f, sd_r, diss, ratio, n)
-  var_state, var_lo, var_hi = _var_check(sd_f, sd_r, widths, n)
-  state = {'FD': fd_state, 'VAR': var_state,
+  state = {'FD': _fd_check(st['p_fwd'], st['p_rev']),
            # One-sided: a negative sep means the two means have crossed over,
            # which puts the crossing between them -- sampled, not extrapolated.
            'SEP': _band(sep, -math.inf, lim)}
@@ -755,25 +733,26 @@ def gaussian_check(st):
     if skipped:
       verdict += " (%s n/a)" % ",".join(skipped)
   st.update(pred=pred, ratio=ratio, widths=widths, sep=sep, sep_lim=lim,
-            fd_band=(fd_lo, fd_hi), var_band=(var_lo, var_hi),
             state=state, flags=flags, skipped=skipped, verdict=verdict)
   return st
 
 def _why_na(check, st):
   """Why a check abstained on this leg, in a few words."""
-  n = st['n']
   if check == "SEP":
     return "n < %d" % N_MIN_SEP
-  if n < N_MIN_WIDTH:
-    return "n < %d" % N_MIN_WIDTH
-  if st['sd_f'] <= 0 or st['sd_r'] <= 0:
-    return "a width is zero"
-  return "diss %.1f not resolved from zero (+-%.1f)" % (
-      st['diss'], Z_NOISE * math.sqrt((st['sd_f'] ** 2 + st['sd_r'] ** 2) / (4.0 * n)))
+  if st['n'] < N_MIN_NORM:
+    return "n < %d" % N_MIN_NORM
+  return "a distribution has zero width"
 
 def _cell(x, width=8, prec=2):
   """Format a metric right-aligned in `width`, or 'n/a' if it has none."""
   return ("%*.*f" % (width, prec, x)) if np.isfinite(x) else "n/a".rjust(width)
+
+def _pcell(p, width=7):
+  """A p-value, kept readable across the decades a normality test spans."""
+  if not np.isfinite(p):
+    return "n/a".rjust(width)
+  return ("%.1e" % p if p < 1e-3 else "%.3f" % p).rjust(width)
 
 def leg_stats(fwd, rev):
   """Estimates and widths of one leg, drawing nothing.
@@ -790,7 +769,10 @@ def leg_stats(fwd, rev):
           'cgi': float(_stream_cgi(f[None, :], v[None, :])[0]) if len(f) >= 3
                  else float('nan'),
           'diss': float((f.mean() + v.mean()) / 2.0),   # per-direction dissipation
-          'sd_f': float(f.std()), 'sd_r': float(v.std())}
+          'sd_f': float(f.std()), 'sd_r': float(v.std()),
+          # Normality is a property of each sample, and negating one of them
+          # cannot change its shape, so the raw reverse works are tested as-is.
+          'p_fwd': _normality(f), 'p_rev': _normality(v)}
 
 def check_legs(legs):
   """[(sid, leg_name, stats), ...] for every leg of every structure, in order."""
@@ -900,65 +882,40 @@ def plot_works(legs, stats):
 # distinct enough that "which one fired" changes what you should do next.
 FLAG_HELP = {
 "FD": [
- "FD -- the work distributions are not Gaussian",
+ "FD -- a work distribution is not Gaussian",
  "",
- "  Crooks' fluctuation theorem relates the two directions of the same switching",
- "  process,",
+ "  CGI fits one Gaussian to the forward works and one to the reverse works and",
+ "  reports where the two curves cross. The assumption is therefore made about each",
+ "  distribution separately, and that is where it is tested: a Shapiro-Wilk test of",
+ "  the forward sample alone, and another of the reverse sample alone. The leg is",
+ "  flagged if either p-value falls below ALPHA/2 -- two tests per leg, Bonferroni-",
+ "  corrected so the leg misfires only ALPHA of the time on genuinely Gaussian",
+ "  works.",
+ "",
+ "  Why the works go non-Gaussian is worth knowing, because Crooks' theorem,",
  "",
  "        P_f(W) / P_r(-W)  =  exp( (W - dG) / RT )",
  "",
- "  Impose that on two Gaussians and the model becomes very rigid: the exponent of",
- "  a Gaussian is quadratic in W, so matching both sides term by term forces the",
- "  two distributions to share one width, and ties the dissipation to that width",
- "  alone,",
+ "  becomes very rigid once both sides are Gaussian: the exponent of a Gaussian is",
+ "  quadratic in W, so matching term by term forces the two distributions to share",
+ "  one width and ties the dissipation to that width alone,",
  "",
  "        W_diss  =  <W> -/+ dG  =  sigma^2 / (2 RT)      in each direction",
  "",
- "  That is the fluctuation-dissipation relation: once the works are Gaussian, the",
- "  spread of a leg fully determines how much it dissipates. Averaging over the two",
- "  directions gives diss_pred = (sf^2 + sr^2) / 4RT, so ratio = diss / diss_pred",
- "  must sit near 1 wherever the Gaussian picture holds.",
+ "  A leg switched too fast breaks this from the tail inward. The rare cycles that",
+ "  happen to dissipate little are the ones that carry dG, they are exponentially",
+ "  unlikely, and n cycles never reach far enough into that tail -- so the sampled",
+ "  distribution is skewed rather than Gaussian, and the fitted Gaussian is too",
+ "  narrow and sits too far out. The crossing it produces is biased away from dG.",
+ "  The 'ratio' column is the same physics read as a number: diss / diss_pred with",
+ "  diss_pred = (sf^2 + sr^2)/4RT, far from 1 when the leg is out of the near-",
+ "  equilibrium regime. It is reported for information and is not itself a flag,",
+ "  since it moves for reasons other than the shape of either distribution.",
  "",
- "  'Near' means a factor of two, or the 2-sigma sampling band of n cycles where",
- "  that is wider. Both ends of the ratio carry noise -- diss_pred from the two",
- "  sample variances, diss from the two sample means -- and at n = 16 they combine",
- "  to a band of 0.50-2.00, so a factor of two is simply what a run of that length",
- "  can resolve. At n = 6 the same noise spans roughly 0.4-2.4 and the check backs",
- "  off accordingly, rather than reporting the shortness of the run as a defect.",
- "",
- "  ratio >> 1  the leg dissipates far more than its own spread permits. The real",
- "              distribution is skewed, with a long low-work tail that N cycles",
- "              never reach; the fitted Gaussian is too narrow and sits too far",
- "              out. This is the signature of switching too fast, and it biases",
- "              the CGI crossing away from dG.",
- "  ratio << 1  the spread is too large for the observed dissipation. That usually",
- "              means outlier cycles or cycles that are not independent, i.e. a",
- "              sampling problem rather than a protocol problem.",
-],
-"VAR": [
- "VAR -- the two directions have very different widths",
- "",
- "  The same Crooks-plus-Gaussian argument demands sf = sr exactly. Strongly unequal",
- "  widths mean the forward and reverse legs are not exploring the same process, so",
- "  splitting the hysteresis evenly between them -- which is precisely what the",
- "  single 'diss' number does -- has no justification, and CGI and the average",
- "  estimator will not agree.",
- "",
- "  'Strongly' is again a factor of two, or the 2-sigma sampling band where that is",
- "  wider. A sample std. dev. carries Var(ln s) = 1/(2(n-1)), so ln(sf/sr) has a",
- "  sampling sigma of 1/sqrt(n-1) -- 0.26 at n = 16, a 2-sigma band of 0.60-1.68",
- "  that sits comfortably inside the factor of two. Only below about n = 10 does",
- "  the noise band overtake the tolerance and become what the check enforces.",
- "",
- "  The opposite limit deserves a warning of its own. CGI locates the crossing via",
- "",
- "        dG  =  [ <W_f>/sf^2 - <-W_r>/sr^2  -/+ sqrt(...) ] / ( 1/sf^2 - 1/sr^2 )",
- "",
- "  whose denominator vanishes as sf -> sr. In that limit two equally wide Gaussians",
- "  cross exactly at their midpoint, which is dG_avg -- so CGI carries no extra",
- "  information there, and computing it as a ratio of two vanishing numbers only",
- "  amplifies noise. When sf/sr is close to 1, prefer dG_avg and read CGI as",
- "  confirmation, not as an independent estimate.",
+ "  A caution about the other direction: at these sample sizes Shapiro-Wilk only",
+ "  detects gross departures. n = 16 gives it little power, so an unflagged FD",
+ "  means 'not detectably non-Gaussian at n cycles', NOT 'Gaussian'. Read a pass",
+ "  as the absence of evidence it is, and lean on 'sep' and on the figure.",
 ],
 "SEP": [
  "SEP -- the histograms barely overlap",
@@ -1000,30 +957,27 @@ def print_gaussian_report(stats):
         % (RT, args.temp))
   print("-" * 78)
   print("CGI fits a Gaussian to each work distribution and reports where the two curves")
-  print("cross. That crossing is dG only if the works really are Gaussian, comparably")
-  print("wide, and overlapping. The three flags test exactly those preconditions, and")
-  print("report n/a for whichever of them the cycle count cannot answer.")
+  print("cross. That crossing is dG only if each distribution really is Gaussian and if")
+  print("the two overlap. FD and SEP test exactly those two preconditions, and report")
+  print("n/a for whichever of them the cycle count cannot answer.")
   print("")
   print("  W_f, W_r    forward / reverse work of the leg, one value per cycle")
   print("  diss        ( <W_f> + <W_r> ) / 2        dissipated work; dG cancels from the sum")
   print("  dG_avg      ( <W_f> - <W_r> ) / 2        the antisymmetric partner of diss")
   print("  sf, sr      std. dev. of the forward / sign-aligned reverse works")
-  print("  diss_pred   ( sf^2 + sr^2 ) / 4RT        linear-response prediction for diss")
-  print("  ratio       diss / diss_pred             1.0 if the works are Gaussian")
+  print("  ratio       diss / ( (sf^2+sr^2)/4RT )  linear response predicts 1; descriptive")
+  print("  p_fwd,p_rev Shapiro-Wilk p of each distribution ALONE; FD flags below %.3f"
+        % (ALPHA / 2.0))
   print("  sep         2 * diss / sqrt( (sf^2 + sr^2) / 2 )   mean gap, in pooled sigma")
   print("  sep_max     2 * Phi^-1( 1 - 1/n ), capped at 4.0   how far n cycles reach")
   print("")
-  print("ratio and sf/sr are flagged outside a factor of %.1f, widened to a %.0f-sigma"
-        % (TOL, Z_NOISE))
-  print("sampling band wherever n is small enough for noise alone to reach that far.")
-  print("")
-  print("  %-10s %-13s %4s %9s %9s %7s %7s %6s %8s %8s   %s"
-        % ("structure", "leg", "n", "diss", "diss_pred", "ratio", "sf/sr", "sep",
-           "sep_max", "diss/RT", "verdict"))
+  print("  %-10s %-13s %4s %9s %7s %7s %7s %7s %6s %8s %8s   %s"
+        % ("structure", "leg", "n", "diss", "ratio", "sf/sr", "p_fwd", "p_rev",
+           "sep", "sep_max", "diss/RT", "verdict"))
   for sid, leg, st in stats:
-    print("  %-10s %-13s %4d %9s %9s %7s %7s %6s %8s %8s   %s"
-          % (sid, leg, st['n'], _cell(st['diss']), _cell(st['pred']),
-             _cell(st['ratio'], 7), _cell(st['widths'], 7),
+    print("  %-10s %-13s %4d %9s %7s %7s %7s %7s %6s %8s %8s   %s"
+          % (sid, leg, st['n'], _cell(st['diss']), _cell(st['ratio'], 7),
+             _cell(st['widths'], 7), _pcell(st['p_fwd']), _pcell(st['p_rev']),
              _cell(st['sep'], 6, 1), _cell(st['sep_lim'], 8, 1),
              _cell(st['diss'] / RT, 8, 1), st['verdict']))
 
@@ -1051,15 +1005,11 @@ def print_gaussian_report(stats):
       print("")
       print("  affected legs:")
       for sid, leg, st in hits:
-        if flag == "FD" and not np.isfinite(st['fd_band'][1]):
-          detail = "dissipation %.1f kJ/mol (%.0f RT) is resolved and NEGATIVE" % (
-              st['diss'], st['diss'] / RT)
-        elif flag == "FD":
-          detail = "ratio %.2f, outside %.2f-%.2f (diss %.1f vs %.1f predicted)" % (
-              st['ratio'], st['fd_band'][0], st['fd_band'][1], st['diss'], st['pred'])
-        elif flag == "VAR":
-          detail = "sf/sr %.2f, outside %.2f-%.2f (sf %.1f, sr %.1f)" % (
-              st['widths'], st['var_band'][0], st['var_band'][1], st['sd_f'], st['sd_r'])
+        if flag == "FD":
+          which = "forward" if st['p_fwd'] <= st['p_rev'] else "reverse"
+          detail = "Shapiro-Wilk p_fwd=%s p_rev=%s at n=%d (%s rejects below %.3f)" % (
+              _pcell(st['p_fwd'], 0), _pcell(st['p_rev'], 0), st['n'], which,
+              ALPHA / 2.0)
         else:
           detail = "sep %.1f sigma vs %.1f reachable at n=%d (diss %.1f = %.0f RT)" % (
               st['sep'], st['sep_lim'], st['n'], st['diss'], st['diss'] / RT)
@@ -1093,17 +1043,15 @@ def print_gaussian_report(stats):
     print("-" * 78)
     print("n/a -- the check has no answer on this leg")
     print("")
-    print("  FD and VAR are read off the widths of the two work distributions, and SEP")
-    print("  asks how far those widths let the sampled tails reach. A std. dev. from")
-    print("  fewer than %d cycles is not a width, so FD and VAR abstain below that; SEP" % N_MIN_WIDTH)
+    print("  FD runs a Shapiro-Wilk test on each work distribution, which is defined from")
+    print("  %d samples up, and abstains below that or when a distribution has collapsed" % N_MIN_NORM)
+    print("  to a single repeated value. SEP asks how far the sampled tails reach and")
     print("  needs %d, because 2 * Phi^-1(1 - 1/n) is not a tail position until there is" % N_MIN_SEP)
-    print("  a tail. FD abstains for one further reason: a leg whose dissipation is not")
-    print("  resolved from zero has no ratio to test, diss / diss_pred being 0/0 there.")
+    print("  a tail.")
     print("")
     print("  An abstaining check is neither a pass nor a failure -- the leg is simply")
     print("  untested on that point, and the CGI crossing carries no evidence for or")
-    print("  against it. More cycles turn these into real verdicts; a leg that abstains")
-    print("  only because it barely dissipates is in no trouble to begin with.")
+    print("  against it. Only more cycles turn these into real verdicts.")
     print("")
     print("  untested legs:")
     for sid, leg, st in thin:
