@@ -617,11 +617,19 @@ GRID, AXIS, SURFACE = "#e1e0d9", "#c3c2b7", "#fcfcfb"
 
 WORKS_PLOT = "fe_works.png"
 
-# One figure row per structure, so a benchmark-sized run would otherwise build an
-# image tens of thousands of pixels tall (Agg refuses outright past 2^16). Rows
-# are capped and flagged structures kept first; the console table is cheap and
-# always covers every leg, so nothing is hidden by the cap.
-MAX_PLOT_ROWS = 24
+# One figure row per structure, so a single image would grow without bound with
+# the run. Agg itself does not stop this -- it will happily write 122400 px of
+# height (200 rows) -- but everything downstream does, and the cost is linear in
+# rows throughout: measured at 11 in x 180 dpi and 3.4 in per row, about 0.4 s
+# and 9 MB of peak RSS per row, so 200 structures on one page is ~80 s and
+# ~1.8 GB. What actually bounds a page is what can open it: GPU textures and
+# most image viewers cap a dimension around 16384 px, and PIL refuses over
+# 89 Mpx (~45000 px tall here) as a decompression bomb.
+#
+# 16 rows lands at 1980 x 9792 px and ~2 MB, comfortably inside all three, and
+# renders in ~6 s from ~200 MB. Structures are paginated at that size, all of
+# them, in sp.gs order; see _page_paths() for how the files are named.
+ROWS_PER_PAGE = 16
 
 # A metric computed from too few cycles is not evidence either way, and a flag
 # raised on one is noise dressed up as a finding. Each check therefore reports
@@ -837,45 +845,79 @@ def _panel(ax, fwd, rev, title, nbins, st):
                   facecolor=SURFACE, edgecolor="none", framealpha=0.92)
   leg.set_zorder(5)
 
+def _page_paths(npages):
+  """Output paths for `npages` pages of the work-distribution figure.
+
+  A single page keeps the plain WORKS_PLOT name, so the common case of a handful
+  of structures is unchanged; more than one numbers them fe_works_01.png etc."""
+  if npages <= 1:
+    return [WORKS_PLOT]
+  stem, ext = os.path.splitext(WORKS_PLOT)
+  return ["%s_%02d%s" % (stem, i + 1, ext) for i in range(npages)]
+
+def _is_page(name):
+  """Is `name` a file some run of _page_paths() could have written?"""
+  stem, ext = os.path.splitext(WORKS_PLOT)
+  if not name.endswith(ext):
+    return False
+  body = name[:-len(ext)]
+  return body == stem or (body.startswith(stem + "_") and body[len(stem) + 1:].isdigit())
+
+def _clear_stale_pages(keep):
+  """Delete pages left behind by a previous, longer run.
+
+  Dropping from three pages to two -- or from several back to a single
+  fe_works.png -- would otherwise leave files that still look like current
+  output. Only names this module itself could have written are removed."""
+  keep = set(keep)
+  stem, ext = os.path.splitext(WORKS_PLOT)
+  for path in glob.glob("%s*%s" % (stem, ext)):
+    if path not in keep and _is_page(os.path.basename(path)):
+      try:
+        os.remove(path)
+      except OSError:
+        pass
+
 def plot_works(legs, stats):
-  """Write WORKS_PLOT for up to MAX_PLOT_ROWS structures; return which were drawn.
+  """Plot every structure's work distributions; return the page paths written.
 
   `legs` is [(sid, W_intro, W_remove, Wtot_f, Wtot_r), ...], one entry per
-  structure with finished cycles, and `stats` the matching check_legs() output.
-  Beyond the cap the flagged structures are kept, in the order they were given,
-  since those are the ones worth looking at. matplotlib is imported here rather
-  than at module scope so that submitting jobs never pays for it."""
+  structure with finished cycles and already in sp.gs order, and `stats` the
+  matching check_legs() output. Pages preserve that order and are filled
+  ROWS_PER_PAGE at a time, so a structure keeps its place as long as sp.gs does.
+  matplotlib is imported here rather than at module scope so that submitting jobs
+  never pays for it."""
   import matplotlib
   matplotlib.use("Agg")
   import matplotlib.pyplot as plt
 
-  if len(legs) > MAX_PLOT_ROWS:
-    flagged = set(sid for sid, _, st in stats if st['flags'])
-    keep = set(([sid for sid, *_ in legs if sid in flagged] +
-                [sid for sid, *_ in legs if sid not in flagged])[:MAX_PLOT_ROWS])
-    shown = [l for l in legs if l[0] in keep]
-  else:
-    shown = legs
-
   by_leg = {(sid, name): st for sid, name, st in stats}
-  fig, axes = plt.subplots(len(shown), 2, figsize=(11, 3.4 * len(shown)),
-                           squeeze=False, facecolor=SURFACE)
-  for row, (sid, W_intro, W_remove, Wtot_f, Wtot_r) in enumerate(shown):
-    nb = max(6, min(25, len(W_intro) // 3 + 4))
-    for ax in axes[row]:
-      ax.set_facecolor(SURFACE)
-    _panel(axes[row][0], W_intro, W_remove,
-           "%s — bound-state restraints (dhdl)" % sid, nb, by_leg[(sid, "restraints")])
-    _panel(axes[row][1], Wtot_f, Wtot_r,
-           "%s — unbinding / rebinding (pull + dhdl)" % sid, nb,
-           by_leg[(sid, "unbind/rebind")])
+  pages = [legs[i:i + ROWS_PER_PAGE] for i in range(0, len(legs), ROWS_PER_PAGE)]
+  paths = _page_paths(len(pages))
+  _clear_stale_pages(paths)
 
-  fig.suptitle("GroScore-FE leg work distributions — forward vs sign-aligned reverse",
-               fontsize=13, fontweight="bold", color=INK, y=0.997)
-  fig.tight_layout(rect=[0, 0, 1, 0.985])
-  fig.savefig(WORKS_PLOT, dpi=180, facecolor=SURFACE)
-  plt.close(fig)
-  return [sid for sid, *_ in shown]
+  for pageno, (path, page) in enumerate(zip(paths, pages), start=1):
+    fig, axes = plt.subplots(len(page), 2, figsize=(11, 3.4 * len(page)),
+                             squeeze=False, facecolor=SURFACE)
+    for row, (sid, W_intro, W_remove, Wtot_f, Wtot_r) in enumerate(page):
+      nb = max(6, min(25, len(W_intro) // 3 + 4))
+      for ax in axes[row]:
+        ax.set_facecolor(SURFACE)
+      _panel(axes[row][0], W_intro, W_remove,
+             "%s — bound-state restraints (dhdl)" % sid, nb,
+             by_leg[(sid, "restraints")])
+      _panel(axes[row][1], Wtot_f, Wtot_r,
+             "%s — unbinding / rebinding (pull + dhdl)" % sid, nb,
+             by_leg[(sid, "unbind/rebind")])
+
+    title = "GroScore-FE leg work distributions — forward vs sign-aligned reverse"
+    if len(pages) > 1:
+      title += "   (page %d of %d)" % (pageno, len(pages))
+    fig.suptitle(title, fontsize=13, fontweight="bold", color=INK, y=0.997)
+    fig.tight_layout(rect=[0, 0, 1, 0.985])
+    fig.savefig(path, dpi=180, facecolor=SURFACE)
+    plt.close(fig)
+  return paths
 
 # Long-form explanation of each flag, printed only for the flags that actually
 # fired. The maths is short enough to state in full, and the failure modes are
@@ -1202,13 +1244,14 @@ def score(structids):
     print("")
     return
   stats = check_legs(legs)
-  shown = plot_works(legs, stats)
-  if len(shown) < len(legs):
-    print("Wrote %s (%d of %d structures, flagged ones first; the table below covers all)."
-          % (WORKS_PLOT, len(shown), len(legs)))
-  else:
+  paths = plot_works(legs, stats)
+  if len(paths) == 1:
     print("Wrote %s (%d structure%s: %s)."
-          % (WORKS_PLOT, len(shown), "" if len(shown) == 1 else "s", ", ".join(shown)))
+          % (paths[0], len(legs), "" if len(legs) == 1 else "s",
+             ", ".join(sid for sid, *_ in legs)))
+  else:
+    print("Wrote %s .. %s (%d structures in sp.gs order, %d per page)."
+          % (paths[0], paths[-1], len(legs), ROWS_PER_PAGE))
   print_gaussian_report(stats)
   print("")
 

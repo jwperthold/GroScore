@@ -411,6 +411,8 @@ Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the 
 
 Every scoring pass also writes **`fe_works.png`** — the work distributions of every leg, one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right. No second command to remember: it appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run.
 
+Every structure is plotted, in `sp.gs` order, **16 rows to a file**. Past that the figure is paginated into `fe_works_01.png`, `fe_works_02.png`, … (a run needing only one page keeps the plain `fe_works.png`, and pages left over from an earlier, longer run are removed). 16 rows is 1980 × 9792 px and ~2 MB — matplotlib will write a far taller image, but GPU textures and most viewers cap a dimension near 16384 px and PIL rejects anything over 89 Mpx as a decompression bomb, so a single 200-structure sheet would be unopenable as well as costing ~80 s and ~1.8 GB to render.
+
 The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2` — the free energy cancels out of that sum, so it measures hysteresis without assuming any ΔG estimate.
 
 Scoring then prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
