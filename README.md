@@ -436,6 +436,14 @@ A check the cycle count cannot answer reports **n/a** rather than failing: `FD` 
 
 Pass `--temp` to match a run that used a non-default temperature; the figure and the table are diagnostic only and change no result.
 
+When a leg **fails**, the table says so but not why. `utils/fe_leg_efficiency.py` answers that from files a finished cycle already leaves behind — no new simulation:
+
+```bash
+python3 ../utils/fe_leg_efficiency.py -s 2KTF          # from the project dir
+```
+
+It reports whether the forward and reverse works overlap *at all* (a blunter question than `sep`: an empty gap means every estimator is reporting its fitted model rather than the run), where along the pull the hysteresis is generated, whether the dissipation actually obeys the near-equilibrium `1/t` law — measured by comparing the friction along the existing trajectories against the observed hysteresis — and what lengthening the leg versus adding cycles would each cost. At a fixed budget the average estimator has `SE ∝ t^((1−p)/2)` for `diss ∝ t^−p`, and since `p = 1` is the ceiling, doubling the leg can at best break even on variance; the bias side points the other way, which is why the tool prints the cost of both levers rather than picking one.
+
 ### Job layout (parallel cycles)
 
 Convergence needs many cycles, and cycles are independent — each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
