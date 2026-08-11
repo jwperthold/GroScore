@@ -60,10 +60,13 @@ import numpy as np
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="GroScore FE: absolute binding free energy via Boresch restraints.")
-parser.add_argument('-n', '--numruns', type=int, default=5,
-                    help="TOTAL bidirectional cycles wanted per structure (default: 5). "
-                         "Re-run with a larger value plus --restart to add cycles: only "
-                         "the cycles without a complete result are submitted.")
+parser.add_argument('-n', '--numruns', type=int, default=None,
+                    help="TOTAL bidirectional cycles wanted per structure. Remembered "
+                         "in run_config.gs, so later invocations in the same directory "
+                         "inherit it and only the first run needs to say it (default: "
+                         "the remembered value, or 5 for a fresh directory). Re-run with "
+                         "a larger value plus --restart to add cycles: only the cycles "
+                         "without a complete result are submitted.")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
 parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
                     choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
@@ -107,6 +110,57 @@ if args.run_local and args.ngpus < 1:
   parser.error("--run-local needs --ngpus N: the number of GPUs the jobs are distributed over")
 if args.ngpus and not args.run_local:
   parser.error("--ngpus only applies to --run-local; SLURM allocates GPUs itself")
+
+#------------------------------------------------------
+#
+# The requested cycle count has to outlive the invocation that asked for it.
+# Everything downstream keys off it: which cycles count as missing, and
+# GROSCORE_NUMCYCLES, which job.run compares against the .done markers to decide
+# a structure is finished and can be tarred up. Falling back to the built-in
+# default on a later run would therefore both stop the run growing past 5 and
+# tell a cycle job that 5 was the target -- enough, with 5 markers present, to
+# archive a structure mid-run. So it is remembered here rather than defaulted.
+
+RUN_CONFIG = "run_config.gs"
+DEFAULT_NUMRUNS = 5
+
+
+def read_run_config():
+  cfg = {}
+  if os.path.isfile(RUN_CONFIG):
+    try:
+      with open(RUN_CONFIG) as f:
+        for line in f:
+          if line.strip().startswith("#"):
+            continue
+          tmp = line.split()
+          if len(tmp) >= 2:
+            cfg[tmp[0]] = tmp[1]
+    except OSError:
+      pass
+  return cfg
+
+
+def write_run_config(**kw):
+  cfg = read_run_config()
+  cfg.update({k: str(v) for k, v in kw.items()})
+  with open(RUN_CONFIG, "w") as f:
+    f.write("# GroScore-FE run settings, remembered between invocations in this\n")
+    f.write("# directory. Delete a line to fall back to the command-line default.\n")
+    for key in sorted(cfg):
+      f.write("%s\t%s\n" % (key, cfg[key]))
+
+
+_cfg = read_run_config()
+NUMRUNS_REMEMBERED = False
+if args.numruns is None:
+  try:
+    args.numruns = int(_cfg["numruns"])
+    NUMRUNS_REMEMBERED = True
+  except (KeyError, ValueError):
+    args.numruns = DEFAULT_NUMRUNS
+elif _cfg.get("numruns") != str(args.numruns):
+  write_run_config(numruns=args.numruns)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
 from local_runner import launch_local, print_local_status
@@ -1272,7 +1326,12 @@ def main():
   structids, structchains = readstructparams(args.structparams)
   if not structids:
     print("Error: No valid structures found in %s" % args.structparams); sys.exit(1)
-  print("GroScore-FE: %d structures, %d bidirectional cycles each.\n" % (len(structids), args.numruns))
+  # Say where the target came from: silently inheriting or silently defaulting a
+  # number that decides when a structure gets archived is worth one line.
+  print("GroScore-FE: %d structures, %d bidirectional cycles each%s.\n"
+        % (len(structids), args.numruns,
+           " (remembered from %s; override with -n)" % RUN_CONFIG
+           if NUMRUNS_REMEMBERED else ""))
 
   # Submit jobs on first invocation (or on --restart).
   if args.restart or not os.path.isfile("struct_map.gs"):
