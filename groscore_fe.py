@@ -646,21 +646,23 @@ CHECKS = ("FD", "SEP")
 # time when the works really are Gaussian.
 ALPHA = 0.05
 
-# Two equally wide Gaussians cross halfway between their means, i.e. sep/2 sigma
-# out in either tail, so "is the crossing sampled?" is really "does a run of n
-# cycles reach sep/2 sigma?". The most extreme of n standard normals sits near
-# z_n = Phi^-1(1 - 1/n), so the crossing only leaves the sampled region once
-# sep > 2 * z_n. That limit tightens when there are few cycles and relaxes when
-# there are many, which no flat threshold can do. The cap stops a long run from
-# licensing an arbitrarily wide gap: past 4 sigma two Gaussians share about 5%
-# of their area no matter how many samples each has.
-SEP_CAP = 4.0
-
 def _sep_limit(n):
-  """Largest mean gap, in pooled sigma, that n cycles per direction can span."""
+  """Largest mean gap, in pooled sigma, that n cycles per direction can span.
+
+  Two equally wide Gaussians cross halfway between their means, i.e. sep/2 sigma
+  out in either tail, so "is the crossing sampled?" is really "does a run of n
+  cycles reach sep/2 sigma?". The most extreme of n standard normals sits near
+  z_n = Phi^-1(1 - 1/n), so the crossing leaves the sampled region once
+  sep > 2 * z_n -- tightening when there are few cycles and relaxing when there
+  are many, which no flat threshold can do.
+
+  The limit follows n the whole way up, with no ceiling: a run long enough to
+  put samples out at 5 sigma has genuinely measured a 5-sigma crossing, and
+  capping it would report an estimate as extrapolated on the strength of a
+  round number rather than of anything about the run."""
   if n < N_MIN_SEP:
     return float('nan')            # too few cycles to speak of a tail at all
-  return min(SEP_CAP, 2.0 * NormalDist().inv_cdf(1.0 - 1.0 / n))
+  return 2.0 * NormalDist().inv_cdf(1.0 - 1.0 / n)
 
 def _band(value, lo, hi):
   """ok / flag / n/a for a metric that must sit inside [lo, hi].
@@ -974,11 +976,12 @@ FLAG_HELP = {
  "",
  "        z_n  =  Phi^-1( 1 - 1/n )        1.53 at n = 16, 1.64 at n = 20",
  "",
- "  so the leg is flagged once sep exceeds 2 * z_n (capped at 4.0). Past that the",
- "  reported crossing is produced by extrapolating the Gaussian fit into empty",
- "  space, and it moves as soon as one more cycle lands anywhere near it. The",
- "  limit tightens with few cycles and relaxes with many, because what decides",
- "  the question is not the size of the gap but whether the samples span it.",
+ "  so the leg is flagged once sep exceeds 2 * z_n. Past that the reported",
+ "  crossing is produced by extrapolating the Gaussian fit into empty space, and",
+ "  it moves as soon as one more cycle lands anywhere near it. The limit tightens",
+ "  with few cycles and relaxes with many, without a ceiling, because what",
+ "  decides the question is never the size of the gap but only whether the",
+ "  samples span it: 2.3 at n = 8, 3.1 at n = 16, 4.7 at n = 100.",
  "",
  "  This is not a defect of CGI in particular. Every bidirectional estimator (CGI,",
  "  BAR, Crooks) needs the forward and reverse work ensembles to overlap, because dG",
@@ -1011,7 +1014,7 @@ def print_gaussian_report(stats):
   print("  p_fwd,p_rev Shapiro-Wilk p of each distribution ALONE; FD flags below %.3f"
         % (ALPHA / 2.0))
   print("  sep         2 * diss / sqrt( (sf^2 + sr^2) / 2 )   mean gap, in pooled sigma")
-  print("  sep_max     2 * Phi^-1( 1 - 1/n ), capped at 4.0   how far n cycles reach")
+  print("  sep_max     2 * Phi^-1( 1 - 1/n )         how far n cycles reach; SEP's limit")
   print("")
   print("  %-10s %-13s %4s %9s %7s %7s %7s %7s %6s %8s %8s   %s"
         % ("structure", "leg", "n", "diss", "ratio", "sf/sr", "p_fwd", "p_rev",
