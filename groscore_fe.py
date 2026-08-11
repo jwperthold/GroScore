@@ -1022,94 +1022,48 @@ FLAG_HELP = {
 "FD": [
  "FD -- a work distribution is not Gaussian",
  "",
- "  CGI fits one Gaussian to the forward works and one to the reverse works and",
- "  reports where the two curves cross. The assumption is therefore made about each",
- "  distribution separately, and that is where it is tested: a Shapiro-Wilk test of",
- "  the forward sample alone, and another of the reverse sample alone. The leg is",
- "  flagged if either p-value falls below ALPHA/2 -- two tests per leg, Bonferroni-",
- "  corrected so the leg misfires only ALPHA of the time on genuinely Gaussian",
- "  works.",
+ "  CGI fits one Gaussian per distribution, so each is tested on its own: a",
+ "  Shapiro-Wilk of the forward sample and another of the reverse. Flagged if",
+ "  either p falls below ALPHA/2 (Bonferroni over the two, so the leg misfires",
+ "  only ALPHA of the time on genuinely Gaussian works).",
  "",
- "  Why the works go non-Gaussian is worth knowing, because Crooks' theorem,",
+ "  A leg switched too fast skews from the tail inward: the rare low-work cycles",
+ "  that carry dG are exponentially unlikely, n cycles never reach them, and the",
+ "  fitted Gaussian ends up too narrow and too far out. Prefer dG_avg over CGI.",
  "",
- "        P_f(W) / P_r(-W)  =  exp( (W - dG) / RT )",
- "",
- "  becomes very rigid once both sides are Gaussian: the exponent of a Gaussian is",
- "  quadratic in W, so matching term by term forces the two distributions to share",
- "  one width and ties the dissipation to that width alone,",
- "",
- "        W_diss  =  <W> -/+ dG  =  sigma^2 / (2 RT)      in each direction",
- "",
- "  A leg switched too fast breaks this from the tail inward. The rare cycles that",
- "  happen to dissipate little are the ones that carry dG, they are exponentially",
- "  unlikely, and n cycles never reach far enough into that tail -- so the sampled",
- "  distribution is skewed rather than Gaussian, and the fitted Gaussian is too",
- "  narrow and sits too far out. The crossing it produces is biased away from dG.",
- "  The 'ratio' column is the same physics read as a number: diss / diss_pred with",
- "  diss_pred = (sf^2 + sr^2)/4RT, far from 1 when the leg is out of the near-",
- "  equilibrium regime. It is reported for information and is not itself a flag,",
- "  since it moves for reasons other than the shape of either distribution.",
- "",
- "  A caution about the other direction: at these sample sizes Shapiro-Wilk only",
- "  detects gross departures. n = 16 gives it little power, so an unflagged FD",
- "  means 'not detectably non-Gaussian at n cycles', NOT 'Gaussian'. Read a pass",
- "  as the absence of evidence it is, and lean on 'sep' and on the figure.",
+ "  A pass is weak evidence. At n = 16 Shapiro-Wilk catches only gross departures,",
+ "  so unflagged means 'not detectably non-Gaussian', not 'Gaussian'.",
 ],
 "OVL": [
  "OVL -- no sampled work lies where both directions have support",
  "",
- "  Every bidirectional estimator -- the average, CGI, BAR, Crooks -- reads dG off",
- "  the region where P_f(W) and P_r(-W) are BOTH populated. That is where CGI's two",
- "  curves cross and where BAR's estimating equation carries its weight. The check",
- "  is therefore as blunt as the question: of the 2n sampled works, how many fall",
- "  inside the other direction's observed min..max range?",
+ "  Every bidirectional estimator -- avg, CGI, BAR, Crooks -- reads dG off the",
+ "  region where P_f(W) and P_r(-W) are both populated. This counts how many of",
+ "  the 2n works fall inside the other direction's observed min..max range. Zero",
+ "  means the answer is not in the data, only in the model's extrapolated tails.",
  "",
- "  Zero means the answer is not in the data. Whatever number comes out is a",
- "  property of the fitted model extrapolated into empty space, and it will move",
- "  as soon as one cycle lands anywhere near that region. The reported gap is the",
- "  width of the empty stretch between the two ranges; in units of RT it says how",
- "  far into an exponentially unlikely tail a cycle would have to reach, which is",
- "  why more cycles is usually hopeless once it is large.",
+ "  The gap, in RT, says how deep into an exponentially unlikely tail a cycle",
+ "  would have to land -- which is why more cycles rarely helps once it is large.",
  "",
- "  Why this exists alongside sep, which asks the same thing: sep divides the mean",
- "  gap by the pooled sigma, and sigma is quadratic in deviations, so ONE extreme",
- "  work inflates the denominator and drags sep down. A leg can clear sep purely",
- "  because a single trajectory went badly, with the distributions exactly as far",
- "  apart as before. A count cannot do that -- one outlier moves it by one, out of",
- "  2n. Read OVL first; read sep as the graded measure once OVL is non-zero.",
- "",
- "  Only exactly zero is flagged, because that is the statement that needs no",
- "  assumptions. A handful is not much better -- the estimator's weight",
- "  concentrates in the crossing region, so a few samples there carry the whole",
- "  answer -- so read the printed count, not just the verdict.",
+ "  Flagged only at exactly zero, the one claim that needs no assumptions. Read",
+ "  the printed count as well: a handful is barely better than none.",
 ],
 "SEP": [
- "SEP -- the histograms barely overlap",
+ "SEP -- the histograms sit further apart than the cycles can span",
  "",
- "  The distance between the plotted means is",
+ "  sep = 2*diss / pooled sigma: the mean gap in units of the distributions' own",
+ "  spread. Two equally wide Gaussians cross halfway between their means, so the",
+ "  crossing lies sep/2 sigma into either tail and is measured only if the cycles",
+ "  reach that far. The most extreme of n samples sits near z_n = Phi^-1(1 - 1/n),",
+ "  giving sep_max = 2*z_n: 2.3 at n=8, 3.1 at n=16, 4.7 at n=100, with no ceiling",
+ "  -- a run that puts samples at 5 sigma has measured a 5-sigma crossing.",
  "",
- "        <W_f> - <-W_r>  =  <W_f> + <W_r>  =  2 * diss",
+ "  sep divides by a scale, so ONE extreme work can inflate sigma and clear this",
+ "  check with the distributions no closer than before. OVL is the robust form of",
+ "  the same question: read it first, and treat sep as the graded measure.",
  "",
- "  and sep divides that gap by the pooled width sqrt((sf^2 + sr^2)/2), expressing",
- "  the hysteresis in units of the distributions' own spread. Two equally wide",
- "  Gaussians cross halfway between their means, so the crossing lies sep/2 sigma",
- "  into either tail -- measured only if the cycles actually reach that far out.",
- "  The most extreme of n samples sits near",
- "",
- "        z_n  =  Phi^-1( 1 - 1/n )        1.53 at n = 16, 1.64 at n = 20",
- "",
- "  so the leg is flagged once sep exceeds 2 * z_n. Past that the reported",
- "  crossing is produced by extrapolating the Gaussian fit into empty space, and",
- "  it moves as soon as one more cycle lands anywhere near it. The limit tightens",
- "  with few cycles and relaxes with many, without a ceiling, because what",
- "  decides the question is never the size of the gap but only whether the",
- "  samples span it: 2.3 at n = 8, 3.1 at n = 16, 4.7 at n = 100.",
- "",
- "  This is not a defect of CGI in particular. Every bidirectional estimator (CGI,",
- "  BAR, Crooks) needs the forward and reverse work ensembles to overlap, because dG",
- "  is extracted from the region where both are populated. The natural scale is RT:",
- "  a leg dissipating a few RT converges comfortably, one dissipating tens of RT",
- "  needs exponentially many cycles to sample the tail that carries the answer.",
+ "  Not specific to CGI -- BAR and Crooks need the same overlap. The scale is RT:",
+ "  a few RT of dissipation converges, tens needs exponentially many cycles.",
 ],
 }
 
@@ -1123,21 +1077,17 @@ def print_gaussian_report(stats):
   print("Gaussian / near-equilibrium consistency  (RT = %.3f kJ/mol at %.1f K)"
         % (RT, args.temp))
   print("-" * 78)
-  print("CGI fits a Gaussian to each work distribution and reports where the two curves")
-  print("cross. That crossing is dG only if each distribution really is Gaussian and if")
-  print("the two overlap. FD and SEP test exactly those two preconditions, and report")
-  print("n/a for whichever of them the cycle count cannot answer.")
+  print("CGI reads dG off where the two fitted Gaussians cross, which is only dG if each")
+  print("distribution is Gaussian (FD) and the two overlap (OVL, and SEP as its graded")
+  print("form). A check the cycle count cannot answer reports n/a. Diagnostic only.")
   print("")
-  print("  W_f, W_r    forward / reverse work of the leg, one value per cycle")
-  print("  diss        ( <W_f> + <W_r> ) / 2        dissipated work; dG cancels from the sum")
-  print("  dG_avg      ( <W_f> - <W_r> ) / 2        the antisymmetric partner of diss")
-  print("  sf, sr      std. dev. of the forward / sign-aligned reverse works")
+  print("  diss        ( <W_f> + <W_r> ) / 2        dissipated work; dG cancels out")
   print("  ratio       diss / ( (sf^2+sr^2)/4RT )  linear response predicts 1; descriptive")
-  print("  p_fwd,p_rev Shapiro-Wilk p of each distribution ALONE; FD flags below %.3f"
+  print("  sf/sr       widths of the forward / sign-aligned reverse works")
+  print("  p_fwd,p_rev Shapiro-Wilk of each distribution ALONE; FD flags below %.3f"
         % (ALPHA / 2.0))
   print("  ovl         works inside the OTHER direction's range, of 2n; OVL flags at 0")
-  print("  sep         2 * diss / sqrt( (sf^2 + sr^2) / 2 )   mean gap, in pooled sigma")
-  print("  sep_max     2 * Phi^-1( 1 - 1/n )         how far n cycles reach; SEP's limit")
+  print("  sep         2 * diss / pooled sigma, vs sep_max = 2 * Phi^-1( 1 - 1/n )")
   print("")
   print("  %-10s %-13s %4s %9s %7s %7s %7s %7s %8s %6s %8s %8s   %s"
         % ("structure", "leg", "n", "diss", "ratio", "sf/sr", "p_fwd", "p_rev",
@@ -1154,10 +1104,9 @@ def print_gaussian_report(stats):
   thin = [(sid, leg, st) for sid, leg, st in stats if st['skipped']]
   print("")
   if not bad:
-    print("No leg failed a check it had the cycles to answer: where testable, the")
-    print("dissipation matches the width of the distributions, the two directions are")
-    print("comparably wide, and the histograms overlap. Those CGI crossings are")
-    print("measured, not extrapolated, and can be read at face value.")
+    print("No leg failed a check it had the cycles to answer: where testable, both work")
+    print("distributions are Gaussian and they overlap, so those CGI crossings are")
+    print("measured rather than extrapolated and can be read at face value.")
   else:
     print("%d of %d legs failed at least one check." % (len(bad), len(stats)))
 
@@ -1191,21 +1140,15 @@ def print_gaussian_report(stats):
     print("-" * 78)
     print("What to do about it")
     print("")
-    print("  Prefer dG_avg over CGI on the flagged legs: the average estimator makes no")
-    print("  Gaussian assumption and degrades gracefully, whereas a CGI crossing drawn")
-    print("  from unsampled tails can land anywhere.")
+    print("  Read dG_avg, not CGI, on a flagged leg: it assumes no Gaussian and degrades")
+    print("  gracefully, where a crossing drawn from unsampled tails can land anywhere.")
     print("")
-    print("  To fix the physics rather than the readout, dissipate less by switching")
-    print("  more SLOWLY -- longer legs at a proportionally lower pull rate. Dissipated")
-    print("  work falls roughly linearly with the switching time in the near-equilibrium")
-    print("  regime, and narrower, less separated distributions follow. Leg length and")
-    print("  rate are coupled by rate x time = 1.0 nm, so nsteps in the leg mdp and")
-    print("  --pull-rate in make_boresch.py must always be changed together.")
-    print("")
-    print("  Running more cycles will NOT clear these flags. More cycles shrink the")
-    print("  confidence interval around whatever the estimator converges to; they do")
-    print("  not reduce the hysteresis that separates the two distributions, which is")
-    print("  set by the switching rate alone.")
+    print("  More cycles will NOT clear these flags. They shrink the CI around whatever")
+    print("  the estimator converges to; they do not reduce the hysteresis. That needs a")
+    print("  slower switch -- longer legs at a proportionally lower pull rate, coupled by")
+    print("  rate x time = 1.0 nm, so the leg mdp nsteps and make_boresch.py --pull-rate")
+    print("  must change together. Run utils/fe_leg_efficiency.py first: it measures")
+    print("  whether this leg's dissipation actually falls as 1/t, and prices both levers.")
 
   # Skipped checks are reported separately from failed ones: a leg that has not
   # run enough cycles has not been judged, and saying so is the only honest
@@ -1215,15 +1158,11 @@ def print_gaussian_report(stats):
     print("-" * 78)
     print("n/a -- the check has no answer on this leg")
     print("")
-    print("  FD runs a Shapiro-Wilk test on each work distribution, which is defined from")
-    print("  %d samples up, and abstains below that or when a distribution has collapsed" % N_MIN_NORM)
-    print("  to a single repeated value. OVL needs %d, below which a min..max range is" % N_MIN_OVL)
-    print("  not a range. SEP asks how far the sampled tails reach and needs %d, because" % N_MIN_SEP)
-    print("  2 * Phi^-1(1 - 1/n) is not a tail position until there is a tail.")
-    print("")
-    print("  An abstaining check is neither a pass nor a failure -- the leg is simply")
-    print("  untested on that point, and the CGI crossing carries no evidence for or")
-    print("  against it. Only more cycles turn these into real verdicts.")
+    print("  Minimum cycles: FD %d (Shapiro-Wilk's, and it also abstains on a distribution"
+          % N_MIN_NORM)
+    print("  collapsed to one value), OVL %d for a min..max range, SEP %d for a tail. An"
+          % (N_MIN_OVL, N_MIN_SEP))
+    print("  abstention is neither pass nor failure: the leg is untested on that point.")
     print("")
     print("  untested legs:")
     for sid, leg, st in thin:
