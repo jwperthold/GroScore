@@ -716,8 +716,52 @@ else
   CYCLE_START=1
   CYCLE_END=$NUMCYCLES
 fi
+  # A cycle must never be executed by two processes at once. It can happen with
+  # no bug anywhere: kill a local runner and its gmx children survive as orphans,
+  # then the next start re-queues that cycle (it has no complete result, which is
+  # indistinguishable from "dead") and two mdruns write the same -deffnm files,
+  # in place, at independent offsets. Nothing downstream can detect the resulting
+  # garbage. `mkdir` is atomic on POSIX and on NFS, so it elects one winner the
+  # same way the archive step does. The lock records host:pid so a lock left by a
+  # killed job can be reclaimed, but ONLY on the same host, where the pid is
+  # meaningful -- across hosts we skip the cycle rather than risk a collision.
+  CYCLE_LOCK=""
+  release_cycle_lock() {
+    [[ -n "$CYCLE_LOCK" && -d "$CYCLE_LOCK" ]] && rm -rf "$CYCLE_LOCK"
+    CYCLE_LOCK=""
+  }
+  trap 'release_cycle_lock' EXIT INT TERM
+
+  claim_cycle() {
+    local lock=results_fe_c$1.lock
+    if mkdir "$lock" 2>/dev/null; then
+      echo "$(hostname):$$" > "$lock/owner"
+      CYCLE_LOCK="$lock"
+      return 0
+    fi
+    local owner host pid
+    owner=$(cat "$lock/owner" 2>/dev/null)
+    host=${owner%%:*}; pid=${owner##*:}
+    if [[ "$host" == "$(hostname)" && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      echo "Cycle $1: reclaiming stale lock from dead pid $pid"
+      rm -rf "$lock"
+      if mkdir "$lock" 2>/dev/null; then
+        echo "$(hostname):$$" > "$lock/owner"
+        CYCLE_LOCK="$lock"
+        return 0
+      fi
+    fi
+    echo "Cycle $1: already running elsewhere (owner ${owner:-unknown}) - skipping."
+    return 1
+  }
+
+  CYCLE_FAILED=0
   cycle=$CYCLE_START
   while [[ $cycle -le $CYCLE_END ]]; do
+    if ! claim_cycle $cycle; then
+      cycle=$((cycle+1))
+      continue
+    fi
     echo "=== FE cycle $cycle of $NUMCYCLES ==="
 
     # Full equilibration for this cycle (NVT 1-5 + NPT)
@@ -853,12 +897,31 @@ fi
         > $RESFILE
       gzip -f boundfwd_${cycle}_dhdl.xvg bindfwd_${cycle}_pullf.xvg bindfwd_${cycle}_dhdl.xvg \
               bindrev_${cycle}_pullf.xvg bindrev_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg 2>/dev/null
-      # Written last, so the archive check below can treat .done as "fully finished".
-      touch results_fe_c${cycle}.done
+      # Written last and ONLY for a complete cycle, so .done really does mean
+      # "fully finished" -- the archive check below counts these, and a structure
+      # that tarred itself up on the strength of half-finished cycles would be
+      # unrecoverable. A cycle whose legs died partway writes its NaN row (so the
+      # next run repairs it rather than re-simulating from scratch) but no marker,
+      # and reports failure so the runner shows it instead of logging "done".
+      if awk 'NR==1 && NF>=9{ok=1; for(i=3;i<=8;i++) if($i=="NaN"||$i=="nan") ok=0} END{exit !ok}' $RESFILE; then
+        touch results_fe_c${cycle}.done
+      else
+        echo "Cycle $cycle FAILED: not all six works are numeric, no .done written:"
+        echo "  $(cat $RESFILE)"
+        CYCLE_FAILED=1
+      fi
     fi
 
+    release_cycle_lock
     cycle=$((cycle+1))
   done
+
+  # Report a partial cycle as a failure. Deferred to the end of the loop so that
+  # legacy sequential mode still attempts every cycle rather than stopping at the
+  # first bad one; in --cycle mode there is only one, so it is immediate.
+  if [[ $CYCLE_FAILED -eq 1 ]]; then
+    echo "At least one cycle finished without a complete result."
+  fi
 
   # Archive completed structure to reduce inode count.
   # Only when EVERY cycle has finished -- with cycles running as parallel array
@@ -889,3 +952,8 @@ fi
 else
   echo $STRUCT_ID "BROKEN" >> ../results_0.gs
 fi
+
+# Propagate a partial cycle to the exit status. Without this a cycle whose second
+# half died still exited 0, the runner logged it "done", and the only symptom was
+# Ncycles quietly lagging the done count.
+exit ${CYCLE_FAILED:-0}

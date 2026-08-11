@@ -22,7 +22,7 @@
 #   * The runner is detached from the launching terminal (own session, output to
 #     a log file), so closing the shell does not kill the simulations.
 
-import argparse, json, os, shutil, signal, subprocess, sys, tarfile, threading, time
+import argparse, glob, json, os, shutil, signal, subprocess, sys, tarfile, threading, time
 
 PID_FILE    = "local_runner.pid"
 JOB_FILE    = "local_jobs.json"
@@ -116,6 +116,28 @@ def launch_local(jobs, ngpus, jobs_per_gpu, threads_per_job, rundir="."):
 
 #------------------------------------------------------
 
+def incomplete_cycles(rundir=".", resultsdir="results_fe.d"):
+  """[(struct_id, cycle), ...] whose row exists but has a non-numeric work.
+
+  Mirrors the completeness rule job_fe.run uses to decide whether to write a
+  .done marker: fields 3-8 are the six works and must all be numeric. Field 9 is
+  the rebinding RMSD, which is diagnostic only -- a cycle whose RMSD could not be
+  computed is still a valid result."""
+  out = []
+  for path in sorted(glob.glob(os.path.join(rundir, resultsdir, "*.gs"))):
+    try:
+      for line in open(path):
+        f = line.split()
+        if len(f) < 8 or line.lstrip().startswith("#"):
+          continue
+        works = f[2:8]
+        if any(w.lower() == "nan" for w in works):
+          out.append((f[0], f[1]))
+    except OSError:
+      pass
+  return out
+
+
 def print_local_status(rundir="."):
   """One-line progress report for a run that is being driven locally."""
   path = os.path.join(rundir, STATUS_FILE)
@@ -134,6 +156,18 @@ def print_local_status(rundir="."):
   print("Local run: %s - %s/%s jobs done, %s running, %s queued, %s failed."
         % (state, st.get("done", "?"), st.get("total", "?"), st.get("running", "?"),
            st.get("pending", "?"), st.get("failed", "?")))
+
+  # "done" only means the process exited 0. A cycle whose legs died partway still
+  # writes its row -- with NaN works -- so it can be repaired without re-running
+  # the MD, and that row is invisible in the counts above. Surface it here, or the
+  # only symptom is Ncycles quietly lagging the done count.
+  partial = incomplete_cycles(rundir)
+  if partial:
+    shown = ", ".join("%s c%s" % (sid, c) for sid, c in partial[:6])
+    more = "" if len(partial) <= 6 else ", +%d more" % (len(partial) - 6)
+    print("             %d finished cycle%s wrote an incomplete result (%s%s);"
+          % (len(partial), "" if len(partial) == 1 else "s", shown, more))
+    print("             they are queued for repair on the next run.")
 
 #------------------------------------------------------
 
