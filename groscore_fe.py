@@ -691,8 +691,9 @@ ROWS_PER_PAGE = 16
 # into "failed": a leg with a single cycle would otherwise come back failed
 # purely because 0/0 is not a number.
 N_MIN_NORM = 3      # Shapiro-Wilk is defined from three samples up
+N_MIN_OVL = 3       # below this a min..max range is not a range
 N_MIN_SEP = 4       # _sep_limit's extreme-value argument needs a tail to reach
-CHECKS = ("FD", "SEP")
+CHECKS = ("FD", "OVL", "SEP")
 
 # Family-wise false-positive rate allowed per leg. FD runs one normality test on
 # each of the leg's two work distributions, so the per-test level is Bonferroni-
@@ -756,19 +757,47 @@ def _fd_check(p_f, p_r):
     return "n/a"
   return "flag" if min(ps) < ALPHA / 2.0 else "ok"
 
+def _ovl_check(inside, n):
+  """OVL state: do any sampled works lie where both directions have support?
+
+  This is the blunt form of the question sep only proxies, and it survives things
+  sep does not. sep = 2*diss/sigma_pooled puts a quadratic-in-deviations scale in
+  the denominator, so ONE extreme work inflates sigma, drags sep down and quietly
+  clears the check while the distributions are exactly as far apart as before. A
+  count can only move by one per outlier, out of 2n.
+
+  Flagged only at exactly zero, which is the assumption-free statement: no
+  estimator has data. A handful is not much better -- the estimator's weight
+  concentrates in the overlap region, so a few samples there carry the whole
+  answer -- but that is a graded question, and sep is the graded measure. The
+  count is always printed so a marginal 3 of 100 is visible rather than hidden
+  behind a verdict."""
+  if n < N_MIN_OVL or not np.isfinite(inside):
+    return "n/a"
+  return "flag" if inside == 0 else "ok"
+
+
 def gaussian_check(st):
   """Near-equilibrium consistency of one leg.
 
-  CGI models both work distributions as Gaussians, so two things have to hold:
+  CGI models both work distributions as Gaussians and reads dG off where they
+  cross, so three things have to hold:
 
     FD   each distribution is separately consistent with a Gaussian, by a
          Shapiro-Wilk test of that distribution alone. CGI's model is fitted to
          each one individually, so that is where the assumption has to be tested
+    OVL  some sampled works actually lie where both directions have support. No
+         estimator can do better than the data in the crossing region, and this
+         asks whether that region contains any at all
     SEP  the histograms sit no further apart than the cycles can span -- at most
-         2 * z_n pooled sigma, z_n = Phi^-1(1 - 1/n) -- or the CGI crossing is
-         extrapolated into a gap where neither distribution has samples
+         2 * z_n pooled sigma, z_n = Phi^-1(1 - 1/n) -- the graded version of the
+         same question, in units of the distributions' own spread
 
-  Both are referred to the sampling noise of n cycles, so neither fires on a
+  OVL and SEP overlap in intent but not in failure mode: sep divides by a scale,
+  so one extreme work can inflate sigma and clear it while nothing has improved,
+  where a count moves by at most one. Read OVL first.
+
+  Each is referred to the sampling noise of n cycles, so none fires on a
   departure that n cycles would produce by chance. A check whose input is
   undefined at that n reports n/a and takes part in no verdict."""
   sd_f, sd_r, diss, n = st['sd_f'], st['sd_r'], st['diss'], st['n']
@@ -784,6 +813,7 @@ def gaussian_check(st):
   lim = _sep_limit(n)
 
   state = {'FD': _fd_check(st['p_fwd'], st['p_rev']),
+           'OVL': _ovl_check(st.get('inside', float('nan')), n),
            # One-sided: a negative sep means the two means have crossed over,
            # which puts the crossing between them -- sampled, not extrapolated.
            'SEP': _band(sep, -math.inf, lim)}
@@ -804,6 +834,8 @@ def _why_na(check, st):
   """Why a check abstained on this leg, in a few words."""
   if check == "SEP":
     return "n < %d" % N_MIN_SEP
+  if check == "OVL":
+    return "n < %d" % N_MIN_OVL
   if st['n'] < N_MIN_NORM:
     return "n < %d" % N_MIN_NORM
   return "a distribution has zero width"
@@ -828,12 +860,20 @@ def leg_stats(fwd, rev):
   second implementation of them."""
   f = np.asarray(fwd, float)
   v = np.asarray(rev, float)
+  ral = -v                                   # sign-aligned reverse, as plotted
+  # How many of the 2n sampled works land inside the OTHER direction's observed
+  # range, and -- when none do -- how much empty work separates the two ranges.
+  # Both are order statistics, so no distributional assumption enters.
+  inside = int(((f >= ral.min()) & (f <= ral.max())).sum()
+               + ((ral >= f.min()) & (ral <= f.max())).sum()) if len(f) else 0
+  gap = max(0.0, max(f.min(), ral.min()) - min(f.max(), ral.max())) if len(f) else float('nan')
   return {'n': len(f),
           'avg': float(_stream_avg(f, v)),
           'cgi': float(_stream_cgi(f[None, :], v[None, :])[0]) if len(f) >= 3
                  else float('nan'),
           'diss': float((f.mean() + v.mean()) / 2.0),   # per-direction dissipation
           'sd_f': float(f.std()), 'sd_r': float(v.std()),
+          'inside': inside, 'gap': float(gap),
           # Normality is a property of each sample, and negating one of them
           # cannot change its shape, so the raw reverse works are tested as-is.
           'p_fwd': _normality(f), 'p_rev': _normality(v)}
@@ -1015,6 +1055,34 @@ FLAG_HELP = {
  "  means 'not detectably non-Gaussian at n cycles', NOT 'Gaussian'. Read a pass",
  "  as the absence of evidence it is, and lean on 'sep' and on the figure.",
 ],
+"OVL": [
+ "OVL -- no sampled work lies where both directions have support",
+ "",
+ "  Every bidirectional estimator -- the average, CGI, BAR, Crooks -- reads dG off",
+ "  the region where P_f(W) and P_r(-W) are BOTH populated. That is where CGI's two",
+ "  curves cross and where BAR's estimating equation carries its weight. The check",
+ "  is therefore as blunt as the question: of the 2n sampled works, how many fall",
+ "  inside the other direction's observed min..max range?",
+ "",
+ "  Zero means the answer is not in the data. Whatever number comes out is a",
+ "  property of the fitted model extrapolated into empty space, and it will move",
+ "  as soon as one cycle lands anywhere near that region. The reported gap is the",
+ "  width of the empty stretch between the two ranges; in units of RT it says how",
+ "  far into an exponentially unlikely tail a cycle would have to reach, which is",
+ "  why more cycles is usually hopeless once it is large.",
+ "",
+ "  Why this exists alongside sep, which asks the same thing: sep divides the mean",
+ "  gap by the pooled sigma, and sigma is quadratic in deviations, so ONE extreme",
+ "  work inflates the denominator and drags sep down. A leg can clear sep purely",
+ "  because a single trajectory went badly, with the distributions exactly as far",
+ "  apart as before. A count cannot do that -- one outlier moves it by one, out of",
+ "  2n. Read OVL first; read sep as the graded measure once OVL is non-zero.",
+ "",
+ "  Only exactly zero is flagged, because that is the statement that needs no",
+ "  assumptions. A handful is not much better -- the estimator's weight",
+ "  concentrates in the crossing region, so a few samples there carry the whole",
+ "  answer -- so read the printed count, not just the verdict.",
+],
 "SEP": [
  "SEP -- the histograms barely overlap",
  "",
@@ -1067,17 +1135,19 @@ def print_gaussian_report(stats):
   print("  ratio       diss / ( (sf^2+sr^2)/4RT )  linear response predicts 1; descriptive")
   print("  p_fwd,p_rev Shapiro-Wilk p of each distribution ALONE; FD flags below %.3f"
         % (ALPHA / 2.0))
+  print("  ovl         works inside the OTHER direction's range, of 2n; OVL flags at 0")
   print("  sep         2 * diss / sqrt( (sf^2 + sr^2) / 2 )   mean gap, in pooled sigma")
   print("  sep_max     2 * Phi^-1( 1 - 1/n )         how far n cycles reach; SEP's limit")
   print("")
-  print("  %-10s %-13s %4s %9s %7s %7s %7s %7s %6s %8s %8s   %s"
+  print("  %-10s %-13s %4s %9s %7s %7s %7s %7s %8s %6s %8s %8s   %s"
         % ("structure", "leg", "n", "diss", "ratio", "sf/sr", "p_fwd", "p_rev",
-           "sep", "sep_max", "diss/RT", "verdict"))
+           "ovl", "sep", "sep_max", "diss/RT", "verdict"))
   for sid, leg, st in stats:
-    print("  %-10s %-13s %4d %9s %7s %7s %7s %7s %6s %8s %8s   %s"
+    ovl = ("%d/%d" % (st['inside'], 2 * st['n'])) if 'inside' in st else "n/a"
+    print("  %-10s %-13s %4d %9s %7s %7s %7s %7s %8s %6s %8s %8s   %s"
           % (sid, leg, st['n'], _cell(st['diss']), _cell(st['ratio'], 7),
              _cell(st['widths'], 7), _pcell(st['p_fwd']), _pcell(st['p_rev']),
-             _cell(st['sep'], 6, 1), _cell(st['sep_lim'], 8, 1),
+             ovl.rjust(8), _cell(st['sep'], 6, 1), _cell(st['sep_lim'], 8, 1),
              _cell(st['diss'] / RT, 8, 1), st['verdict']))
 
   bad = [(sid, leg, st) for sid, leg, st in stats if st['flags']]
@@ -1109,6 +1179,9 @@ def print_gaussian_report(stats):
           detail = "Shapiro-Wilk p_fwd=%s p_rev=%s at n=%d (%s rejects below %.3f)" % (
               _pcell(st['p_fwd'], 0), _pcell(st['p_rev'], 0), st['n'], which,
               ALPHA / 2.0)
+        elif flag == "OVL":
+          detail = "0 of %d works in the other's range; %.1f kJ/mol (%.1f RT) of empty gap" % (
+              2 * st['n'], st['gap'], st['gap'] / RT)
         else:
           detail = "sep %.1f sigma vs %.1f reachable at n=%d (diss %.1f = %.0f RT)" % (
               st['sep'], st['sep_lim'], st['n'], st['diss'], st['diss'] / RT)
@@ -1144,9 +1217,9 @@ def print_gaussian_report(stats):
     print("")
     print("  FD runs a Shapiro-Wilk test on each work distribution, which is defined from")
     print("  %d samples up, and abstains below that or when a distribution has collapsed" % N_MIN_NORM)
-    print("  to a single repeated value. SEP asks how far the sampled tails reach and")
-    print("  needs %d, because 2 * Phi^-1(1 - 1/n) is not a tail position until there is" % N_MIN_SEP)
-    print("  a tail.")
+    print("  to a single repeated value. OVL needs %d, below which a min..max range is" % N_MIN_OVL)
+    print("  not a range. SEP asks how far the sampled tails reach and needs %d, because" % N_MIN_SEP)
+    print("  2 * Phi^-1(1 - 1/n) is not a tail position until there is a tail.")
     print("")
     print("  An abstaining check is neither a pass nor a failure -- the leg is simply")
     print("  untested on that point, and the CGI crossing carries no evidence for or")
