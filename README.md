@@ -69,10 +69,10 @@ conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-
 
 ### GROMACS
 
-`openbabel=3.1.1` requires `libxml2 <2.14`, while `gromacs=2026` requires `libhwloc ≥2.12.2` which pulls in `libxml2 ≥2.14` — these are mutually exclusive in conda. GROMACS must be installed separately:
+`openbabel=3.1.1` requires `libxml2 <2.14`, while `gromacs=2026` requires `libhwloc ≥2.12.2` which pulls in `libxml2 ≥2.14`. These are mutually exclusive in conda. GROMACS must be installed separately:
 
 - **HPC cluster:** load the system module (`module load gromacs/2026` or similar)
-- **Workstation — separate conda env:**
+- **Workstation, separate conda env:**
   ```bash
   conda create -n gmx2026 -c conda-forge gromacs=2026   # GPU build selected automatically on CUDA 12.9+
   export PATH="$(conda info --base)/envs/gmx2026/bin:$PATH"
@@ -81,9 +81,9 @@ conda install -c conda-forge numpy scipy openmm pdbfixer openbabel rdkit openff-
 
 ### SLURM
 
-**Optional.** On a single multi-GPU machine you can skip SLURM entirely and use `--run-local` instead — see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation).
+**Optional.** On a single multi-GPU machine you can skip SLURM entirely and use `--run-local` instead; see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation).
 
-On HPC clusters SLURM is managed by the system administrators — verify with `squeue --version`. On a local workstation (Ubuntu/Debian):
+On HPC clusters SLURM is managed by the system administrators; verify with `squeue --version`. On a local workstation (Ubuntu/Debian):
 
 ```bash
 sudo apt-get install slurm-wm munge
@@ -189,19 +189,19 @@ Note that CGI requires at least 20 cycles to fit forward and reverse work distri
 - **Units**: kJ·mol⁻¹. The score is the integrated pulling work along the unbinding/rebinding coordinate, averaged over cycles.
 - **Convert to pKd**: use the linear fits provided per force field in the [Benchmark Data](#benchmark-data-haddocking-protein-protein-affinity-benchmark) section, e.g. for AMBER19SB/OPC3: `pKd ≈ -0.0176 × score + 3.4513`. These coefficients are calibrated on the HADDOCKING benchmark.
 - **Uncertainty**: the `CI95` column is a 95 % confidence interval on the score from the between-cycle scatter.
-- **Trustworthiness**: check the `RMSD_flag` column before using a score — see [Rebinding Sanity Check (QC)](#rebinding-sanity-check-qc) below.
+- **Trustworthiness**: check the `RMSD_flag` column before using a score; see [Rebinding Sanity Check (QC)](#rebinding-sanity-check-qc) below.
 
 ## Running Without SLURM (Single Multi-GPU Workstation)
 
-GPU cloud providers typically rent out one fat machine — 4 or 8 GPUs in a single box — with no scheduler installed. `--run-local` replaces the SLURM job array with a background runner that starts the jobs itself and pins each of them to one GPU:
+GPU cloud providers typically rent out one fat machine (4 or 8 GPUs in a single box) with no scheduler installed. `--run-local` replaces the SLURM job array with a background runner that starts the jobs itself and pins each of them to one GPU:
 
 ```bash
 python ../groscore.py -n 5 --run-local --ngpus 8
 ```
 
-Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate — GroScore systems are small enough to run essentially GPU-resident (nonbonded, PME and the update/constraints all offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor.
+Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate: GroScore systems are small enough to run essentially GPU-resident (nonbonded, PME and the update/constraints all offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor.
 
-**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default 8 jobs share each GPU (`--jobs-per-gpu 8`) — a single cutout-sized system leaves the GPU idle during CPU-side work, so stacking jobs raises *aggregate* throughput well past what one job per device achieves. Anything beyond `--ngpus × --jobs-per-gpu` waits in a queue and starts as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically rather than pre-assigned, so a slow structure cannot leave its GPU idle at the end of the run.
+**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default 8 jobs share each GPU (`--jobs-per-gpu 8`), as a single cutout-sized system leaves the GPU idle during CPU-side work, so stacking jobs raises *aggregate* throughput well past what one job per device achieves. Anything beyond `--ngpus × --jobs-per-gpu` waits in a queue and starts as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically rather than pre-assigned, so a slow structure cannot leave its GPU idle at the end of the run.
 
 | Option | Effect |
 |---|---|
@@ -220,13 +220,13 @@ tail -f local_runner.log # per-job start and exit lines, with the GPU used
 
 Re-running `python ../groscore.py --run-local --ngpus 8` while a runner is active is safe: it refuses to start a second one and just re-scores whatever has finished, printing a one-line progress summary. Each structure's own output goes to `<structure>/job_local.out`, the local equivalent of a SLURM job log.
 
-To stop a run, `kill` the pid in `local_runner.pid` — the runner terminates its running jobs and exits. Since every stage of `job.run` is restart-safe, re-launching later resumes from the last completed step.
+To stop a run, `kill` the pid in `local_runner.pid`; the runner terminates its running jobs and exits. Since every stage of `job.run` is restart-safe, re-launching later resumes from the last completed step.
 
-**Caveats.** `--ngpus` must match the machine: a job assigned to a non-existent device fails in `mdrun` (GroScore warns if `nvidia-smi` reports fewer GPUs than requested). The runner uses `mdrun -gpu_id`, so device numbering follows `nvidia-smi`; it does not set `CUDA_VISIBLE_DEVICES`. And unlike SLURM there is no memory accounting — with a high `--jobs-per-gpu` on large no-cutout systems the machine can run out of host RAM or GPU memory.
+**Caveats.** `--ngpus` must match the machine: a job assigned to a non-existent device fails in `mdrun` (GroScore warns if `nvidia-smi` reports fewer GPUs than requested). The runner uses `mdrun -gpu_id`, so device numbering follows `nvidia-smi`; it does not set `CUDA_VISIBLE_DEVICES`. And unlike SLURM there is no memory accounting: with a high `--jobs-per-gpu` on large no-cutout systems the machine can run out of host RAM or GPU memory.
 
 ## Rebinding Sanity Check (QC)
 
-A cycle's work only describes the intended binding event if the push leg actually put the complex back together. If the partners re-associate in a different pose — or drift apart and never return — the integrated force curve is still a number, just not the number you wanted. Every cycle of both engines is therefore checked automatically; no extra command is needed.
+A cycle's work only describes the intended binding event if the push leg actually put the complex back together. If the partners re-associate in a different pose, or drift apart and never return, the integrated force curve is still a number, just not the number you wanted. Every cycle of both engines is therefore checked automatically; no extra command is needed.
 
 `utils/rebound_rmsd.py` measures the **backbone RMSD between the bound state the cycle was equilibrated in and the state the rebinding leg ended in**:
 
@@ -268,9 +268,9 @@ The console stays short whatever the screen size: one aggregate line, then the t
 | 1–5 Å | Normal. Thermal fluctuation plus whatever the interface relaxed into during the cycle. |
 | 5–10 Å | Worth a look. Partial rebinding, a shifted interface, or a flexible loop that did not recover. |
 | > 10 Å | `HIGH_RMSD`. The partners did not return to the original pose. |
-| `nan` | Not measured — a run that predates the check, or a failed measurement. Never an error. |
+| `nan` | Not measured: a run that predates the check, or a failed measurement. Never an error. |
 
-The threshold is `--rmsd-warn` (default 10.0 Å) on both engines. **Scores and free energies are always computed and reported**: the check never aborts a simulation, never drops a cycle and never changes a number. It tells you which results to distrust — with a handful of flagged cycles, the usual response is to add cycles (`-n` plus `--restart`) and see whether the structure's score is dominated by them.
+The threshold is `--rmsd-warn` (default 10.0 Å) on both engines. **Scores and free energies are always computed and reported**: the check never aborts a simulation, never drops a cycle and never changes a number. It tells you which results to distrust: with a handful of flagged cycles, the usual response is to add cycles (`-n` plus `--restart`) and see whether the structure's score is dominated by them.
 
 A single measurement can also be taken by hand from inside a structure directory (`<project>/<structure_id>/`):
 
@@ -370,7 +370,7 @@ Each cycle starts fresh from `emin_solv.gro` with independent equilibration, pro
 
 ### Reproducibility
 
-Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at 300 K. The initial-velocity seed in every NVT/NPT/SMD `.mdp` is set to `gen_seed = -1`, i.e. GROMACS picks a fresh seed from the wall clock at submission time. This is deliberate — independent cycles must sample independent trajectories — but it does mean that scores from a re-submitted run will not be bitwise-identical to the original. The CI95 column in `scores_avg.gs` quantifies the resulting between-cycle variance.
+Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at 300 K. The initial-velocity seed in every NVT/NPT/SMD `.mdp` is set to `gen_seed = -1`, i.e. GROMACS picks a fresh seed from the wall clock at submission time. This is deliberate, as independent cycles must sample independent trajectories, but it does mean that scores from a re-submitted run will not be bitwise-identical to the original. The CI95 column in `scores_avg.gs` quantifies the resulting between-cycle variance.
 
 ### Throughput
 
@@ -380,9 +380,9 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 > **Experimental / in development.** Sign conventions and convergence are still being validated; see the caveats at the end of this section.
 
-The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, so the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly — turning the many empirical interface restraints into a rigorous, analytically-correctable restraint scheme, so the result approaches experimentally comparable absolute binding free energies.
+The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, hence the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly, i.e. by replacing the many empirical interface restraints with a rigorous, analytically correctable restraint scheme, so that the result approaches an experimentally comparable absolute binding free energy.
 
-During unbinding, the atom–atom interface restraints are gradually switched off while a set of **Boresch orientational restraints** (one distance, two angles, three dihedrals, built on backbone centre-of-mass anchor groups) is switched on. Because the Boresch restraint has a closed-form standard-state free energy (Boresch et al. 2003), its contribution in the separated state is computed analytically rather than simulated. Every leg is run forward and reverse and combined with the Crooks–Gaussian-Intersection estimator, exactly as in the classic engine.
+During unbinding, the atom-atom interface restraints are gradually switched off while a set of **Boresch orientational restraints** (one distance, two angles and three dihedrals, defined on backbone center-of-mass anchor groups) is switched on. As the Boresch restraint has a closed-form standard-state free energy (Boresch et al. 2003), its contribution in the separated state is computed analytically rather than simulated. Every leg is run forward and reverse, and the resulting works are combined with the Crooks-Gaussian-Intersection estimator as in the classic engine.
 
 The absolute binding free energy is assembled from a thermodynamic cycle:
 
@@ -393,7 +393,7 @@ dG_bind = -( dG_intro + dG_unbind + dG_release )
    dG_release   analytical Boresch standard-state term               (closed form)
 ```
 
-Because GROMACS has no lambda-dependent pull reference, the switching work is captured in two channels that add without double-counting: the **pull force** (mechanical separation, moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each cycle uses 1 ns equilibration, a 1.0 nm separation, and adds bound-state restraint legs (see [Compute cost](#compute-cost) below).
+As GROMACS provides no lambda-dependent pull reference, the switching work is captured in two channels which add without double-counting: the **pull force** (mechanical separation via the moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each cycle uses 1 ns of equilibration and a 1.0 nm separation, and adds the bound-state restraint legs (see [Compute cost](#compute-cost) below).
 
 Run it like the classic engine (same inputs and working-directory layout), substituting the script name:
 
@@ -407,60 +407,60 @@ All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm3
 python3 utils/make_fe_mdps.py
 ```
 
-Results land in `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, plus the three cycle components), fed by the per-cycle works in `results_fe.d/`. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc) — the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, so `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
+Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
 
-Every scoring pass also writes **`fe_works.png`** — the work distributions of every leg, one row per structure, bound-state legs on the left, unbinding/rebinding (pull work + dhdl work) on the right. No second command to remember: it appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run.
+Every scoring pass also writes **`fe_works.png`**, the work distributions of every leg with one row per structure, bound-state legs on the left and unbinding/rebinding (pull work plus dhdl work) on the right. No second command is needed; the figure appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run.
 
-Every structure is plotted, in `sp.gs` order, **16 rows to a file**. Past that the figure is paginated into `fe_works_01.png`, `fe_works_02.png`, … (a run needing only one page keeps the plain `fe_works.png`, and pages left over from an earlier, longer run are removed). 16 rows is 1980 × 9792 px and ~2 MB — matplotlib will write a far taller image, but GPU textures and most viewers cap a dimension near 16384 px and PIL rejects anything over 89 Mpx as a decompression bomb, so a single 200-structure sheet would be unopenable as well as costing ~80 s and ~1.8 GB to render.
+Every structure is plotted, in `sp.gs` order, **16 rows to a file**. Beyond that the figure is paginated into `fe_works_01.png`, `fe_works_02.png` and so on (a run needing only one page keeps the plain `fe_works.png`, and pages left over from an earlier, longer run are removed). Sixteen rows correspond to 1980 × 9792 px and roughly 2 MB. Matplotlib will write a considerably taller image, but GPU textures and most viewers cap a dimension near 16384 px and PIL rejects anything above 89 Mpx as a decompression bomb, hence a single 200-structure sheet would be unopenable as well as costing about 80 s and 1.8 GB to render.
 
-The reverse distribution is drawn sign-aligned (`−W`), so the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms mean the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and CGI values fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2` — the free energy cancels out of that sum, so it measures hysteresis without assuming any ΔG estimate.
+The reverse distribution is drawn sign-aligned (`−W`), so that the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms indicate that the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and the CGI value fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2`; the free energy cancels from that sum, hence it measures hysteresis without assuming any ΔG estimate.
 
 Scoring then prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
 
 ```
-  structure  leg              n      diss   ratio   sf/sr   p_fwd   p_rev    sep  sep_max  diss/RT   verdict
-  T30        restraints      60      4.12    1.15    1.05   0.618   0.412    1.9      4.0      1.6   OK
-  T30        unbind/rebind   60    148.49    8.89    0.94 3.3e-05   0.089   32.0      4.0     57.6   FD+SEP
+  structure  leg              n      diss   ratio   sf/sr   p_fwd   p_rev      ovl    sep  sep_max  diss/RT   verdict
+  T30        restraints      60      4.12    1.15    1.05   0.618   0.412  104/120    1.9      4.3      1.6   OK
+  T30        unbind/rebind   60    148.49    8.89    0.94 3.3e-05   0.089    0/120   32.0      4.3     57.6   FD+OVL+SEP
 ```
 
-CGI fits **one Gaussian to each distribution** and reads ΔG off where the two curves cross, so three things have to hold — and each is tested where the assumption is actually made:
+CGI fits **one Gaussian to each distribution** and reads ΔG from the crossing of the two curves, hence three conditions must hold. Each is tested where the assumption is actually made:
 
-- **FD** — a **Shapiro–Wilk test of each work distribution alone**, `p_fwd` and `p_rev`. The leg is flagged if either falls below `α/2` (two tests per leg, Bonferroni-corrected, so the leg misfires only 5 % of the time on genuinely Gaussian works). A leg switched too fast breaks normality from the tail inward: the rare low-dissipation cycles that carry ΔG are exponentially unlikely, `n` cycles never reach that far, and the sampled distribution comes out skewed — so the fitted Gaussian is too narrow and sits too far out.
-- **OVL** — of the `2n` sampled works, how many land inside the **other direction's observed min…max range** (`ovl` column). Flagged at exactly zero, which means no estimator has data in the crossing region and whatever number comes out is the fitted model extrapolated into empty space. The reported gap, in RT, says how far into an exponentially unlikely tail a cycle would have to reach — which is why more cycles is usually hopeless once it is large.
-- **SEP** — the crossing sits `sep/2` σ into either tail, and the most extreme of `n` samples reaches `z_n = Φ⁻¹(1 − 1/n)`, so the limit is `sep_max = 2·z_n`: 2.3 at n=8, 3.1 at n=16, 3.7 at n=32, 4.7 at n=100. More cycles reach further, so more separation is tolerable, and the limit follows `n` the whole way up with no ceiling — a run long enough to put samples out at 5 σ has genuinely measured a 5 σ crossing.
+- **FD**: a **Shapiro-Wilk test of each work distribution alone**, reported as `p_fwd` and `p_rev`. The leg is flagged if either falls below `α/2`, the factor of two being a Bonferroni correction for the two tests per leg, so that a leg of genuinely Gaussian works misfires only 5 % of the time. A leg switched too fast breaks normality from the tail inward: the rare low-dissipation cycles which carry ΔG are exponentially unlikely and `n` cycles never reach that far, hence the sampled distribution is skewed and the fitted Gaussian comes out too narrow and too far out.
+- **OVL**: of the `2n` sampled works, the number which land inside the **other direction's observed min…max range** (`ovl` column). Flagged at exactly zero, which means that no estimator has data in the crossing region and that whatever number is reported is the fitted model extrapolated into empty space. The gap is given in RT and states how far into an exponentially unlikely tail a cycle would have to reach, which is why additional cycles are usually futile once it is large.
+- **SEP**: the crossing lies `sep/2` σ into either tail, and the most extreme of `n` samples reaches `z_n = Φ⁻¹(1 − 1/n)`, hence the limit is `sep_max = 2·z_n`, i.e. 2.3 at n=8, 3.1 at n=16, 3.7 at n=32 and 4.7 at n=100. More cycles reach further and more separation is therefore tolerable. The limit follows `n` without a ceiling, as a run long enough to place samples at 5 σ has genuinely measured a 5 σ crossing.
 
-**OVL and SEP ask the same question; only OVL survives an outlier.** `sep` divides by a pooled σ that is quadratic in deviations, so a single extreme work inflates the denominator and drags `sep` down — a leg can clear it purely because one trajectory went badly, with the distributions exactly as far apart as before. A count moves by at most one per outlier, out of `2n`. Read `OVL` first and `sep` as the graded measure once `OVL` is non-zero. Only exact zero is flagged, since that is the claim needing no assumptions; a handful is not much better, so read the printed count rather than only the verdict.
+**OVL and SEP address the same question, but only OVL survives an outlier.** `sep` divides by a pooled σ which is quadratic in deviations, hence a single extreme work inflates the denominator and drags `sep` down; a leg can pass purely because one trajectory went badly, with the distributions exactly as far apart as before. A count moves by at most one per outlier out of `2n`. `OVL` should therefore be read first, and `sep` treated as the graded measure once `OVL` is non-zero. Only exact zero is flagged, as that is the statement requiring no assumption about shape, but a handful of works is little better than none, so the printed count should be read rather than the verdict alone.
 
-`ratio = diss / ((σ_f² + σ_r²)/4RT)` is the linear-response consistency — `W_diss = σ²/2RT` holds near equilibrium, so 1 is the ideal. It is reported for information but **is not a flag**: it moves for reasons other than the shape of either distribution, and testing it conflated the Gaussian assumption with Crooks and with linear response, so a failure never said which of the three had broken. `sf/sr` is likewise descriptive.
+`ratio = diss / ((σ_f² + σ_r²)/4RT)` is the linear-response consistency, as `W_diss = σ²/2RT` holds near equilibrium and 1 is therefore the ideal value. It is reported for information and **is not a flag**: it moves for reasons other than the shape of either distribution, and testing it conflated the Gaussian assumption with Crooks and with linear response, so that a failure never indicated which of the three had broken. `sf/sr` is likewise descriptive.
 
-A check the cycle count cannot answer reports **n/a** rather than failing: `FD` needs `n ≥ 3` (Shapiro–Wilk's minimum) and both distributions non-degenerate, `SEP` needs `n ≥ 4` for a tail. Whichever flags fired are followed by their full derivation and a per-leg breakdown.
+A check which the cycle count cannot answer reports **n/a** rather than failing. `FD` requires `n ≥ 3` (the Shapiro-Wilk minimum) and both distributions non-degenerate, `OVL` requires `n ≥ 3` for a min…max range, and `SEP` requires `n ≥ 4` for a tail. Whichever flags fired are followed by an explanation and a per-leg breakdown.
 
-> **Read a passing FD as the absence of evidence it is.** At these sample sizes Shapiro–Wilk has little power — n=16 detects only gross departures — so `OK` means *not detectably non-Gaussian at n cycles*, not *Gaussian*. `sep` and the figure carry more information at low cycle counts.
+> **A passing FD is weak evidence.** At these sample sizes Shapiro-Wilk has little power; at n = 16 only gross departures are detected, hence `OK` means *not detectably non-Gaussian at n cycles* rather than *Gaussian*. `OVL` and the figure carry more information at low cycle counts.
 
-Pass `--temp` to match a run that used a non-default temperature; the figure and the table are diagnostic only and change no result.
+Pass `--temp` to match a run performed at a non-default temperature. Both the figure and the table are diagnostic and change no result.
 
-When a leg **fails**, the table says so but not why. `utils/fe_leg_efficiency.py` answers that from files a finished cycle already leaves behind — no new simulation:
+When a leg **fails**, the table reports that it failed but not why. `utils/fe_leg_efficiency.py` answers this from files which a finished cycle already leaves behind, without any new simulation:
 
 ```bash
 python3 ../utils/fe_leg_efficiency.py -s 2KTF          # from the project dir
 ```
 
-It reports whether the forward and reverse works overlap *at all* (a blunter question than `sep`: an empty gap means every estimator is reporting its fitted model rather than the run), where along the pull the hysteresis is generated, whether the dissipation actually obeys the near-equilibrium `1/t` law — measured by comparing the friction along the existing trajectories against the observed hysteresis — and what lengthening the leg versus adding cycles would each cost. At a fixed budget the average estimator has `SE ∝ t^((1−p)/2)` for `diss ∝ t^−p`, and since `p = 1` is the ceiling, doubling the leg can at best break even on variance; the bias side points the other way, which is why the tool prints the cost of both levers rather than picking one.
+It reports whether the forward and reverse works overlap *at all* (a blunter question than `sep`, as an empty gap means that every estimator is reporting its fitted model rather than the run), where along the pull the hysteresis is generated, whether the dissipation obeys the near-equilibrium `1/t` law (measured by comparing the friction along the existing trajectories against the observed hysteresis), and what lengthening the leg or adding cycles would each cost. At a fixed budget the average estimator has `SE ∝ t^((1−p)/2)` for `diss ∝ t^−p`; as `p = 1` is the ceiling, doubling the leg can at best break even on variance, whereas the bias contribution points the other way. Both options are therefore priced rather than one being recommended.
 
 ### Job layout (parallel cycles)
 
-Convergence needs many cycles, and cycles are independent — each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
+Convergence needs many cycles, and cycles are independent, as each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
 
 1. a one-off **setup** job (stage 0 + initial equilibration + restraint definition), and
 2. a **cycle job array** (`--array=1-N`), submitted with `--dependency=afterany` on the setup job.
 
-Because all cycles share the restraints (elastic network, interface, Boresch) that only the setup defines, a cycle task that SLURM starts early does **not** terminate — `job_fe.run --cycle N` waits for the setup's `setup.done` marker (polling every 30 s, 6 h cap; override with `GROSCORE_SETUP_WAIT`/`GROSCORE_SETUP_POLL`). If the setup reports a failure, the waiting tasks exit cleanly rather than hanging. Each cycle writes its own `results_fe.d/<id>_c<n>.gs` (no concurrent appends to a shared file), and whichever task finishes last archives the structure — elected atomically via `mkdir`, so two tasks can never tar/delete the same directory.
+Because all cycles share the restraints (elastic network, interface, Boresch) that only the setup defines, a cycle task that SLURM starts early does **not** terminate; `job_fe.run --cycle N` waits for the setup's `setup.done` marker (polling every 30 s, 6 h cap; override with `GROSCORE_SETUP_WAIT`/`GROSCORE_SETUP_POLL`). If the setup reports a failure, the waiting tasks exit cleanly rather than hanging. Each cycle writes its own `results_fe.d/<id>_c<n>.gs` (no concurrent appends to a shared file), and whichever task finishes last archives the structure, elected atomically via `mkdir`, so two tasks can never tar/delete the same directory.
 
 Useful options:
 
-- `--array-throttle N` — cap concurrent cycle tasks per structure (SLURM `%N`). Rarely needed: several GROMACS processes sharing one GPU give higher *aggregate* throughput than one at a time, because a single small-system run leaves the GPU idle during CPU-side work. Leave it unset unless you run out of GPU memory.
-- `--sequential` — legacy layout: one job per structure running all cycles in sequence.
-- `--run-local --ngpus N` — run on this machine instead of SLURM, see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation). The same two-stage layout applies: the setup job runs first and its cycles only start once it has finished, on whichever GPU frees up. `--array-throttle` has no effect locally — `--jobs-per-gpu` is the concurrency limit there.
+- `--array-throttle N`: cap concurrent cycle tasks per structure (SLURM `%N`). Rarely needed: several GROMACS processes sharing one GPU give higher *aggregate* throughput than one at a time, because a single small-system run leaves the GPU idle during CPU-side work. Leave it unset unless you run out of GPU memory.
+- `--sequential`: legacy layout: one job per structure running all cycles in sequence.
+- `--run-local --ngpus N`: run on this machine instead of SLURM, see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation). The same two-stage layout applies: the setup job runs first and its cycles only start once it has finished, on whichever GPU frees up. `--array-throttle` has no effect locally; `--jobs-per-gpu` is the concurrency limit there.
 
 Re-running the command later re-submits only what is missing (a structure whose `setup.done` exists gets no new setup job) and re-scores whatever has completed.
 
@@ -472,9 +472,9 @@ Re-running the command later re-submits only what is missing (a structure whose 
 python3 ../groscore_fe.py -s sp.gs -n 200 --restart      # was -n 50
 ```
 
-Only cycles without a complete result are queued — the array is submitted as an explicit index list (e.g. `--array=51-200`), so topping up costs one task per missing cycle instead of re-walking the finished ones. A cycle whose stored result contains `NaN` counts as missing and is recomputed; if its simulation legs are still present this is just re-integration (seconds, no MD).
+Only cycles without a complete result are queued: the array is submitted as an explicit index list (e.g. `--array=51-200`), so topping up costs one task per missing cycle instead of re-walking the finished ones. A cycle whose stored result contains `NaN` counts as missing and is recomputed; if its simulation legs are still present this is just re-integration (seconds, no MD).
 
-This works for **archived** structures too: the setup job unpacks the tarball, the new cycles run, and the structure is re-archived once the new total is reached. The requested total is passed to the jobs via `GROSCORE_NUMCYCLES`, since `run.gs` inside a tarball cannot be rewritten. Lower `-n` values are not destructive — they simply queue nothing new.
+This works for **archived** structures too: the setup job unpacks the tarball, the new cycles run, and the structure is re-archived once the new total is reached. The requested total is passed to the jobs via `GROSCORE_NUMCYCLES`, since `run.gs` inside a tarball cannot be rewritten. Lower `-n` values are not destructive; they simply queue nothing new.
 
 ### Compute cost
 
@@ -492,9 +492,9 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 
 At the default 5 cycles this is **~251 ns/structure** (≈ 5 × 50 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
 
-The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges — its forward and reverse work distributions overlap — while the unbinding/rebinding legs dominate the CGI error and get 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work. The hold and the bound legs carry no such coupling and can be changed on their own.
+The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges, i.e. its forward and reverse work distributions overlap, whereas the unbinding/rebinding legs dominate the CGI error and are given 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If either is changed, both must be changed. The rate is defined in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and consumed by `integrate.py` (`-r`), which converts the time integral of the pull force into work. The hold and the bound legs carry no such coupling and can be changed independently.
 
-The **5 ns unbound hold** (raised from 1 ns on 2026-08-11) is deliberate rather than generous. Measured over 40 cycles of 2KTF, the rebinding works are 2.4× wider than the unbinding works (σ 51.5 vs 21.6) — and the reverse leg is the one that starts from the Boresch-restrained separated state, which had only 1 ns to settle after a 1.0 nm separation. That is short for interfacial water and side chains to relax, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks needs — something neither longer switching legs nor more cycles can repair. At ~9 % per cycle against ~44 % for doubling a 20 ns leg, it is the cheaper hypothesis to rule out first. Use `utils/fe_leg_efficiency.py` to see whether it worked: the width ratio `sf/sr` should move toward 1.
+The **5 ns unbound hold** (raised from 1 ns on 2026-08-11) is deliberate rather than generous. Measured over 40 cycles of 2KTF, the rebinding works are 2.4× wider than the unbinding works (σ 51.5 vs 21.6), and the reverse leg is the one which starts from the Boresch-restrained separated state, having been given only 1 ns to settle after a 1.0 nm separation. This is short for interfacial water and side chains to relax. An under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing which Crooks requires, and neither longer switching legs nor additional cycles can repair that. At roughly 9 % per cycle against 44 % for doubling a 20 ns leg, it is the cheaper hypothesis to rule out first. Whether it worked can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
 
 ## Heteroatom Support
 
@@ -639,11 +639,11 @@ GroScore/
 
 **ENTANGLED status**: Topological knots detected. The protein structure may have threading artifacts that would invalidate pulling simulations.
 
-**FAILED status**: Stage-0 setup or energy minimization did not complete — e.g. `emin_vac.gro` was not produced (grompp hit a topology/coordinate mismatch) or the entanglement check returned no result. Check the structure's SLURM output for the first GROMACS error. Any status other than `OK` excludes the structure from scoring.
+**FAILED status**: Stage-0 setup or energy minimization did not complete, e.g. `emin_vac.gro` was not produced (grompp hit a topology/coordinate mismatch) or the entanglement check returned no result. Check the structure's SLURM output for the first GROMACS error. Any status other than `OK` excludes the structure from scoring.
 
-**HIGH_RMSD flag**: The [rebinding QC](#rebinding-sanity-check-qc) found at least one cycle whose complex did not return to the bound pose. The score is still reported — inspect the flagged cycles (`RMSD_max_A` in the score files, per-cycle values in the third column of `results_<even>.gs`), add cycles with `-n <more> --restart` and check whether the score moves.
+**HIGH_RMSD flag**: The [rebinding QC](#rebinding-sanity-check-qc) found at least one cycle whose complex did not return to the bound pose. The score is still reported; inspect the flagged cycles (`RMSD_max_A` in the score files, per-cycle values in the third column of `results_<even>.gs`), add cycles with `-n <more> --restart` and check whether the score moves.
 
-**RMSD reported as `nan`**: The measurement was not made — either the run predates the check, or `gmx trjconv`/`gmx rms` failed for that cycle. It never affects the score. Reproduce the failure with `python3 ../../utils/rebound_rmsd.py --ref npt_c<N>.gro --query bindrev_<2N>.gro -v` inside the structure directory; the reason is printed to stderr.
+**RMSD reported as `nan`**: The measurement was not made: either the run predates the check, or `gmx trjconv`/`gmx rms` failed for that cycle. It never affects the score. Reproduce the failure with `python3 ../../utils/rebound_rmsd.py --ref npt_c<N>.gro --query bindrev_<2N>.gro -v` inside the structure directory; the reason is printed to stderr.
 
 **Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment.
 
@@ -653,10 +653,10 @@ GroScore/
 
 The `benchmark/` directory is organized into one subdirectory per benchmark set, with shared plots in `benchmark/results/`:
 
-- `haddock_benchmark/` — [HADDOCKING Protein-Protein Affinity Benchmark](https://github.com/haddocking/binding-affinity-benchmark) (46 structures), described below
-- `ppb_benchmark/` — PPB-Affinity benchmark
-- `hetatom_benchmark/` — heteroatom (molecular glue / PROTAC) benchmark
-- `capri_benchmark/` — CAPRI Score_set benchmark
+- `haddock_benchmark/`: [HADDOCKING Protein-Protein Affinity Benchmark](https://github.com/haddocking/binding-affinity-benchmark) (46 structures), described below
+- `ppb_benchmark/`: PPB-Affinity benchmark
+- `hetatom_benchmark/`: heteroatom (molecular glue / PROTAC) benchmark
+- `capri_benchmark/`: CAPRI Score_set benchmark
 
 To run the HADDOCKING benchmark:
 
