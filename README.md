@@ -480,16 +480,18 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 | Leg | Purpose | Length |
 |---|---|---|
 | equilibration | NVT 1–5 + 1 ns NPT | ~1.1 ns |
-| `boundfwd` | bound restraints on (dhdl) | 1.5 ns |
+| `boundfwd` | bound restraints on (dhdl) | 2 ns |
 | `bind_fe` | unbind: interface → Boresch + 1.0 nm separation | 20 ns |
-| `nptrev_fe` | hold unbound | 1 ns |
+| `nptrev_fe` | hold unbound | 5 ns |
 | `bindrev_fe` | rebind | 20 ns |
-| `boundrev` | bound restraints off (dhdl) | 1.5 ns |
-| **per cycle** | | **~45 ns** |
+| `boundrev` | bound restraints off (dhdl) | 2 ns |
+| **per cycle** | | **~50 ns** |
 
-At the default 5 cycles this is **~226 ns/structure** (≈ 5 × 45 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
+At the default 5 cycles this is **~251 ns/structure** (≈ 5 × 50 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
 
-The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges well at 1.5 ns — its forward and reverse work distributions overlap — while the unbinding/rebinding legs dominate the CGI error and get 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work.
+The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges — its forward and reverse work distributions overlap — while the unbinding/rebinding legs dominate the CGI error and get 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If you change either, change both — the rate lives in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and is consumed by `integrate.py` (`-r`), which converts the time-integral of the pull force into work. The hold and the bound legs carry no such coupling and can be changed on their own.
+
+The **5 ns unbound hold** (raised from 1 ns on 2026-08-11) is deliberate rather than generous. Measured over 40 cycles of 2KTF, the rebinding works are 2.4× wider than the unbinding works (σ 51.5 vs 21.6) — and the reverse leg is the one that starts from the Boresch-restrained separated state, which had only 1 ns to settle after a 1.0 nm separation. That is short for interfacial water and side chains to relax, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks needs — something neither longer switching legs nor more cycles can repair. At ~9 % per cycle against ~44 % for doubling a 20 ns leg, it is the cheaper hypothesis to rule out first. Use `utils/fe_leg_efficiency.py` to see whether it worked: the width ratio `sf/sr` should move toward 1.
 
 ## Heteroatom Support
 

@@ -10,18 +10,35 @@ FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8"]
 # leg -> (base mdp, ps of simulated time, init-lambda, lambda direction, pull force out)
 #   unbinding/rebinding : 20000 ps (0.00005 nm/ps -> 1.0 nm separation). This leg
 #                         dominates the CGI uncertainty: at 10 ns the forward and
-#                         reverse work distributions still had zero overlap.
-#   bound restraint legs: 1500 ps  (converges well; overlapping distributions)
-#   hold / equilibration: 1000 ps
+#                         reverse work distributions still had zero overlap, and
+#                         at 20 ns they still do -- 17.5 RT of empty space, with
+#                         no work of either direction inside the other's range.
+#   bound restraint legs: 2000 ps  (these converge: their distributions overlap)
+#   unbound hold        : 5000 ps  (see below)
+#   bound equilibration : 1000 ps
+#
+# The hold went 1000 -> 5000 ps on 2026-08-11, and the bound legs 1500 -> 2000,
+# for the next test. The reasoning is worth recording, because raising the hold
+# is the cheaper of the two things that could explain the missing overlap:
+# measured over 40 cycles of 2KTF the rebinding works are 2.4x WIDER than the
+# unbinding works (sigma 51.5 vs 21.6). The reverse leg is the one that starts
+# from the Boresch-restrained separated state, and it got only 1 ns to settle
+# after a 1.0 nm separation -- short for interfacial water and side chains to
+# relax. An under-equilibrated starting ensemble inflates that width and breaks
+# the forward/reverse pairing Crooks needs, and no amount of switching time or
+# extra cycles repairs it. 4 ns more hold costs ~9% per cycle against ~44% for
+# doubling a 20 ns leg, so it is worth ruling out first.
+#
 # NOTE: the pull rate must satisfy rate * unbinding_time = pull distance (1.0 nm).
 # It lives in make_boresch.py (--pull-rate) and is consumed by integrate.py (-r),
-# so all three must be changed together.
+# so all three must be changed together. Only the UNBINDING time is coupled to
+# the rate; the hold and the bound legs can move freely.
 LEGS = {
     "bind_fe.mdp":    ("bind.mdp",   20000.0, 0, +1, 500),
     "bindrev_fe.mdp": ("bindrev.mdp", 20000.0, 1, -1, 500),
-    "boundfwd.mdp":   ("bind.mdp",    1500.0, 0, +1, 0),
-    "boundrev.mdp":   ("bind.mdp",    1500.0, 1, -1, 0),
-    "nptrev_fe.mdp":  ("nptrev.mdp",  1000.0, 1,  0, 0),
+    "boundfwd.mdp":   ("bind.mdp",    2000.0, 0, +1, 0),
+    "boundrev.mdp":   ("bind.mdp",    2000.0, 1, -1, 0),
+    "nptrev_fe.mdp":  ("nptrev.mdp",  5000.0, 1,  0, 0),
     "npt_fe.mdp":     ("npt.mdp",     1000.0, None, None, None),
 }
 
