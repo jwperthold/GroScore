@@ -43,7 +43,7 @@
 #   python make_boresch.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
 #
 
-import os, sys, re, argparse, math
+import os, sys, re, argparse, math, itertools, subprocess
 import numpy as np
 from scipy.spatial.distance import cdist
 
@@ -55,6 +55,12 @@ parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
+parser.add_argument('--traj', type=str, default="npt_init.xtc",
+                    help="Equilibration trajectory used to measure backbone "
+                         "rigidity for anchor selection (default: npt_init.xtc). "
+                         "If missing, the burial heuristic is used instead.")
+parser.add_argument('--tpr', type=str, default="npt_init.tpr",
+                    help="Run input matching --traj (default: npt_init.tpr).")
 args = parser.parse_args()
 
 #------------------------------------------------------
@@ -81,6 +87,8 @@ DEG2RAD = math.pi / 180.0
 # kJ/mol/rad^2, an RMS fluctuation of 288 deg rather than 5 deg, i.e. no
 # orientational restraint at all. The distance restraint was unaffected, being
 # in kJ/mol/nm^2. K_ANG_RAD therefore goes into the mdp unchanged.
+
+ANG_LO, ANG_HI = 45.0, 135.0   # Boresch angle window, keeps eq.32 valid
 
 # Interface / elastic-network parameters (identical to make_disres_en.py)
 interfacecutoff = 0.6
@@ -155,6 +163,14 @@ if os.path.isfile(args.input):
             prot2_data.append(rec)
         except (ValueError, IndexError, AttributeError):
           pass
+
+BOX_VEC = []
+if os.path.isfile(args.input):
+  _l = [x for x in open(args.input).read().split("\n") if x.strip()]
+  try:
+    BOX_VEC = [float(v) for v in _l[-1].split()[:3]]
+  except (ValueError, IndexError):
+    BOX_VEC = []
 
 len1 = len(prot1_data)
 len2 = len(prot2_data)
@@ -293,6 +309,237 @@ def dihedral_deg(a, b, c, d):
 def tri_area(p, q, r):
   return 0.5 * np.linalg.norm(np.cross(q - p, r - p))
 
+#======================================================
+# PART 3b - Anchor groups chosen from MEASURED backbone rigidity
+#
+# The Boresch coordinates fix the relative placement of two anchor triads, but
+# say nothing about the shape of either triad: those edges are intramolecular and
+# held only by the elastic network. Single-residue N/CA/C centroids turned out to
+# move 0.11-0.35 nm during a hold, which on 1.0-1.3 nm arms tilts each frame by
+# 10-17 degrees and let the proteins rotate 22-52 degrees relative to one another
+# with every Boresch coordinate satisfied.
+#
+# A group's COM error eps translates into a frame orientation error of about
+# eps/L for an arm of length L, so the fix has two halves: quieter COMs and
+# longer arms. Averaging more atoms only suppresses UNCORRELATED motion (as
+# 1/sqrt(N)); a flexible loop moves collectively and averages to nothing. So
+# groups are selected on their measured COM RMSF rather than on their size, and
+# the arm cap follows the box instead of a fixed 1.2 nm.
+#======================================================
+
+TRAJ_SKIP_PS = 1000.0   # discard as equilibration before measuring
+R_GROUP = 0.70          # nm, radius of a candidate group about its seed CA
+N_MIN_ATOMS = 18        # backbone-only, so 18 atoms is 6 residues
+EPS_MAX = 0.045         # nm, ceiling on a group's COM RMSF
+ARM_MIN = 0.60          # nm, shortest useful lever arm
+MIN_SIN = 0.35          # sin of the angle between a triad's two edges
+ROT_MAX_DEG = 8.0       # acceptance: relative frame rotation over the trajectory
+TOP_PER_SIDE = 30       # triads kept per protein before the cross-protein search
+
+
+def kabsch(P, Q):
+  """Rotation and translation taking P onto Q."""
+  pc, qc = P.mean(0), Q.mean(0)
+  U, _, Vt = np.linalg.svd((P - pc).T @ (Q - qc))
+  d = np.sign(np.linalg.det(Vt.T @ U.T))
+  R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+  return R, qc - R @ pc
+
+
+def read_multi_gro(path, natoms):
+  """(nframes, natoms, 3) from a multi-frame .gro."""
+  L = open(path).read().split("\n")
+  out, i = [], 0
+  while i < len(L) - 1 and L[i].strip():
+    n = int(L[i + 1])
+    if n != natoms:
+      return None
+    out.append([[float(L[i + 2 + k][20:28]), float(L[i + 2 + k][28:36]),
+                 float(L[i + 2 + k][36:44])] for k in range(n)])
+    i += n + 3
+  return np.array(out) if out else None
+
+
+def load_backbone_trajectory(atom_numbers):
+  """Backbone coordinates over time, or None if the trajectory is unavailable.
+
+  trjconv renumbers a subset on output, so the index is written here and the
+  row order is known by construction."""
+  if not (os.path.isfile(args.traj) and os.path.isfile(args.tpr)):
+    return None
+  ndx, gro = ".bb_sel.ndx", ".bb_traj.gro"
+  try:
+    with open(ndx, "w") as f:
+      f.write("[ bbsel ]\n" + " ".join(str(a) for a in atom_numbers) + "\n")
+    cmd = ["gmx", "trjconv", "-s", args.tpr, "-f", args.traj, "-n", ndx,
+           "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"]
+    r = subprocess.run(cmd, input="bbsel\n", capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.isfile(gro):
+      return None
+    return read_multi_gro(gro, len(atom_numbers))
+  except (OSError, ValueError):
+    return None
+  finally:
+    for f in (ndx, gro):
+      if os.path.isfile(f):
+        os.remove(f)
+
+
+def measure_rigidity(prot_data, traj, row_of):
+  """Per-protein fitted trajectory and per-atom RMSF, both over backbone atoms."""
+  anums = [rec[3] for rec in prot_data if rec[2] in BACKBONE and rec[3] in row_of]
+  rows = [row_of[a] for a in anums]
+  X = traj[:, rows, :]
+  ref = X[0]
+  fit = np.empty_like(X)
+  for k in range(len(X)):
+    R, t = kabsch(X[k], ref)
+    fit[k] = X[k] @ R.T + t
+  rmsf = np.sqrt(((fit - fit.mean(0)) ** 2).sum(-1).mean(0))
+  return anums, fit, dict(zip(anums, rmsf))
+
+
+def build_rigid_groups(prot_data, anums, fit):
+  """Compact backbone groups, keyed by seed residue, with measured COM RMSF."""
+  idx_of = {a: i for i, a in enumerate(anums)}
+  by_res, ca_of = {}, {}
+  for (rn3, resnum, atomname, atomnum, x, y, z) in prot_data:
+    if atomname in BACKBONE and atomnum in idx_of:
+      by_res.setdefault(resnum, {})[atomname] = atomnum
+      if atomname == "CA":
+        ca_of[resnum] = np.array([x, y, z])
+  full = [r for r in by_res if all(a in by_res[r] for a in BACKBONE)]
+  groups = {}
+  for seed in full:
+    near = [r for r in full if np.linalg.norm(ca_of[r] - ca_of[seed]) <= R_GROUP]
+    atoms = [by_res[r][a] for r in near for a in BACKBONE]
+    if len(atoms) < N_MIN_ATOMS:
+      continue
+    cols = [idx_of[a] for a in atoms]
+    w = np.array([ATOM_MASS[a] for _ in near for a in BACKBONE])
+    com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
+    eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
+    if eps > EPS_MAX:
+      continue
+    groups[seed] = {"atoms": atoms, "com": com_t[0], "com_t": com_t,
+                    "eps": eps, "nres": len(near)}
+  # thin out overlapping seeds: keep the quietest of any cluster of nearby COMs
+  keep = {}
+  for s in sorted(groups, key=lambda s: groups[s]["eps"]):
+    c = groups[s]["com"]
+    if all(np.linalg.norm(c - groups[k]["com"]) > 0.5 for k in keep):
+      keep[s] = groups[s]
+  return keep
+
+
+def rank_triads(groups, arm_max):
+  """Best triads for one protein: quiet COMs, long arms, well-conditioned frame."""
+  keys = list(groups)
+  out = []
+  for a, b, c in itertools.combinations(keys, 3):
+    ca, cb, cc = (groups[k]["com"] for k in (a, b, c))
+    e1, e2, e3 = cb - ca, cc - ca, cc - cb
+    arms = [np.linalg.norm(v) for v in (e1, e2, e3)]
+    if min(arms) < ARM_MIN or max(arms) > arm_max:
+      continue
+    sin = np.linalg.norm(np.cross(e1, e2)) / (arms[0] * arms[1])
+    if sin < MIN_SIN:
+      continue
+    eps = max(groups[k]["eps"] for k in (a, b, c))
+    # eps/L is the frame error; reward long arms and penalise noisy COMs
+    out.append((eps / min(arms) / sin, (a, b, c)))
+  out.sort()
+  return [t for _, t in out[:TOP_PER_SIDE]]
+
+
+def frame_of(c1, c2, c3):
+  e1 = c2 - c1
+  e1 = e1 / np.linalg.norm(e1)
+  t = c3 - c1
+  e2 = t - np.dot(t, e1) * e1
+  e2 = e2 / np.linalg.norm(e2)
+  return np.stack([e1, e2, np.cross(e1, e2)], axis=1)
+
+
+def relative_rotation(rec_g, lig_g, P, L):
+  """RMS relative frame rotation over the trajectory, in degrees."""
+  A = [frame_of(*[rec_g[k]["com_t"][f] for k in P]) for f in range(len(rec_g[P[0]]["com_t"]))]
+  B = [frame_of(*[lig_g[k]["com_t"][f] for k in L]) for f in range(len(lig_g[L[0]]["com_t"]))]
+  rel = [a.T @ b for a, b in zip(A, B)]
+  ang = [math.degrees(math.acos(np.clip((np.trace(rel[0].T @ R) - 1) / 2.0, -1, 1)))
+         for R in rel]
+  return float(np.sqrt(np.mean(np.square(ang))))
+
+
+def try_measured_anchors():
+  """Anchors chosen from measured rigidity, or None to fall back to burial.
+
+  Returns (rec_groups, lig_groups, anchors, frame_rotation_deg)."""
+  bb = [rec[3] for rec in prot1_data + prot2_data if rec[2] in BACKBONE]
+  traj = load_backbone_trajectory(bb)
+  if traj is None or len(traj) < 20:
+    sys.stderr.write("make_boresch: no usable equilibration trajectory "
+                     "(%s), falling back to the burial heuristic\n" % args.traj)
+    return None
+  row_of = {a: i for i, a in enumerate(bb)}
+  a1, fit1, _ = measure_rigidity(prot1_data, traj, row_of)
+  a2, fit2, _ = measure_rigidity(prot2_data, traj, row_of)
+  g1 = build_rigid_groups(prot1_data, a1, fit1)
+  g2 = build_rigid_groups(prot2_data, a2, fit2)
+  sys.stderr.write("make_boresch: %d frames, rigid candidate groups: "
+                   "receptor %d, ligand %d\n" % (len(traj), len(g1), len(g2)))
+  if len(g1) < 3 or len(g2) < 3:
+    sys.stderr.write("make_boresch: too few rigid groups, falling back\n")
+    return None
+
+  arm_max = 0.35 * min(BOX_VEC) if BOX_VEC else 1.2
+  T1, T2 = rank_triads(g1, arm_max), rank_triads(g2, arm_max)
+  if not T1 or not T2:
+    sys.stderr.write("make_boresch: no triad satisfied the arm/conditioning "
+                     "limits (arm_max %.2f nm), falling back\n" % arm_max)
+    return None
+
+  def ang(a, b, c):
+    v1, v2 = a - b, c - b
+    return math.degrees(math.acos(np.clip(
+        np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1, 1)))
+
+  best = None
+  for Pt in T1:
+    for Lt in T2:
+      # P3 and L1 carry r: take the closest cross pair of the two triads.
+      pairs = [(np.linalg.norm(g1[p]["com"] - g2[l]["com"]), p, l)
+               for p in Pt for l in Lt]
+      _, P3, L1 = min(pairs)
+      rest_p = [k for k in Pt if k != P3]
+      rest_l = [k for k in Lt if k != L1]
+      for P2, P1 in (rest_p, rest_p[::-1]):
+        for L2, L3 in (rest_l, rest_l[::-1]):
+          thA = ang(g1[P2]["com"], g1[P3]["com"], g2[L1]["com"])
+          thB = ang(g1[P3]["com"], g2[L1]["com"], g2[L2]["com"])
+          if not (ANG_LO <= thA <= ANG_HI and ANG_LO <= thB <= ANG_HI):
+            continue
+          rot = relative_rotation(g1, g2, (P1, P2, P3), (L1, L2, L3))
+          eps = max(g1[k]["eps"] for k in Pt) + max(g2[k]["eps"] for k in Lt)
+          if best is None or rot < best[0]:
+            best = (rot, eps, {"P1": P1, "P2": P2, "P3": P3,
+                               "L1": L1, "L2": L2, "L3": L3})
+  if best is None:
+    sys.stderr.write("make_boresch: no anchor set met the angle window, "
+                     "falling back\n")
+    return None
+
+  rot, eps, anch = best
+  sys.stderr.write("make_boresch: selected anchors give %.1f deg RMS relative "
+                   "frame rotation over the equilibration (limit %.1f)\n"
+                   % (rot, ROT_MAX_DEG))
+  if rot > ROT_MAX_DEG:
+    sys.stderr.write("make_boresch: WARNING - the best anchor set still rotates "
+                     "%.1f deg; the Boresch frame will not hold orientation "
+                     "well and dG_release will overstate the confinement\n" % rot)
+  return g1, g2, anch, rot
+
+
 def select_boresch_anchors():
   """Pick receptor (P1,P2,P3) and ligand (L1,L2,L3) anchor residues.
 
@@ -312,7 +559,6 @@ def select_boresch_anchors():
   if len(rec_groups) < 3 or len(lig_groups) < 3:
     return None
 
-  ANG_LO, ANG_HI = 45.0, 135.0
   ARM_MAX = 1.2   # nm; keep every anchor within ~1.2 nm of its reference so no
                   # Boresch coordinate vector nears the minimum-image limit
 
@@ -387,7 +633,11 @@ def select_boresch_anchors():
 
   return {"P1": P1, "P2": P2, "P3": P3, "L1": L1, "L2": L2, "L3": L3}
 
-anchors = select_boresch_anchors()
+_measured = try_measured_anchors()
+if _measured:
+  rec_groups, lig_groups, anchors, FRAME_ROT = _measured
+else:
+  anchors, FRAME_ROT = select_boresch_anchors(), float('nan')
 if anchors is None:
   sys.stderr.write("make_boresch: ERROR - could not select Boresch anchors "
                    "(need >=3 backbone residues per side).\n")
