@@ -7,7 +7,8 @@ import os, re, sys
 SET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings")
 FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8"]
 
-# leg -> (base mdp, ps of simulated time, init-lambda, lambda direction, pull force out)
+# leg -> (base mdp, ps of simulated time, init-lambda, lambda direction,
+#         pull force out, trajectory frame interval in ps)
 #   unbinding/rebinding : 20000 ps (0.00005 nm/ps -> 1.0 nm separation). This leg
 #                         dominates the CGI uncertainty: at 10 ns the forward and
 #                         reverse work distributions still had zero overlap, and
@@ -33,13 +34,21 @@ FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8"]
 # It lives in make_boresch.py (--pull-rate) and is consumed by integrate.py (-r),
 # so all three must be changed together. Only the UNBINDING time is coupled to
 # the rate; the hold and the bound legs can move freely.
+#
+# npt_init_fe.mdp is the SETUP equilibration and exists separately from
+# npt_fe.mdp, which every cycle runs. The anchor selection in make_boresch.py
+# measures backbone flexibility from this trajectory, so it needs length (11 ns,
+# of which the first 1 ns is discarded as equilibration) and frames (every 10 ps,
+# giving 1000 usable ones). Both are paid once per structure. Sharing one mdp
+# would have added 10 ns to every cycle instead.
 LEGS = {
-    "bind_fe.mdp":    ("bind.mdp",   20000.0, 0, +1, 500),
-    "bindrev_fe.mdp": ("bindrev.mdp", 20000.0, 1, -1, 500),
-    "boundfwd.mdp":   ("bind.mdp",    2000.0, 0, +1, 0),
-    "boundrev.mdp":   ("bind.mdp",    2000.0, 1, -1, 0),
-    "nptrev_fe.mdp":  ("nptrev.mdp",  5000.0, 1,  0, 0),
-    "npt_fe.mdp":     ("npt.mdp",     1000.0, None, None, None),
+    "bind_fe.mdp":     ("bind.mdp",   20000.0, 0, +1, 500, 400.0),
+    "bindrev_fe.mdp":  ("bindrev.mdp", 20000.0, 1, -1, 500, 400.0),
+    "boundfwd.mdp":    ("bind.mdp",    2000.0, 0, +1, 0, 400.0),
+    "boundrev.mdp":    ("bind.mdp",    2000.0, 1, -1, 0, 400.0),
+    "nptrev_fe.mdp":   ("nptrev.mdp",  5000.0, 1,  0, 0, 400.0),
+    "npt_fe.mdp":      ("npt.mdp",     1000.0, None, None, None, 400.0),
+    "npt_init_fe.mdp": ("npt.mdp",    11000.0, None, None, None, 10.0),
 }
 
 HEADERS = {
@@ -57,6 +66,11 @@ HEADERS = {
                       "; between the unbinding and rebinding legs. No switching (delta-lambda = 0).\n"),
     "npt_fe.mdp": ("; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before\n"
                    "; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).\n"),
+    "npt_init_fe.mdp": ("; npt_init_fe.mdp - 11 ns NPT equilibration run ONCE during setup. Longer\n"
+                        "; than the per-cycle npt_fe.mdp because make_boresch.py measures backbone\n"
+                        "; flexibility from this trajectory to choose the Boresch anchor groups:\n"
+                        "; the first 1 ns is discarded and the remaining 10 ns, sampled every 10 ps,\n"
+                        "; gives the 1000 frames the RMSF is taken from.\n"),
 }
 
 
@@ -88,7 +102,7 @@ for ff in FFS:
     d = os.path.join(SET, ff)
     if not os.path.isdir(d):
         print("skip missing %s" % ff); continue
-    for out_name, (base_name, ps, init_lam, lam_dir, pull_fout) in LEGS.items():
+    for out_name, (base_name, ps, init_lam, lam_dir, pull_fout, xout_ps) in LEGS.items():
         base_path = os.path.join(d, base_name)
         if not os.path.isfile(base_path):
             print("  %s: missing base %s, skipped" % (ff, base_name)); continue
@@ -99,9 +113,10 @@ for ff in FFS:
 
         text = strip_pull_block(text)
         text = set_param(text, "nsteps", nsteps)
-        # Uniform trajectory output across all FE legs (~12 frames per leg),
-        # independent of which base mdp the leg was derived from.
-        text = set_param(text, "nstxout-compressed", 100000)
+        # Frame interval is per leg: ~12 frames is plenty for a switching leg,
+        # but the setup equilibration is the input to the anchor selection and
+        # needs enough frames to measure a backbone RMSF from.
+        text = set_param(text, "nstxout-compressed", int(round(xout_ps / dt)))
 
         if init_lam is not None:                      # a free-energy leg
             text = set_param(text, "nstcalcenergy", 100)   # nstdhdl must be a multiple
@@ -131,4 +146,4 @@ for ff in FFS:
         header = HEADERS[out_name] + ";\n; nsteps %d * dt %g = %g ps.\n\n" % (nsteps, dt, ps)
         with open(os.path.join(d, out_name), "w") as f:
             f.write(header + text)
-    print("generated 6 FE mdps for %s" % ff)
+    print("generated %d FE mdps for %s" % (len(LEGS), ff))

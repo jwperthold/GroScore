@@ -1,0 +1,60 @@
+; npt_init_fe.mdp - 11 ns NPT equilibration run ONCE during setup. Longer
+; than the per-cycle npt_fe.mdp because make_boresch.py measures backbone
+; flexibility from this trajectory to choose the Boresch anchor groups:
+; the first 1 ns is discarded and the remaining 10 ns, sampled every 10 ps,
+; gives the 1000 frames the RMSF is taken from.
+;
+; nsteps 2750000 * dt 0.004 = 11000 ps.
+
+integrator               = md
+nsteps                   = 2750000
+dt                       = 0.004
+mass-repartition-factor  = 3
+
+nstxout                  = 0
+nstxout-compressed       = 2500
+compressed-x-precision   = 1000
+nstvout                  = 0
+nstfout                  = 0
+nstenergy                = 2000
+nstlog                   = 2000
+nstcalcenergy            = 2000
+
+comm-mode                = linear
+nstcomm                  = 1000
+
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = all-bonds
+lincs_iter               = 1
+lincs_order              = 6
+
+cutoff-scheme            = Verlet
+ns_type                  = grid
+rlist                    = 1.0
+rcoulomb                 = 1.0
+rvdw                     = 1.0
+
+vdwtype                  = cutoff
+vdw-modifier             = Potential-shift
+
+coulombtype              = PME
+fourierspacing           = 0.125
+
+DispCorr                 = EnerPres
+
+tcoupl                   = V-rescale
+tc-grps                  = Protein Non-Protein
+tau_t                    = 0.1  0.1
+ref_t                    = 310  310
+
+pcoupl                   = Berendsen
+pcoupltype               = isotropic
+tau_p                    = 0.5
+ref_p                    = 1.0
+compressibility          = 4.5e-5
+refcoord_scaling         = com
+
+pbc                      = xyz
+
+gen_vel                  = no

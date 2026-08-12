@@ -9,7 +9,7 @@
 #
 # Two leg families are produced:
 #
-#   1. Unbinding / rebinding leg  (bind_fe / nptrev_fe / bindrev_fe)
+#   1. Unbinding / rebinding leg  (bind_fe / bindrev_fe)
 #      - Interface atom-atom umbrella restraints: behave exactly as in the
 #        current engine (reference moves outward at pull-rate -> mechanical
 #        separation work in pullf.xvg), with the ONLY addition being kB = 0 so
@@ -20,6 +20,11 @@
 #        references (rate 0), k switched 0 -> K_ang. Orientation is handed over
 #        to the Boresch frame as lambda -> 1.
 #      - Elastic network: unchanged, fixed force constant (no lambda dependence).
+#
+#   1b. Hold leg  (nptrev_fe): the Boresch coordinates ONLY, at zero rate. The
+#      interface coordinates are inert there (kB = 0 at lambda = 1) but GROMACS
+#      still enforces its 0.49 * box distance check on them, which killed 8 of 14
+#      holds. See the comment at the write_pull_block call for the detail.
 #
 #   2. Bound-state restraint leg  (boundfwd / boundrev)
 #      - Interface restraints introduced 0 -> full in the bound state, NO
@@ -480,7 +485,29 @@ def write_index_groups():
       g = rec_groups.get(anchors[role]) or lig_groups.get(anchors[role])
       index.write("[ bor_%s ]\n%s\n" % (role, " ".join(str(a) for a in g["atoms"])))
 
+# GROMACS needs a reference atom to make a multi-atom pull group whole across
+# periodic boundaries. Left unset it uses the middle ENTRY OF THE INDEX LIST,
+# which is an arbitrary atom once a group spans several residues. Pick the atom
+# closest to the group's own centre instead, which is the safest reference and
+# the one least likely to sit on a boundary.
+PBCATOM = {}
+
+def compute_pbcatoms():
+  for role in ("P1", "P2", "P3", "L1", "L2", "L3"):
+    g = rec_groups.get(anchors[role]) or lig_groups.get(anchors[role])
+    xyz, anums = [], []
+    for src in (prot1_data, prot2_data):
+      for rec in src:
+        if rec[3] in g["atoms"]:
+          xyz.append((rec[4], rec[5], rec[6])); anums.append(rec[3])
+    if not xyz:
+      continue
+    a = np.asarray(xyz)
+    PBCATOM["bor_%s" % role] = int(anums[int(np.argmin(
+        np.linalg.norm(a - a.mean(axis=0), axis=1)))])
+
 write_index_groups()
+compute_pbcatoms()
 
 #======================================================
 # PART 6 - Pull-block writers
@@ -528,7 +555,7 @@ def build_coords(family, direction):
     gP3 = gidx(boresch_group_ndx("P3"))
     gL1 = gidx(boresch_group_ndx("L1"))
     coords.append(dict(geometry="distance", dim="Y Y Y", groups=[gP3, gL1],
-                       init=ref_r + off, rate=rate, k=0.0, kB=K_R))
+                       init=ref_r + off, rate=rate, k=0.0, kB=K_R, boresch=True))
     # 3) Elastic network (fixed, no lambda dependence).
     for i, j, dist in en1dis:
       g1 = gidx("a_%d" % prot1_data[protkeep1[i]][3])
@@ -547,22 +574,22 @@ def build_coords(family, direction):
     gL3 = gidx(boresch_group_ndx("L3"))
     # theta_A = angle(P2, P3, L1): vectors P3->P2 and P3->L1
     coords.append(dict(geometry="angle", dim="Y Y Y", groups=[gP3, gP2, gP3, gL1],
-                       init=ref_thA, rate=0.0, k=0.0, kB=K_ANG_RAD))
+                       init=ref_thA, rate=0.0, k=0.0, kB=K_ANG_RAD, boresch=True))
     # theta_B = angle(P3, L1, L2): vectors L1->P3 and L1->L2
     coords.append(dict(geometry="angle", dim="Y Y Y", groups=[gL1, gP3, gL1, gL2],
-                       init=ref_thB, rate=0.0, k=0.0, kB=K_ANG_RAD))
+                       init=ref_thB, rate=0.0, k=0.0, kB=K_ANG_RAD, boresch=True))
     # phi_A = dihedral(P1, P2, P3, L1): vectors P1->P2, P2->P3, P3->L1
     coords.append(dict(geometry="dihedral", dim="Y Y Y",
                        groups=[gP1, gP2, gP2, gP3, gP3, gL1],
-                       init=ref_phA, rate=0.0, k=0.0, kB=K_ANG_RAD))
+                       init=ref_phA, rate=0.0, k=0.0, kB=K_ANG_RAD, boresch=True))
     # phi_B = dihedral(P2, P3, L1, L2)
     coords.append(dict(geometry="dihedral", dim="Y Y Y",
                        groups=[gP2, gP3, gP3, gL1, gL1, gL2],
-                       init=ref_phB, rate=0.0, k=0.0, kB=K_ANG_RAD))
+                       init=ref_phB, rate=0.0, k=0.0, kB=K_ANG_RAD, boresch=True))
     # phi_C = dihedral(P3, L1, L2, L3)
     coords.append(dict(geometry="dihedral", dim="Y Y Y",
                        groups=[gP3, gL1, gL1, gL2, gL2, gL3],
-                       init=ref_phC, rate=0.0, k=0.0, kB=K_ANG_RAD))
+                       init=ref_phC, rate=0.0, k=0.0, kB=K_ANG_RAD, boresch=True))
 
   elif family == "bound":
     # Interface restraints introduced 0 -> full, no pulling (rate 0).
@@ -592,6 +619,8 @@ def write_pull_block(filename, pull_groups, coords):
     f.write("\n")
     for gi, ndx_name in enumerate(pull_groups, start=1):
       f.write("pull-group%d-name        = %s\n" % (gi, ndx_name))
+      if ndx_name in PBCATOM:
+        f.write("pull-group%d-pbcatom     = %d\n" % (gi, PBCATOM[ndx_name]))
     f.write("\n")
     for ci, c in enumerate(coords, start=1):
       f.write("pull-coord%d-type        = umbrella\n" % ci)
@@ -611,9 +640,26 @@ pg_rev, co_rev = build_coords("unbind", "rev")
 write_pull_block("bind_fe.mdp", pg_fwd, co_fwd)     # forward: unbinding (lambda 0->1)
 write_pull_block("bindrev_fe.mdp", pg_rev, co_rev)  # reverse: rebinding (lambda 1->0)
 
-# Hold leg at the unbound restrained state (lambda = 1): same coords as the
-# reverse leg but with zero rate; job_fe.run pins init-lambda = 1, delta-lambda = 0.
+# Hold leg at the unbound restrained state (lambda = 1): only the Boresch
+# coordinates, with zero rate. job_fe.run pins init-lambda = 1, delta-lambda = 0.
+#
+# The interface coordinates are deliberately left out. At lambda = 1 their force
+# constant is kB = 0, so they restrain nothing, but GROMACS still evaluates every
+# pull coordinate and aborts if any pair of its groups exceeds 0.49 * box:
+#
+#   Fatal error: Distance between pull groups 73 and 75 (3.772877 nm) is larger
+#   than 0.49 times the box size (3.770459).
+#
+# Once the partners separate the interface surfaces relax apart, and with several
+# hundred inert pairs one of them eventually crosses that limit: 8 of 14 holds
+# died this way. The check has nothing to do with the physics of the hold, since
+# no force is computed from those coordinates. Dropping them removes the failure
+# mode outright rather than making it rarer, and the hold gets cheaper as a
+# bonus. Verified that grompp accepts the reduced pull setup from the unbinding
+# leg's checkpoint, that mdrun runs on it, and that the rebinding leg still
+# grompps from the hold's checkpoint with the full block restored.
 pg_hold, co_hold = build_coords("unbind", "rev")
+co_hold = [c for c in co_hold if c.get("boresch")]
 for c in co_hold:
   c["rate"] = 0.0
 write_pull_block("nptrev_fe.mdp", pg_hold, co_hold)

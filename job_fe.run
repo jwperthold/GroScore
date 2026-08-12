@@ -523,9 +523,12 @@ with open('$CUTOUT_PDB', 'w') as f:
       echo "after equilibration no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
       if [[ ! -f box.gro ]]; then
-        # 1.0 nm separation during unbinding, in a -d 1.5 box (same padding the
-        # classic protocol uses for its 1.0 nm pull; ~0.5 nm post-pull margin).
-        gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d 1.5
+        # 1.0 nm separation during unbinding. Padding raised 1.5 -> 1.8 nm: every
+        # pull coordinate is checked against 0.49 * box even when its force
+        # constant is zero, and at -d 1.5 that limit was 3.77 nm, which interface
+        # pairs crossed once the partners separated and the interface relaxed.
+        # 1.8 nm puts the limit near 4.1 nm, at roughly 25% more solvent.
+        gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d 1.8
       fi
       if [[ ! -f box_solv.gro ]]; then
         gmx solvate -cp box.gro -cs $WATER_BOX -o box_solv.gro -p topol.top
@@ -620,7 +623,10 @@ with open('$CUTOUT_PDB', 'w') as f:
     timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_init
   fi
   if [[ ! -f npt_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
+    # npt_init_fe.mdp, not npt_fe.mdp: the setup equilibration runs 11 ns with
+    # 10 ps frames because make_boresch.py measures backbone flexibility from
+    # this trajectory. The per-cycle equilibration below stays at 1 ns.
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
   fi
   if [[ ! -f npt_init.gro ]]; then
     timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_init
