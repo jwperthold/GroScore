@@ -60,9 +60,22 @@ RT = R_GAS * args.temp               # kJ/mol
 V0 = 1.6605390671                    # nm^3, standard-state volume (1 mol/L)
 
 K_R = 4184.0                         # kJ/mol/nm^2  (= 10 kcal/mol/A^2)
-K_ANG_RAD = 334.72                   # kJ/mol/rad^2 (= 80 kcal/mol/rad^2), used in eq.32
+K_ANG_RAD = 334.72                   # kJ/mol/rad^2 (= 80 kcal/mol/rad^2)
 DEG2RAD = math.pi / 180.0
-K_ANG_DEG = K_ANG_RAD * DEG2RAD**2   # kJ/mol/deg^2, used in the GROMACS mdp
+
+# GROMACS mixes units for angle pull coordinates: pull-coordN-init and -rate are
+# read in DEGREES, but pull-coordN-k and -kB are read in kJ/mol/rad^2 and are NOT
+# converted. See docs/user-guide/mdp-options.rst, "Note that for angles the force
+# constant is expressed in terms of radians (while pull-coord1-init and
+# pull-coord1-rate are expressed in degrees)", and pull.cpp, where
+# pull_conversion_factor_userinput2internal() is applied to init and rate only.
+#
+# This file used to convert K_ANG_RAD to kJ/mol/deg^2 for the mdp while eq.32
+# kept the rad^2 value. GROMACS read that number as rad^2, so every angular
+# Boresch restraint was (180/pi)^2 = 3283x too weak: 0.102 instead of 334.72
+# kJ/mol/rad^2, an RMS fluctuation of 288 deg rather than 5 deg, i.e. no
+# orientational restraint at all. The distance restraint was unaffected, being
+# in kJ/mol/nm^2. K_ANG_RAD therefore goes into the mdp unchanged.
 
 # Interface / elastic-network parameters (identical to make_disres_en.py)
 interfacecutoff = 0.6
@@ -534,22 +547,22 @@ def build_coords(family, direction):
     gL3 = gidx(boresch_group_ndx("L3"))
     # theta_A = angle(P2, P3, L1): vectors P3->P2 and P3->L1
     coords.append(dict(geometry="angle", dim="Y Y Y", groups=[gP3, gP2, gP3, gL1],
-                       init=ref_thA, rate=0.0, k=0.0, kB=K_ANG_DEG))
+                       init=ref_thA, rate=0.0, k=0.0, kB=K_ANG_RAD))
     # theta_B = angle(P3, L1, L2): vectors L1->P3 and L1->L2
     coords.append(dict(geometry="angle", dim="Y Y Y", groups=[gL1, gP3, gL1, gL2],
-                       init=ref_thB, rate=0.0, k=0.0, kB=K_ANG_DEG))
+                       init=ref_thB, rate=0.0, k=0.0, kB=K_ANG_RAD))
     # phi_A = dihedral(P1, P2, P3, L1): vectors P1->P2, P2->P3, P3->L1
     coords.append(dict(geometry="dihedral", dim="Y Y Y",
                        groups=[gP1, gP2, gP2, gP3, gP3, gL1],
-                       init=ref_phA, rate=0.0, k=0.0, kB=K_ANG_DEG))
+                       init=ref_phA, rate=0.0, k=0.0, kB=K_ANG_RAD))
     # phi_B = dihedral(P2, P3, L1, L2)
     coords.append(dict(geometry="dihedral", dim="Y Y Y",
                        groups=[gP2, gP3, gP3, gL1, gL1, gL2],
-                       init=ref_phB, rate=0.0, k=0.0, kB=K_ANG_DEG))
+                       init=ref_phB, rate=0.0, k=0.0, kB=K_ANG_RAD))
     # phi_C = dihedral(P3, L1, L2, L3)
     coords.append(dict(geometry="dihedral", dim="Y Y Y",
                        groups=[gP3, gL1, gL1, gL2, gL2, gL3],
-                       init=ref_phC, rate=0.0, k=0.0, kB=K_ANG_DEG))
+                       init=ref_phC, rate=0.0, k=0.0, kB=K_ANG_RAD))
 
   elif family == "bound":
     # Interface restraints introduced 0 -> full, no pulling (rate 0).
