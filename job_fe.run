@@ -755,6 +755,19 @@ fi
     return 1
   }
 
+  # Every leg must leave its own .gro. A leg that dies leaves no .gro but it does
+  # leave a checkpoint, and the next grompp reads that checkpoint quite happily,
+  # which is how a crashed 5 ns hold once produced a full set of works from a
+  # state the simulation never reached: eight cycles were recorded as complete
+  # with holds of 1946 to 4676 ps. Checking between legs stops a failure from
+  # propagating into plausible-looking numbers instead of stopping the cycle.
+  require_gro() {
+    [[ -f "$1.gro" ]] && return 0
+    echo "Cycle $cycle FAILED: leg $1 produced no $1.gro (see $1.log)."
+    echo "  Skipping the rest of this cycle. The next run will retry it."
+    return 1
+  }
+
   CYCLE_FAILED=0
   cycle=$CYCLE_START
   while [[ $cycle -le $CYCLE_END ]]; do
@@ -805,32 +818,39 @@ fi
       fi
     fi
 
+    require_gro npt_c${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+
     # === Five FE legs, continued from the 1 ns bound equilibration ===
     # Leg 1: bound-state restraint introduction (dhdl only, lambda 0 -> 1)
     if [[ ! -f boundfwd_${cycle}.gro ]]; then
       gmx grompp -r emin_solv.gro -f boundfwd.mdp -c npt_c${cycle}.tpr -t npt_c${cycle}.cpt -p topol.top -o boundfwd_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm boundfwd_${cycle} -dhdl boundfwd_${cycle}_dhdl.xvg
     fi
+    require_gro boundfwd_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
     # Leg 2: unbinding (interface -> Boresch handoff + separation; pull + dhdl)
     if [[ ! -f bindfwd_${cycle}.gro ]]; then
       gmx grompp -r emin_solv.gro -f bind_fe.mdp -c boundfwd_${cycle}.tpr -t boundfwd_${cycle}.cpt -p topol.top -o bindfwd_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm bindfwd_${cycle} -pf bindfwd_${cycle}_pullf.xvg -dhdl bindfwd_${cycle}_dhdl.xvg
     fi
-    # Hold the unbound, Boresch-restrained state (1 ns)
+    require_gro bindfwd_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    # Hold the unbound, Boresch-restrained state
     if [[ ! -f nptrev_${cycle}.gro ]]; then
       gmx grompp -r emin_solv.gro -f nptrev_fe.mdp -c bindfwd_${cycle}.tpr -t bindfwd_${cycle}.cpt -p topol.top -o nptrev_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm nptrev_${cycle}
     fi
+    require_gro nptrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
     # Leg 3: rebinding (reverse of unbinding; pull + dhdl)
     if [[ ! -f bindrev_${cycle}.gro ]]; then
       gmx grompp -r emin_solv.gro -f bindrev_fe.mdp -c nptrev_${cycle}.tpr -t nptrev_${cycle}.cpt -p topol.top -o bindrev_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm bindrev_${cycle} -pf bindrev_${cycle}_pullf.xvg -dhdl bindrev_${cycle}_dhdl.xvg
     fi
+    require_gro bindrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
     # Leg 4: bound-state restraint removal (dhdl only, lambda 1 -> 0)
     if [[ ! -f boundrev_${cycle}.gro ]]; then
       gmx grompp -r emin_solv.gro -f boundrev.mdp -c bindrev_${cycle}.tpr -t bindrev_${cycle}.cpt -p topol.top -o boundrev_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm boundrev_${cycle} -dhdl boundrev_${cycle}_dhdl.xvg
     fi
+    require_gro boundrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
 
     # --- Work integration: one results_fe.gs line per completed cycle ---
     # Columns: STRUCT_ID cycle W_intro Wunbind_pull Wunbind_dhdl Wrebind_pull Wrebind_dhdl W_remove RMSD_A
