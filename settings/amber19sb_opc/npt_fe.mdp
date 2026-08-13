@@ -1,5 +1,7 @@
 ; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before
 ; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).
+; Parrinello-Rahman, so the configurations handed to boundfwd are drawn from the
+; true NPT ensemble the Crooks analysis assumes. Preceded by npt_relax_fe.
 ;
 ; nsteps 250000 * dt 0.004 = 1000 ps.
 
@@ -45,9 +47,9 @@ tc-grps                  = Protein Non-Protein
 tau_t                    = 0.1  0.1
 ref_t                    = 310  310
 
-pcoupl                   = Berendsen
+pcoupl                   = Parrinello-Rahman
 pcoupltype               = isotropic
-tau_p                    = 0.5
+tau_p                    = 2.0
 ref_p                    = 1.0
 compressibility          = 4.5e-5
 refcoord_scaling         = com

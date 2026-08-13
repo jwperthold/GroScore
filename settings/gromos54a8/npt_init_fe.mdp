@@ -2,7 +2,8 @@
 ; than the per-cycle npt_fe.mdp because make_boresch.py measures backbone
 ; flexibility from this trajectory to choose the Boresch anchor groups:
 ; the first 1 ns is discarded and the remaining 10 ns, sampled every 10 ps,
-; gives the 1000 frames the RMSF is taken from.
+; gives the 1000 frames the RMSF is taken from. Parrinello-Rahman, preceded
+; by npt_relax_fe.
 ;
 ; nsteps 2750000 * dt 0.004 = 11000 ps.
 
@@ -46,9 +47,9 @@ tc-grps                  = Protein Non-Protein
 tau_t                    = 0.1  0.1
 ref_t                    = 310  310
 
-pcoupl                   = Berendsen
+pcoupl                   = Parrinello-Rahman
 pcoupltype               = isotropic
-tau_p                    = 0.5
+tau_p                    = 2.0
 ref_p                    = 1.0
 compressibility          = 4.5e-5
 refcoord_scaling         = com
