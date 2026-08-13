@@ -478,7 +478,7 @@ This works for **archived** structures too: the setup job unpacks the tarball, t
 
 ### Compute cost
 
-Each cycle runs five switching/hold legs plus one equilibration, all in the same `-d 1.5` box as the classic protocol:
+Each cycle runs five switching/hold legs plus one equilibration:
 
 | Leg | Purpose | Length |
 |---|---|---|
@@ -491,6 +491,27 @@ Each cycle runs five switching/hold legs plus one equilibration, all in the same
 | **per cycle** | | **~50 ns** |
 
 At the default 5 cycles this is **~251 ns/structure** (≈ 5 × 50 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
+
+### Setup: the box is measured, not assumed
+
+The FE legs need a bigger box than the classic protocol, because GROMACS checks every pull coordinate against `0.49 ×` the shortest box **vector** and the interface restraints separate as the partners come apart. That demand cannot be predicted from the minimised structure, so it used to be a constant (`-d 1.5`, then `-d 1.8`) measured once on 2KTF and applied to everything.
+
+Setup now measures it per structure:
+
+```
+emin_vac.gro
+  ├── probe pass    small box (-d = rvdw/2 + 0.5), full NVT ladder + 11 ns NPT
+  │                 the bound complex never needs the production box: its largest
+  │                 checked pull pair is 1.18 nm against a 3.29 nm limit at -d 1.00
+  ├── measure_box.py  running max solute atom-atom distance over the probe run
+  │                 -> boxpad.gs  (L = D_max + 2 × 1.5 nm)
+  └── production    box from boxpad.gs, solvate, minimise, ladder, 1 ns NPT
+                    -> npt_init_cluster.gro, the restraint reference
+```
+
+`make_boresch.py` then takes its geometry from the production reference (`-f`) and its backbone RMSF from the probe trajectory (`--traj`); solute atom numbering is identical between the two systems, only the solvent count differs. On 2KTF the measurement returns `-d 1.844`, within 0.05 nm of the constant it replaces, but it will move on the next complex instead of staying put.
+
+All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and Bussi 2020) at `tau_p` 2.0 ps, with V-rescale for temperature. Berendsen generates no strictly correct ensemble, which matters most for the per-cycle `npt_fe`: its output is the bound-state configuration `boundfwd` starts from, and Crooks assumes those initial states are drawn from the true equilibrium distribution.
 
 The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges, i.e. its forward and reverse work distributions overlap, whereas the unbinding/rebinding legs dominate the CGI error and are given 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If either is changed, both must be changed. The rate is defined in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and consumed by `integrate.py` (`-r`), which converts the time integral of the pull force into work. The hold and the bound legs carry no such coupling and can be changed independently.
 
