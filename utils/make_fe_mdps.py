@@ -47,37 +47,39 @@ LEGS = {
     "boundfwd.mdp":    ("bind.mdp",    2000.0, 0, +1, 0, 400.0),
     "boundrev.mdp":    ("bind.mdp",    2000.0, 1, -1, 0, 400.0),
     "nptrev_fe.mdp":   ("nptrev.mdp",  5000.0, 1,  0, 0, 400.0),
-    "npt_relax_fe.mdp": ("npt.mdp",     100.0, None, None, None, 50.0),
     "npt_fe.mdp":      ("npt.mdp",     1000.0, None, None, None, 400.0),
     "npt_init_fe.mdp": ("npt.mdp",    11000.0, None, None, None, 10.0),
 }
 
-# Barostat per leg, overriding whatever the base mdp carries.
+# One barostat for every pressure-coupled leg, overriding whatever the base mdp
+# carries so it cannot drift back by inheritance.
 #
-# Berendsen does not generate any well-defined ensemble: it damps the volume
-# toward the target without the fluctuation term, so it gives too-narrow volume
-# fluctuations and no rigorous NPT distribution. It is fine for pushing a fresh
-# box to roughly the right density and nothing else, so it survives here in
-# exactly one place, the 100 ps relaxation.
+# C-rescale (Bernetti and Bussi, J. Chem. Phys. 153, 114107, 2020) is stochastic
+# cell rescaling: Berendsen's first-order volume relaxation plus a correctly sized
+# noise term. It is to the Berendsen barostat what V-rescale is to the Berendsen
+# thermostat, and this pipeline already uses V-rescale for temperature.
 #
-# Everything that produces configurations the estimator consumes runs
-# Parrinello-Rahman, which does sample the isothermal-isobaric ensemble. That
-# includes BOTH equilibrations, and npt_fe is the one that matters most: it
-# defines the bound-state ensemble every cycle's boundfwd starts from, and the
-# Crooks/Jarzynski analysis assumes those initial states are drawn from the true
-# equilibrium distribution. Equilibrating them under Berendsen broke that
-# assumption on every cycle. npt_init_fe additionally supplies the trajectory
-# make_boresch.py measures backbone RMSF from, so its volume fluctuations feed
-# the anchor selection.
+# It replaces two different things at once.
 #
-# Parrinello-Rahman is second-order and oscillates when started far from
-# equilibrium, which is why it is not used for the relaxation. The 100 ps
-# Berendsen step exists to hand it a box that is already close.
-BAROSTAT = {
-    "npt_relax_fe.mdp": ("Berendsen",         0.5),
-    "npt_fe.mdp":       ("Parrinello-Rahman", 2.0),
-    "npt_init_fe.mdp":  ("Parrinello-Rahman", 2.0),
-}
+# Berendsen, which the equilibrations used, samples no ensemble at all. GROMACS
+# 2026 says so itself: "The Berendsen barostat does not generate any strictly
+# correct ensemble, and should not be used for new production simulations (in our
+# opinion). We recommend using the C-rescale barostat instead." That warning was
+# being swallowed by the -maxwarn on every grompp. It mattered most for npt_fe,
+# whose output is the bound-state configuration each cycle's boundfwd starts
+# from: the Crooks/Jarzynski analysis assumes those initial states are drawn from
+# the true equilibrium distribution.
+#
+# Parrinello-Rahman, which the legs used, does sample the right ensemble but is
+# second order, so it oscillates when started from a box that has never been
+# pressure-coupled. That is why an equilibration protocol built on it needs a
+# separate weak-coupling stage in front. C-rescale is first order and relaxes
+# monotonically, so it is stable from the NVT ladder directly and that stage is
+# not needed. One barostat, every leg, no staging.
+#
+# tau_p 2.0 ps is unchanged and sits inside the 1-5 ps range C-rescale is normally
+# run at.
+BAROSTAT_ALL = ("C-rescale", 2.0)
 
 HEADERS = {
     "bind_fe.mdp": ("; bind_fe.mdp - FE unbinding leg (forward). Interface restraints fade out\n"
@@ -92,22 +94,17 @@ HEADERS = {
     "boundrev.mdp": ("; boundrev.mdp - Bound-state restraint removal (reverse of boundfwd, lambda 1 -> 0).\n"),
     "nptrev_fe.mdp": ("; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1)\n"
                       "; between the unbinding and rebinding legs. No switching (delta-lambda = 0).\n"),
-    "npt_relax_fe.mdp": ("; npt_relax_fe.mdp - 100 ps weak-coupling NPT run before every long NPT\n"
-                         "; equilibration, in setup and in each cycle. Berendsen ONLY here: it relaxes\n"
-                         "; the box to roughly the right density without the oscillation\n"
-                         "; Parrinello-Rahman shows when started far from equilibrium. It generates no\n"
-                         "; well-defined ensemble, so nothing downstream may consume its output as a\n"
-                         "; sample; it exists to hand the next leg a box that is already close.\n"),
     "npt_fe.mdp": ("; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before\n"
                    "; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).\n"
-                   "; Parrinello-Rahman, so the configurations handed to boundfwd are drawn from the\n"
-                   "; true NPT ensemble the Crooks analysis assumes. Preceded by npt_relax_fe.\n"),
+                   "; C-rescale, so the configurations handed to boundfwd are drawn from the true\n"
+                   "; NPT ensemble the Crooks analysis assumes. Runs straight off the NVT ladder:\n"
+                   "; C-rescale is first order and needs no weak-coupling stage in front of it.\n"),
     "npt_init_fe.mdp": ("; npt_init_fe.mdp - 11 ns NPT equilibration run ONCE during setup. Longer\n"
                         "; than the per-cycle npt_fe.mdp because make_boresch.py measures backbone\n"
                         "; flexibility from this trajectory to choose the Boresch anchor groups:\n"
                         "; the first 1 ns is discarded and the remaining 10 ns, sampled every 10 ps,\n"
-                        "; gives the 1000 frames the RMSF is taken from. Parrinello-Rahman, preceded\n"
-                        "; by npt_relax_fe.\n"),
+                        "; gives the 1000 frames the RMSF is taken from. The discarded first 1 ns\n"
+                        "; also absorbs the C-rescale box relaxation off the NVT ladder.\n"),
 }
 
 
@@ -150,10 +147,9 @@ for ff in FFS:
 
         text = strip_pull_block(text)
         text = set_param(text, "nsteps", nsteps)
-        if out_name in BAROSTAT:
-            pcoupl, tau_p = BAROSTAT[out_name]
-            text = set_param(text, "pcoupl", pcoupl)
-            text = set_param(text, "tau_p", tau_p)
+        if get_param(text, "pcoupl") not in (None, "no"):
+            text = set_param(text, "pcoupl", BAROSTAT_ALL[0])
+            text = set_param(text, "tau_p", BAROSTAT_ALL[1])
         # Frame interval is per leg: ~12 frames is plenty for a switching leg,
         # but the setup equilibration is the input to the anchor selection and
         # needs enough frames to measure a backbone RMSF from.

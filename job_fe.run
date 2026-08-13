@@ -676,27 +676,15 @@ with open('$CUTOUT_PDB', 'w') as f:
   if [[ ! -f nvt_5_init.gro ]]; then
     timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_init
   fi
-  # 100 ps weak-coupling relaxation before the long NPT. Berendsen lives here and
-  # nowhere else: it has no well-defined ensemble, so its output is never sampled,
-  # only handed on. It exists because Parrinello-Rahman, which the long leg needs
-  # in order to sample the true NPT ensemble, oscillates when started from an NVT
-  # box that has never been pressure-coupled.
-  if [[ ! -f npt_relax_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_relax_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_relax_init -n index.ndx -maxwarn 10
-  fi
-  if [[ ! -f npt_relax_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_relax_init
-  fi
-  if [[ ! -f npt_relax_init.gro ]]; then
-    echo "Stage 0 failed: npt_relax_init did not produce npt_relax_init.gro."
-    echo $STRUCT_ID "NPT_RELAX_FAIL" >> ../results_0.gs
-    exit 0
-  fi
   if [[ ! -f npt_init.tpr ]]; then
     # npt_init_fe.mdp, not npt_fe.mdp: the setup equilibration runs 11 ns with
     # 10 ps frames because make_boresch.py measures backbone flexibility from
     # this trajectory. The per-cycle equilibration below stays at 1 ns.
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_init_fe.mdp -c npt_relax_init.tpr -t npt_relax_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
+    # Runs straight off the NVT ladder: C-rescale is first order, so it relaxes
+    # the box monotonically instead of oscillating the way Parrinello-Rahman does
+    # from a box that has never been pressure-coupled, and needs no weak-coupling
+    # stage in front of it.
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
   fi
   if [[ ! -f npt_init.gro ]]; then
     # 600m, not the 60m every shorter stage uses. This leg is 11 ns: at the
@@ -953,20 +941,13 @@ fi
       if [[ ! -f nvt_5_c${cycle}.gro ]]; then
         timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_c${cycle}
       fi
-      # Same two-stage NPT as the setup ladder: 100 ps Berendsen to settle the box,
-      # then Parrinello-Rahman for the leg whose output is actually sampled. This
-      # one carries the correctness argument: npt_c is the bound-state ensemble
-      # boundfwd starts from, and Crooks assumes those initial states come from the
-      # true equilibrium distribution, which Berendsen does not generate.
-      if [[ ! -f npt_relax_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_relax_fe.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_relax_c${cycle} -n index.ndx -maxwarn 10
-      fi
-      if [[ ! -f npt_relax_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_relax_c${cycle}
-      fi
-      require_gro npt_relax_c${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+      # npt_c is the bound-state ensemble boundfwd starts from, and Crooks assumes
+      # those initial states are drawn from the true equilibrium distribution, so
+      # this leg has to run under a barostat that has one. C-rescale does, and
+      # being first order it also settles the box off the NVT ladder without a
+      # separate weak-coupling stage.
       if [[ ! -f npt_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c npt_relax_c${cycle}.tpr -t npt_relax_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
+        gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
       fi
       if [[ ! -f npt_c${cycle}.gro ]]; then
         timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_c${cycle}

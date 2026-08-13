@@ -1133,6 +1133,19 @@ def build_coords(family, direction):
   return pull_groups, coords
 
 def write_pull_block(filename, pull_groups, coords):
+  # Truncate any block a previous run left behind. This appends, and job_fe.run
+  # re-copies the templates immediately before calling this script, so production
+  # is safe; a standalone re-run in an existing directory is not, and stacking a
+  # second block only fails later, at the cycle's grompp. Same non-idempotency as
+  # the index.ndx append.
+  if os.path.isfile(filename):
+    kept = []
+    for line in open(filename):
+      if line.lstrip().startswith("pull-ngroups"):
+        break
+      kept.append(line)
+    with open(filename, "w") as f:
+      f.writelines(kept)
   with open(filename, "a") as f:
     f.write("\n")
     f.write("pull-ngroups            = %d\n" % len(pull_groups))
