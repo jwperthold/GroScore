@@ -556,7 +556,17 @@ with open('$CUTOUT_PDB', 'w') as f:
   # Genrate distance restraints for pull simulations based on equilibrated structure
   echo "Generating distance restraints from initial equilibration."
   cp $MDP_DIR/bind.mdp $MDP_DIR/nptrev.mdp $MDP_DIR/bindrev.mdp ./
-  python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
+  # Temp name, promoted on success: the redirect alone creates numpertres.gs
+  # even when the script dies, and a 0-byte file reads as a result downstream.
+  python3 ../../utils/make_disres_en.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.tmp
+  MD_RC=$?
+  if [[ $MD_RC -ne 0 || ! -s numpertres.tmp ]]; then
+    echo "Stage 0 failed: make_disres_en.py exited $MD_RC (see the error above)."
+    echo $STRUCT_ID "DISRES_FAIL" >> ../results_0.gs
+    rm -f numpertres.tmp
+    exit 0
+  fi
+  mv numpertres.tmp numpertres.gs
 
   # Read NUMPERTRES for integration
   while read -r a b

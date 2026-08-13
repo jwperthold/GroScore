@@ -60,29 +60,42 @@ enk = 250
 prot1_data = []  # [(resname, atomname, atomnum, x, y, z), ...]
 prot2_data = []
 
-if os.path.isfile(args.input):
-  with open(args.input, "r") as f:
-    for line in f:
-      if not line.strip().startswith("#"):
-        left = line[:15]
-        right = line[15:]
-        tmp = left.split() + right.split()
-        try:
-          s = re.search(r"\d+(\.\d+)?", tmp[0])
-          resnum = int(s.group(0))
-          atomname = tmp[1]
-          atomnum = tmp[2]
-          x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-          # Skip solvent and counterions - extract residue name from GRO field
-          res3 = re.sub(r'\d+', '', tmp[0])
-          if res3 == "SOL" or resnum > max_structural_resnum:
-            continue
-          if resnum not in residues_b:
-            prot1_data.append((tmp[0], atomname, atomnum, x, y, z))
-          else:
-            prot2_data.append((tmp[0], atomname, atomnum, x, y, z))
-        except (ValueError, IndexError, AttributeError):
-          pass
+# Fail loudly on a missing input. Falling through this block left every
+# selection below empty and still printed a restraint count, so the caller
+# recorded a successful setup with no restraints in it.
+if not os.path.isfile(args.input):
+  sys.stderr.write("make_disres_en: ERROR - coordinate file %s does not exist\n"
+                   % args.input)
+  sys.exit(1)
+
+with open(args.input, "r") as f:
+  for line in f:
+    if not line.strip().startswith("#"):
+      left = line[:15]
+      right = line[15:]
+      tmp = left.split() + right.split()
+      try:
+        s = re.search(r"\d+(\.\d+)?", tmp[0])
+        resnum = int(s.group(0))
+        atomname = tmp[1]
+        atomnum = tmp[2]
+        x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
+        # Skip solvent and counterions - extract residue name from GRO field
+        res3 = re.sub(r'\d+', '', tmp[0])
+        if res3 == "SOL" or resnum > max_structural_resnum:
+          continue
+        if resnum not in residues_b:
+          prot1_data.append((tmp[0], atomname, atomnum, x, y, z))
+        else:
+          prot2_data.append((tmp[0], atomname, atomnum, x, y, z))
+      except (ValueError, IndexError, AttributeError):
+        pass
+
+if not prot1_data or not prot2_data:
+  sys.stderr.write("make_disres_en: ERROR - %s gave %d receptor and %d ligand "
+                   "atoms (check chain_map.gs)\n"
+                   % (args.input, len(prot1_data), len(prot2_data)))
+  sys.exit(1)
 
 len1 = len(prot1_data)
 len2 = len(prot2_data)

@@ -43,7 +43,7 @@
 #   python make_boresch.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
 #
 
-import os, sys, re, argparse, math, itertools, subprocess
+import os, sys, re, argparse, math, itertools, subprocess, traceback
 import numpy as np
 from scipy.spatial.distance import cdist
 
@@ -140,37 +140,63 @@ max_structural_resnum = max(all_structural) if all_structural else 0
 prot1_data = []  # receptor: [(resname, resnum, atomname, atomnum, x, y, z), ...]
 prot2_data = []  # ligand / protein B
 
-if os.path.isfile(args.input):
-  with open(args.input, "r") as f:
-    for line in f:
-      if not line.strip().startswith("#"):
-        left = line[:15]
-        right = line[15:]
-        tmp = left.split() + right.split()
-        try:
-          s = re.search(r"\d+(\.\d+)?", tmp[0])
-          resnum = int(s.group(0))
-          atomname = tmp[1]
-          atomnum = int(tmp[2])
-          x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-          res3 = re.sub(r'\d+', '', tmp[0])
-          if res3 == "SOL" or resnum > max_structural_resnum:
-            continue
-          rec = (tmp[0], resnum, atomname, atomnum, x, y, z)
-          if resnum not in residues_b:
-            prot1_data.append(rec)
-          else:
-            prot2_data.append(rec)
-        except (ValueError, IndexError, AttributeError):
-          pass
+
+def abort(reason, message):
+  """Stop with a marker job_fe.run understands, not with a bare traceback.
+
+  Every failure here leaves the caller holding an empty numpertres.gs and five
+  .mdp files whose pull block was never appended, which grompp only notices once
+  the cycles are already running. Write the marker first."""
+  sys.stderr.write("make_boresch: ERROR - %s\n" % message)
+  with open("boresch_failed.gs", "w") as f:
+    f.write(reason + "\n")
+  print("0")
+  sys.exit(1)
+
+
+# A missing input file used to fall through this block silently, leaving every
+# downstream selection empty instead of failing.
+if not os.path.isfile(args.input):
+  abort("INPUT_STRUCTURE_MISSING",
+        "coordinate file %s does not exist" % args.input)
+
+with open(args.input, "r") as f:
+  for line in f:
+    if not line.strip().startswith("#"):
+      left = line[:15]
+      right = line[15:]
+      tmp = left.split() + right.split()
+      try:
+        s = re.search(r"\d+(\.\d+)?", tmp[0])
+        resnum = int(s.group(0))
+        atomname = tmp[1]
+        atomnum = int(tmp[2])
+        x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
+        res3 = re.sub(r'\d+', '', tmp[0])
+        if res3 == "SOL" or resnum > max_structural_resnum:
+          continue
+        rec = (tmp[0], resnum, atomname, atomnum, x, y, z)
+        if resnum not in residues_b:
+          prot1_data.append(rec)
+        else:
+          prot2_data.append(rec)
+      except (ValueError, IndexError, AttributeError):
+        pass
 
 BOX_VEC = []
-if os.path.isfile(args.input):
-  _l = [x for x in open(args.input).read().split("\n") if x.strip()]
-  try:
-    BOX_VEC = [float(v) for v in _l[-1].split()[:3]]
-  except (ValueError, IndexError):
-    BOX_VEC = []
+_l = [x for x in open(args.input).read().split("\n") if x.strip()]
+try:
+  BOX_VEC = [float(v) for v in _l[-1].split()[:3]]
+except (ValueError, IndexError):
+  BOX_VEC = []
+
+# The file can be present and still yield nothing, e.g. an empty chain_map.gs
+# leaves max_structural_resnum at 0 and filters every atom out. That produced
+# the same degenerate arrays downstream as a missing file.
+if not prot1_data or not prot2_data:
+  abort("EMPTY_STRUCTURE",
+        "%s gave %d receptor and %d ligand atoms (check chain_map.gs)"
+        % (args.input, len(prot1_data), len(prot2_data)))
 
 len1 = len(prot1_data)
 len2 = len(prot2_data)
@@ -335,6 +361,8 @@ ARM_MIN = 0.60          # nm, shortest useful lever arm
 MIN_SIN = 0.35          # sin of the angle between a triad's two edges
 ROT_MAX_DEG = 8.0       # acceptance: relative frame rotation over the trajectory
 TOP_PER_SIDE = 30       # triads kept per protein before the cross-protein search
+RMSF_SPLIT = 1.0        # nm, per-atom RMSF above which a side is PBC-split
+MIN_FRAMES = 20         # frames needed before the measurement means anything
 
 
 def kabsch(P, Q):
@@ -347,24 +375,39 @@ def kabsch(P, Q):
 
 
 def read_multi_gro(path, natoms):
-  """(nframes, natoms, 3) from a multi-frame .gro."""
+  """(nframes, natoms, 3) from a multi-frame .gro, or None."""
+  if natoms <= 0:
+    return None
   L = open(path).read().split("\n")
   out, i = [], 0
   while i < len(L) - 1 and L[i].strip():
     n = int(L[i + 1])
     if n != natoms:
       return None
+    if i + 2 + n > len(L):     # truncated write: keep the frames we have
+      break
     out.append([[float(L[i + 2 + k][20:28]), float(L[i + 2 + k][28:36]),
                  float(L[i + 2 + k][36:44])] for k in range(n)])
     i += n + 3
-  return np.array(out) if out else None
+  if not out:
+    return None
+  return np.asarray(out, dtype=float).reshape(len(out), natoms, 3)
 
 
 def load_backbone_trajectory(atom_numbers):
   """Backbone coordinates over time, or None if the trajectory is unavailable.
 
   trjconv renumbers a subset on output, so the index is written here and the
-  row order is known by construction."""
+  row order is known by construction.
+
+  -pbc whole, not cluster: trjconv refuses to cluster a backbone-only index
+  ("Molecule N marked for clustering but not atom 1 in it"). whole is what the
+  per-protein fit below needs anyway, since that fit removes rigid-body motion
+  and so does not care where the other protein sits. The cross-protein reference
+  geometry does care, and is taken from args.input instead, which job_fe.run has
+  already run through -pbc cluster."""
+  if not atom_numbers:
+    return None
   if not (os.path.isfile(args.traj) and os.path.isfile(args.tpr)):
     return None
   ndx, gro = ".bb_sel.ndx", ".bb_traj.gro"
@@ -377,7 +420,7 @@ def load_backbone_trajectory(atom_numbers):
     if r.returncode != 0 or not os.path.isfile(gro):
       return None
     return read_multi_gro(gro, len(atom_numbers))
-  except (OSError, ValueError):
+  except (OSError, ValueError, IndexError):
     return None
   finally:
     for f in (ndx, gro):
@@ -399,9 +442,10 @@ def measure_rigidity(prot_data, traj, row_of):
   return anums, fit, dict(zip(anums, rmsf))
 
 
-def build_rigid_groups(prot_data, anums, fit):
+def build_rigid_groups(prot_data, anums, fit, label=""):
   """Compact backbone groups, keyed by seed residue, with measured COM RMSF."""
   idx_of = {a: i for i, a in enumerate(anums)}
+  xyz_of = {rec[3]: np.array(rec[4:7], dtype=float) for rec in prot_data}
   by_res, ca_of = {}, {}
   for (rn3, resnum, atomname, atomnum, x, y, z) in prot_data:
     if atomname in BACKBONE and atomnum in idx_of:
@@ -410,25 +454,46 @@ def build_rigid_groups(prot_data, anums, fit):
         ca_of[resnum] = np.array([x, y, z])
   full = [r for r in by_res if all(a in by_res[r] for a in BACKBONE)]
   groups = {}
+  n_small, all_eps = 0, []
   for seed in full:
     near = [r for r in full if np.linalg.norm(ca_of[r] - ca_of[seed]) <= R_GROUP]
     atoms = [by_res[r][a] for r in near for a in BACKBONE]
     if len(atoms) < N_MIN_ATOMS:
+      n_small += 1
       continue
     cols = [idx_of[a] for a in atoms]
     w = np.array([ATOM_MASS[a] for _ in near for a in BACKBONE])
     com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
     eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
+    all_eps.append(eps)
     if eps > EPS_MAX:
       continue
-    groups[seed] = {"atoms": atoms, "com": com_t[0], "com_t": com_t,
-                    "eps": eps, "nres": len(near)}
+    # The reference COM comes from args.input, not from com_t[0]. The trajectory
+    # is only -pbc whole, so the two proteins can sit in different periodic
+    # images in any given frame, and every cross-protein quantity built from it
+    # (r, the two angles, the three dihedrals, dG_release) would then be wrong.
+    # args.input is clustered. It is also the snapshot the interface restraints
+    # and the elastic network already use, so the whole restraint set now refers
+    # to one structure instead of two 10 ns apart. eps and relative_rotation stay
+    # on com_t: both are insensitive to imaging.
+    xyz = np.array([xyz_of[a] for a in atoms])
+    groups[seed] = {"atoms": atoms, "com": (xyz * w[:, None]).sum(0) / w.sum(),
+                    "com_t": com_t, "eps": eps, "nres": len(near)}
   # thin out overlapping seeds: keep the quietest of any cluster of nearby COMs
   keep = {}
   for s in sorted(groups, key=lambda s: groups[s]["eps"]):
     c = groups[s]["com"]
     if all(np.linalg.norm(c - groups[k]["com"]) > 0.5 for k in keep):
       keep[s] = groups[s]
+  # Say which filter did the cutting. Reaching fewer than 3 groups sends the run
+  # back to the burial heuristic, and without this the reason was invisible.
+  sys.stderr.write("make_boresch: %s: %d residues, %d seeds too small, "
+                   "%d measured (eps median %.3f, min %.3f nm), %d under "
+                   "EPS_MAX %.3f, %d after 0.5 nm thinning\n"
+                   % (label, len(full), n_small, len(all_eps),
+                      float(np.median(all_eps)) if all_eps else float("nan"),
+                      min(all_eps) if all_eps else float("nan"),
+                      len(groups), EPS_MAX, len(keep)))
   return keep
 
 
@@ -477,15 +542,31 @@ def try_measured_anchors():
   Returns (rec_groups, lig_groups, anchors, frame_rotation_deg)."""
   bb = [rec[3] for rec in prot1_data + prot2_data if rec[2] in BACKBONE]
   traj = load_backbone_trajectory(bb)
-  if traj is None or len(traj) < 20:
+  # ndim and the atom axis both matter, not just the frame count: an empty
+  # selection gives trjconv a legal zero-element group, which it happily writes
+  # as N frames of 0 atoms. That shape passed a frame-count-only check and then
+  # crashed the indexing below instead of falling back.
+  if (traj is None or traj.ndim != 3 or traj.shape[1] == 0
+      or traj.shape[0] < MIN_FRAMES):
     sys.stderr.write("make_boresch: no usable equilibration trajectory "
-                     "(%s), falling back to the burial heuristic\n" % args.traj)
+                     "(%s, shape %s), falling back to the burial heuristic\n"
+                     % (args.traj, None if traj is None else traj.shape))
     return None
   row_of = {a: i for i, a in enumerate(bb)}
-  a1, fit1, _ = measure_rigidity(prot1_data, traj, row_of)
-  a2, fit2, _ = measure_rigidity(prot2_data, traj, row_of)
-  g1 = build_rigid_groups(prot1_data, a1, fit1)
-  g2 = build_rigid_groups(prot2_data, a2, fit2)
+  a1, fit1, r1 = measure_rigidity(prot1_data, traj, row_of)
+  a2, fit2, r2 = measure_rigidity(prot2_data, traj, row_of)
+  # A side that spans several chains can come out of -pbc whole with its chains
+  # in different images. The self-fit is then meaningless in every frame, and it
+  # shows up as backbone RMSF of order the box rather than of order 0.1 nm.
+  worst = max([max(r1.values()) if r1 else 0.0,
+               max(r2.values()) if r2 else 0.0])
+  if worst > RMSF_SPLIT:
+    sys.stderr.write("make_boresch: backbone RMSF reaches %.2f nm, so a protein "
+                     "is split across periodic images in the trajectory; "
+                     "falling back to the burial heuristic\n" % worst)
+    return None
+  g1 = build_rigid_groups(prot1_data, a1, fit1, "receptor")
+  g2 = build_rigid_groups(prot2_data, a2, fit2, "ligand")
   sys.stderr.write("make_boresch: %d frames, rigid candidate groups: "
                    "receptor %d, ligand %d\n" % (len(traj), len(g1), len(g2)))
   if len(g1) < 3 or len(g2) < 3:
@@ -633,7 +714,16 @@ def select_boresch_anchors():
 
   return {"P1": P1, "P2": P2, "P3": P3, "L1": L1, "L2": L2, "L3": L3}
 
-_measured = try_measured_anchors()
+# The burial heuristic underneath only survives if the measured path can fail
+# without taking the process with it. Its own return-None paths were guarded;
+# an exception was not, and one killed a setup that the fallback would have
+# completed.
+try:
+  _measured = try_measured_anchors()
+except Exception:
+  sys.stderr.write("make_boresch: measured anchor selection raised, falling "
+                   "back to the burial heuristic\n" + traceback.format_exc())
+  _measured = None
 if _measured:
   rec_groups, lig_groups, anchors, FRAME_ROT = _measured
 else:
@@ -718,7 +808,28 @@ with open("boresch_anchors.gs", "w") as f:
 # PART 5 - Index groups
 #======================================================
 
+def strip_generated_groups():
+  """Drop a_* and bor_* groups left by an earlier run before appending again.
+
+  job_fe.run regenerates index.ndx with make_ndx immediately before calling this
+  script, so in the normal flow there is nothing to strip. A standalone re-run in
+  an existing directory has no such luck, and appending a second copy leaves
+  grompp resolving a pull group name to whichever duplicate it saw first."""
+  if not os.path.isfile("index.ndx"):
+    return
+  out, skipping = [], False
+  for line in open("index.ndx"):
+    m = re.match(r"\s*\[\s*(\S+)\s*\]", line)
+    if m:
+      skipping = m.group(1).startswith("a_") or m.group(1).startswith("bor_")
+    if not skipping:
+      out.append(line)
+  with open("index.ndx", "w") as f:
+    f.writelines(out)
+
+
 def write_index_groups():
+  strip_generated_groups()
   with open("index.ndx", "a") as index:
     # Single-atom groups for interface + elastic network (matching make_disres_en)
     for i, j, _ in interdis:

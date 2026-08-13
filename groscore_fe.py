@@ -315,6 +315,45 @@ def sbatch_parsable(path):
     return None
   return out.split(";")[0] if out else None
 
+def setup_is_complete(sid):
+  """True only if setup.done is backed by the artefacts the cycles consume.
+
+  setup.done used to be enough on its own, which made a bad setup permanent: the
+  marker suppressed the setup job here, and job_fe.run exits early on the same
+  marker, so nothing could ever redo the work. A directory left with a 0-byte
+  numpertres.gs and leg .mdp files carrying no pull block reproduced its failure
+  on every resubmission. When the marker is not backed up, clear it and the
+  half-written restraints so the setup job can run again."""
+  d = "./%s" % sid
+  if not os.path.isfile(os.path.join(d, "setup.done")):
+    return False
+  if not os.path.isdir(d):        # archived: the setup job unpacks the tarball
+    return True
+  bad = []
+  for f in ("numpertres.gs", "boresch_analytical.gs", "boresch_anchors.gs"):
+    p = os.path.join(d, f)
+    if not os.path.isfile(p) or os.path.getsize(p) == 0:
+      bad.append(f)
+  for m in ("bind_fe.mdp", "bindrev_fe.mdp", "nptrev_fe.mdp",
+            "boundfwd.mdp", "boundrev.mdp"):
+    p = os.path.join(d, m)
+    if not os.path.isfile(p):
+      bad.append(m)
+    elif not any(l.startswith("pull-ngroups") for l in open(p)):
+      bad.append("%s (no pull block)" % m)
+  if not bad:
+    return True
+  print("  %s: setup.done is present but the restraints are not (%s); "
+        "redoing setup." % (sid, ", ".join(bad)))
+  for f in ("setup.done", "numpertres.gs", "numpertres.tmp", "boresch_failed.gs",
+            "bind_fe.mdp", "bindrev_fe.mdp", "nptrev_fe.mdp",
+            "boundfwd.mdp", "boundrev.mdp"):
+    try:
+      os.remove(os.path.join(d, f))
+    except OSError:
+      pass
+  return False
+
 def setup_and_submit(structids, structchains):
   """Write per-structure run.gs, copy job_fe.run, build and submit the jobs."""
   script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -447,7 +486,7 @@ def setup_and_submit(structids, structchains):
       # above, so a cycle whose setup failed still starts, reads the stage-0
       # status and exits cleanly instead of waiting forever.
       deps = []
-      if not os.path.isfile("./%s/setup.done" % sid):
+      if not setup_is_complete(sid):
         local_jobs.append({"name": "setup_%s" % sid, "dir": sid,
                            "argv": ["./job.run", "--setup"],
                            "archive": "%s.tar.gz" % sid, "log": "job_local.out"})
@@ -482,7 +521,7 @@ def setup_and_submit(structids, structchains):
     # dependency. An archived structure has no directory, so its setup job runs
     # (it unpacks the tarball, then exits early since setup.done is inside).
     dep = ""
-    if not os.path.isfile("./%s/setup.done" % sid):
+    if not setup_is_complete(sid):
       jid = sbatch_parsable(setup_path)
       if jid:
         dep = "--dependency=afterany:%s " % jid

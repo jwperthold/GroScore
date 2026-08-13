@@ -44,6 +44,8 @@ fi
 # Safety check: Exit if any files were modified within the last 70 minutes
 # This prevents running simulations while setup is still in progress
 # 60 minutes matches the timeout duration for individual simulation steps.
+# The npt_init equilibration is the one exception at 600m, so this window no
+# longer covers a setup that is still in its equilibration.
 # Only meaningful in legacy single-job mode: with the setup/cycle split, sibling
 # array tasks are writing files by design, so this check would abort all of them.
 if [[ "$MODE" == "all" ]]; then
@@ -75,7 +77,8 @@ if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   rm -f box.gro box_solv.gro ions.tpr solv_ions.gro
   rm -f emin_solv_sd.tpr emin_solv_sd.gro emin_solv_sd.edr emin_solv_sd.log emin_solv_sd.trr
   rm -f emin_solv.tpr emin_solv.edr emin_solv.log emin_solv.trr
-  rm -f index.ndx numpertres.gs bind.mdp nptrev.mdp bindrev.mdp
+  rm -f index.ndx numpertres.gs numpertres.tmp bind.mdp nptrev.mdp bindrev.mdp
+  rm -f boresch_failed.gs boresch_analytical.gs boresch_anchors.gs
   rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
   rm -rf amber19sb.ff
 fi
@@ -629,10 +632,29 @@ with open('$CUTOUT_PDB', 'w') as f:
     gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
   fi
   if [[ ! -f npt_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_init
+    # 600m, not the 60m every shorter stage uses. This leg is 11 ns: at the
+    # ~260 ns/day one single-threaded slot reaches it needs just over an hour
+    # alone, and a few hours when eight slots share a GPU. It inherited 60m from
+    # when it was 1 ns and was killed at 98.6 % with no confout written, after
+    # which every step below ran against files that did not exist.
+    # -cpi so a kill costs the remaining steps rather than all of them.
+    CPI=""
+    [[ -f npt_init.cpt ]] && CPI="-cpi npt_init.cpt"
+    timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_init $CPI
+  fi
+  if [[ ! -f npt_init.gro ]]; then
+    echo "Stage 0 failed: npt_init equilibration did not finish (no npt_init.gro)."
+    echo "  Re-running this structure resumes from npt_init.cpt."
+    echo $STRUCT_ID "NPT_INIT_FAIL" >> ../results_0.gs
+    exit 0
   fi
   if [[ ! -f npt_init_whole.gro ]]; then
     echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
+  fi
+  if [[ ! -f npt_init_whole.gro ]]; then
+    echo "Stage 0 failed: trjconv -pbc whole produced no npt_init_whole.gro."
+    echo $STRUCT_ID "TRJCONV_FAIL" >> ../results_0.gs
+    exit 0
   fi
   if [[ ! -f npt_init_cluster.gro ]]; then
     # Output full system (0) to preserve atom numbering for pull group indices
@@ -641,19 +663,43 @@ with open('$CUTOUT_PDB', 'w') as f:
   if [[ ! -f npt_init_cluster.pdb ]]; then
     echo -e "Protein_Struct\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
   fi
+  # npt_init_cluster.gro is the reference every restraint below is built on, and
+  # make_boresch.py now also takes its Boresch reference geometry from it.
+  if [[ ! -f npt_init_cluster.gro ]]; then
+    echo "Stage 0 failed: trjconv -pbc cluster produced no npt_init_cluster.gro."
+    echo $STRUCT_ID "TRJCONV_FAIL" >> ../results_0.gs
+    exit 0
+  fi
 
   # Generate the FE pull configuration (interface + Boresch + elastic network)
   # from the equilibrated reference structure. make_boresch.py appends the full
   # pull block to each leg .mdp and emits the analytical Boresch term.
   echo "Generating FE restraints (interface + Boresch + elastic network)."
   cp $MDP_DIR/bind_fe.mdp $MDP_DIR/bindrev_fe.mdp $MDP_DIR/nptrev_fe.mdp $MDP_DIR/boundfwd.mdp $MDP_DIR/boundrev.mdp ./
-  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist 1.0 --pull-rate 0.00005 > numpertres.gs
+  # Write to a temp name and promote on success. Redirecting straight into
+  # numpertres.gs meant a crashed make_boresch.py still created the file the
+  # checks below look for, 0 bytes and indistinguishable from a real result.
+  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist 1.0 --pull-rate 0.00005 > numpertres.tmp
+  MB_RC=$?
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
     echo "Boresch anchor selection failed."
     echo $STRUCT_ID "BORESCH_FAIL" >> ../results_0.gs
+    rm -f numpertres.tmp
     exit 0
   fi
+  # The exit status and the size must both be checked. The graceful failure path
+  # prints "0" and writes its marker above, so a size test alone reads it as a
+  # result; an uncaught exception writes no marker at all, so a marker test alone
+  # reads it as success. That combination is what released 50 cycles against
+  # .mdp files whose pull block had never been appended.
+  if [[ $MB_RC -ne 0 || ! -s numpertres.tmp ]]; then
+    echo "Stage 0 failed: make_boresch.py exited $MB_RC (see the traceback above)."
+    echo $STRUCT_ID "BORESCH_FAIL" >> ../results_0.gs
+    rm -f numpertres.tmp
+    exit 0
+  fi
+  mv numpertres.tmp numpertres.gs
   # Record the analytical Boresch standard-state term (dG_release, kJ/mol) at the
   # top level so groscore_fe.py can read it without unpacking archives.
   # One idempotent file per structure, rewritten on every setup: gating this on a
@@ -664,6 +710,26 @@ with open('$CUTOUT_PDB', 'w') as f:
     DGREL=$(awk '$1=="dG_release_kJ_mol"{print $2}' boresch_analytical.gs)
     mkdir -p ../results_analytical.d
     echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
+  fi
+
+  # Post-condition before the marker goes down. setup.done is the only gate the
+  # cycles honour, and groscore_fe.py skips the setup job entirely when it is
+  # present, so touching it unconditionally does not merely mislabel a failure:
+  # it makes the directory unrecoverable, because no later run will redo setup.
+  # Check the artefacts the cycles actually consume. The .mdp test is a real
+  # post-condition, since no shipped template contains pull-ngroups and
+  # make_boresch.py writes it at column 0 for every leg it touches.
+  SETUP_MISSING=""
+  [[ -s numpertres.gs ]]         || SETUP_MISSING="$SETUP_MISSING numpertres.gs"
+  [[ -s boresch_analytical.gs ]] || SETUP_MISSING="$SETUP_MISSING boresch_analytical.gs"
+  [[ -s boresch_anchors.gs ]]    || SETUP_MISSING="$SETUP_MISSING boresch_anchors.gs"
+  for m in bind_fe.mdp bindrev_fe.mdp nptrev_fe.mdp boundfwd.mdp boundrev.mdp; do
+    grep -q '^pull-ngroups' "$m" 2>/dev/null || SETUP_MISSING="$SETUP_MISSING $m:pull-block"
+  done
+  if [[ -n "$SETUP_MISSING" ]]; then
+    echo "Stage 0 failed: setup produced no usable restraints; missing or empty:$SETUP_MISSING"
+    echo $STRUCT_ID "SETUP_FAIL" >> ../results_0.gs
+    exit 0
   fi
 
   # Setup finished: release any --cycle tasks that are waiting on this marker.
@@ -688,6 +754,10 @@ if [[ -d amber19sb.ff ]]; then
 fi
 
 # Read NUMPERTRES for integration
+if [[ ! -s numpertres.gs ]]; then
+  echo "numpertres.gs is missing or empty; setup did not define the restraints."
+  exit 1
+fi
 while read -r a b
 do
   NUMPERTRES=$a
