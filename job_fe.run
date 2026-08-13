@@ -535,39 +535,52 @@ with open('$CUTOUT_PDB', 'w') as f:
       echo "after equilibration no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
       if [[ ! -f box.gro ]]; then
-        # Padding has two parts. The FLOOR is the real solvation requirement:
-        # after protein B is displaced by --pull-dist the envelope grows by up to
-        # that much, so periodic images stay 2*rvdw apart only for
-        # d >= rvdw + pull_dist/2. That is force-field dependent and 1.5 is not
-        # universal: amber19sb_opc/opc3 give 1.5, charmm36 1.7, gromos54a8 1.9,
-        # so the old flat 1.8 was BELOW gromos54a8's own floor. Read rvdw from the
-        # leg mdp rather than hard-coding it.
+        # Two independent requirements. Solvation is NOT the binding one.
         #
-        # Anything above the floor is bought purely to satisfy the GROMACS pull
-        # check, which is 0.49 * the shortest box VECTOR (not the shortest
-        # diagonal element; verified against grompp). That demand is dynamical:
-        # interface pairs start at <= 0.6 nm and reach 3.59 nm on 2KTF once the
-        # partners separate, while the Boresch coordinates never pass 2.05 nm. So
-        # it is the interface restraints that set the box, NOT the Boresch anchors
-        # and not which anchor-selection mode ran. Nothing in emin_vac.gro
-        # predicts it: the rigorous static bound asks for -d 3.96, and the
-        # interface pair set from emin_vac.gro has Jaccard 0.31 against the real
-        # one. Hence a floor plus an explicit override, not a computed guess.
+        # Solvation / minimum image: editconf -d puts periodic images 2d apart,
+        # so the solute stops seeing itself once 2d > rvdw, i.e. d > rvdw/2. The
+        # unbinding pull grows the solute envelope by pull_dist, which costs
+        # pull_dist/2 of clearance on each side, so the floor is
+        # rvdw/2 + pull_dist/2. That is 1.00 for amber19sb_opc/opc3 (rvdw 1.0),
+        # 1.10 for charmm36 (1.2) and 1.20 for gromos54a8 (1.4). Every one of
+        # them is well under the value actually used, so this floor never binds
+        # in practice; it is here to catch an exotic cutoff, not to size the box.
+        #
+        # What actually sizes the box is the GROMACS pull check, 0.49 * the
+        # shortest box VECTOR (not the shortest diagonal element; verified
+        # against grompp). That demand is dynamical and much larger: interface
+        # pairs start at <= 0.6 nm and reach 3.59 nm on 2KTF once the partners
+        # separate, while the Boresch coordinates never pass 2.05 nm. So it is
+        # the interface restraints that set the box, NOT the Boresch anchors and
+        # not which anchor-selection mode ran.
+        #
+        # BOXPAD_DEFAULT stays at the empirically validated 1.8. Do not lower it
+        # to the floor: -d 1.5 is documented to fail on this very protocol,
+        # "Distance between pull groups 73 and 75 (3.772877 nm) is larger than
+        # 0.49 times the box size (3.770459)", and 1.8 puts the limit at 4.045.
+        # It is a 2KTF-derived constant, so it is a guess for any other complex;
+        # replacing it needs the per-structure demand measured at the first frame
+        # of bindrev, which nothing static predicts (the rigorous static bound
+        # asks for -d 3.96, and the interface pair set from emin_vac.gro has
+        # Jaccard 0.31 against the real one). Until that exists, boxpad.gs is the
+        # manual override for a structure known to need more.
+        BOXPAD_DEFAULT=1.8
         RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp)
         [[ -z "$RVDW" ]] && RVDW=1.0
-        BOXPAD=$(awk -v r="$RVDW" -v p="$PULL_DIST" 'BEGIN{printf "%.2f", r + p/2}')
+        FLOOR=$(awk -v r="$RVDW" -v p="$PULL_DIST" 'BEGIN{printf "%.2f", r/2 + p/2}')
+        BOXPAD=$(awk -v f="$FLOOR" -v d="$BOXPAD_DEFAULT" 'BEGIN{printf "%.2f", (f>d)?f:d}')
         # boxpad.gs overrides, for a structure known to need more. Cap growth so a
         # typo cannot ask for a box that will not fit in memory.
         if [[ -s boxpad.gs ]]; then
           WANT=$(awk 'NR==1{print $1}' boxpad.gs)
           if awk -v w="$WANT" -v b="$BOXPAD" 'BEGIN{exit !(w+0 > b+0 && w+0 <= 4.0)}'; then
-            echo "Box padding raised to $WANT nm by boxpad.gs (floor $BOXPAD)."
+            echo "Box padding raised to $WANT nm by boxpad.gs (was $BOXPAD)."
             BOXPAD=$WANT
           else
             echo "Ignoring boxpad.gs value '$WANT': not in (${BOXPAD}, 4.0]."
           fi
         fi
-        echo "Box padding: -d $BOXPAD nm (rvdw $RVDW + pull_dist $PULL_DIST / 2)."
+        echo "Box padding: -d $BOXPAD nm (solvation floor $FLOOR = rvdw $RVDW / 2 + pull_dist $PULL_DIST / 2; pull-check default $BOXPAD_DEFAULT)."
         echo "$BOXPAD" > boxpad_used.gs
         gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d $BOXPAD
       fi
