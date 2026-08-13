@@ -43,7 +43,7 @@
 #   python make_boresch.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
 #
 
-import os, sys, re, argparse, math, itertools, subprocess, traceback
+import os, sys, re, argparse, math, itertools, subprocess, traceback, shutil
 import numpy as np
 from scipy.spatial.distance import cdist
 
@@ -61,6 +61,13 @@ parser.add_argument('--traj', type=str, default="npt_init.xtc",
                          "If missing, the burial heuristic is used instead.")
 parser.add_argument('--tpr', type=str, default="npt_init.tpr",
                     help="Run input matching --traj (default: npt_init.tpr).")
+parser.add_argument('--topol', type=str, default="topol.top",
+                    help="Topology for the pull readback check (default: topol.top). "
+                         "The check grompps the emitted forward pull block at "
+                         "nsteps=0 and confirms GROMACS reproduces the six Boresch "
+                         "references it was given.")
+parser.add_argument('--no-readback', dest='readback', action='store_false',
+                    help="Skip the GROMACS pull readback check.")
 args = parser.parse_args()
 
 #------------------------------------------------------
@@ -96,9 +103,74 @@ en_min = 0.4
 en_max = 0.9
 enk = 250.0
 
-# Approximate backbone atom masses (for mass-weighted COM, matching GROMACS)
+# Fallback only. The real masses come from the tpr, see mass_of() below: these
+# element masses are NOT what GROMACS uses for the pull COM. Every settings tree
+# sets mass-repartition-factor = 3, which grompp applies before the pull code
+# sees the system (backbone N becomes 11.994, CA 9.994), and GROMOS54A8 is
+# united-atom where CA is CH1 at 13.019. Using this table put the reference
+# angles up to 0.96 degrees away from what GROMACS measures.
 ATOM_MASS = {"N": 14.007, "CA": 12.011, "C": 12.011}
 BACKBONE = ("N", "CA", "C")
+
+TPR_MASS = {}    # 1-based atom number -> mass, loaded from the tpr if available
+
+
+def load_tpr_masses(tpr):
+  """{atomnum: mass} straight out of the tpr, so the COMs match GROMACS's own.
+
+  gmx dump prints atoms per MOLECULETYPE with atom[i] restarting at 0 in each,
+  and the system is then assembled from molblocks. Mapping atom[i] to global
+  i + 1 therefore only works for the first moltype and lets SOL overwrite the
+  protein's first atoms. Expand the molblocks instead.
+
+  Empty on any failure, in which case mass_of() falls back to ATOM_MASS."""
+  if not (tpr and os.path.isfile(tpr) and shutil.which("gmx")):
+    return {}
+  try:
+    r = subprocess.run(["gmx", "dump", "-s", tpr],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+      return {}
+    per_moltype, blocks = {}, []
+    cur_mt, cur_blk = None, None
+    for line in r.stdout.split("\n"):
+      m = re.match(r"\s*moltype \((\d+)\):", line)
+      if m:
+        cur_mt = int(m.group(1))
+        per_moltype.setdefault(cur_mt, [])
+        continue
+      m = re.match(r"\s*molblock \((\d+)\):", line)
+      if m:
+        cur_blk = {"moltype": None, "n": None}
+        blocks.append(cur_blk)
+        continue
+      if cur_blk is not None and cur_blk["n"] is None:
+        m = re.match(r"\s*moltype\s*=\s*(\d+)", line)
+        if m:
+          cur_blk["moltype"] = int(m.group(1)); continue
+        m = re.match(r"\s*#molecules\s*=\s*(\d+)", line)
+        if m:
+          cur_blk["n"] = int(m.group(1)); continue
+      if cur_mt is not None:
+        m = re.search(r"atom\[\s*\d+\]=\{[^}]*?\bm=\s*([-0-9.eE+]+)", line)
+        if m:
+          per_moltype[cur_mt].append(float(m.group(1)))
+    if not per_moltype or not blocks:
+      return {}
+    out, g = {}, 1
+    for b in blocks:
+      masses = per_moltype.get(b["moltype"], [])
+      for _ in range(b["n"] or 0):
+        for mass in masses:
+          out[g] = mass
+          g += 1
+    return out
+  except (OSError, ValueError):
+    return {}
+
+
+def mass_of(atomnum, atomname):
+  return TPR_MASS.get(atomnum) or ATOM_MASS[atomname]
 
 #------------------------------------------------------
 
@@ -183,12 +255,48 @@ with open(args.input, "r") as f:
       except (ValueError, IndexError, AttributeError):
         pass
 
+# Load before anything takes a COM. npt_init.tpr already exists when job_fe.run
+# calls this script, and it is the same system, already repartitioned.
+TPR_MASS = load_tpr_masses(args.tpr)
+if TPR_MASS:
+  sys.stderr.write("make_boresch: masses read from %s (%d atoms)\n"
+                   % (args.tpr, len(TPR_MASS)))
+else:
+  sys.stderr.write("make_boresch: WARNING - no masses from %s, falling back to "
+                   "element masses; COMs will not match GROMACS exactly\n"
+                   % args.tpr)
+
+
+def box_vector_norms(box_line):
+  """Lengths of the three box vectors from a .gro box line.
+
+  The line is v1x v2y v3z v1y v1z v2x v2z v3x v3y, so the first three fields are
+  the DIAGONAL, not the vector lengths. On a rhombic dodecahedron editconf writes
+  (d,0,0), (0,d,0), (d/2, d/2, d/sqrt(2)): all three vectors have norm d, while
+  the z diagonal is d/sqrt(2), 29% smaller.
+
+  GROMACS enforces 0.49 * min |v_i| over the dims a pull coordinate enables, the
+  vector NORM. Verified by grompp rather than from the source: on the 2KTF box
+  the abort reads "larger than 0.49 times the box size (4.045396)", which is
+  0.49 * 8.25591 exactly, and a hand-built triclinic box 6 6 3 0 0 0 0 3 3
+  (norms 6, 6, sqrt(27), min diagonal 3) aborts at 2.546115 = 0.49 * sqrt(27),
+  where a min-diagonal rule would have predicted 1.47. The check fires at grompp,
+  not only at mdrun, and applies at k = 0.
+  """
+  f = [float(v) for v in box_line.split()]
+  f += [0.0] * (9 - len(f))
+  v = [(f[0], f[3], f[4]), (f[5], f[1], f[6]), (f[7], f[8], f[2])]
+  return [math.sqrt(sum(c * c for c in u)) for u in v]
+
 BOX_VEC = []
 _l = [x for x in open(args.input).read().split("\n") if x.strip()]
 try:
-  BOX_VEC = [float(v) for v in _l[-1].split()[:3]]
+  BOX_VEC = box_vector_norms(_l[-1])
 except (ValueError, IndexError):
   BOX_VEC = []
+
+# The distance every pull coordinate is measured against. 4.045 nm on 2KTF.
+PULL_LIMIT = 0.49 * min(BOX_VEC) if BOX_VEC else None
 
 # The file can be present and still yield nothing, e.g. an empty chain_map.gs
 # leaves max_structural_resnum at 0 and filters every atom out. That produced
@@ -291,7 +399,7 @@ def residue_backbone_groups(prot_data):
   groups = {}
   for resnum, atoms in by_res.items():
     if all(a in atoms for a in BACKBONE):
-      masses = np.array([ATOM_MASS[a] for a in BACKBONE])
+      masses = np.array([mass_of(atoms[a][0], a) for a in BACKBONE])
       coords = np.array([atoms[a][1] for a in BACKBONE])
       com = (masses[:, None] * coords).sum(axis=0) / masses.sum()
       groups[resnum] = {
@@ -324,13 +432,29 @@ def angle_deg(a, b, c):
   return math.degrees(math.acos(max(-1.0, min(1.0, cosv))))
 
 def dihedral_deg(a, b, c, d):
-  """Dihedral a-b-c-d in (-180, 180] degrees."""
+  """Dihedral a-b-c-d in (-180, 180] degrees, IUPAC sign.
+
+  The sign MUST match what GROMACS pull's `dihedral` geometry reports, since the
+  value written to pull-coordN-init is compared against it every step. IUPAC is
+  sign(phi) = sign(b1 . (b2 x b3)).
+
+  Note the negation. With m1 = n1 x b2_hat, (n1 x b2h).n2 = -(n1 x n2).b2h, so
+  atan2(y, x) is the exact mirror of the IUPAC angle. Without the minus sign all
+  three Boresch phi references were written as mirror-image targets: verified
+  against a zero-step grompp probe on the reference structure, where r, theta_A
+  and theta_B agreed to six significant figures while phi_A/B/C came back
+  sign-flipped (+164.879 vs -164.879, -88.6506 vs +88.6492, -94.3341 vs
+  +94.3331). That put 3145 kJ/mol into dH/dlambda at t = 0 and drove theta_B
+  into the pull-frame singularity, where the 1/sin(theta_B) lever tore the
+  anchor apart. write_pull_block now reads its own output back to catch this
+  class of error at setup instead of 10 ns into a leg.
+  """
   b1, b2, b3 = b - a, c - b, d - c
   n1, n2 = np.cross(b1, b2), np.cross(b2, b3)
   m1 = np.cross(n1, b2 / (np.linalg.norm(b2) + 1e-12))
   x = np.dot(n1, n2)
   y = np.dot(m1, n2)
-  return math.degrees(math.atan2(y, x))
+  return -math.degrees(math.atan2(y, x))
 
 def tri_area(p, q, r):
   return 0.5 * np.linalg.norm(np.cross(q - p, r - p))
@@ -462,7 +586,7 @@ def build_rigid_groups(prot_data, anums, fit, label=""):
       n_small += 1
       continue
     cols = [idx_of[a] for a in atoms]
-    w = np.array([ATOM_MASS[a] for _ in near for a in BACKBONE])
+    w = np.array([mass_of(by_res[r][a], a) for r in near for a in BACKBONE])
     com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
     eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
     all_eps.append(eps)
@@ -591,7 +715,15 @@ def try_measured_anchors():
       # P3 and L1 carry r: take the closest cross pair of the two triads.
       pairs = [(np.linalg.norm(g1[p]["com"] - g2[l]["com"]), p, l)
                for p in Pt for l in Lt]
-      _, P3, L1 = min(pairs)
+      r_cross, P3, L1 = min(pairs)
+      # ARM_MIN/arm_max above bound the three INTRA-protein edges of each triad;
+      # rank_triads never sees a cross pair, so without this r was whatever the
+      # closest approach of two rigidity-selected triads happened to be. Triads
+      # are ranked on COM RMSF, arm length and conditioning, not on proximity to
+      # the interface: over 2KTF's own residues the worst valid combination gives
+      # r + pull_dist = 4.408 nm against a 4.045 nm limit.
+      if PULL_LIMIT and r_cross + args.pull_dist > 0.9 * PULL_LIMIT:
+        continue
       rest_p = [k for k in Pt if k != P3]
       rest_l = [k for k in Lt if k != L1]
       for P2, P1 in (rest_p, rest_p[::-1]):
@@ -661,6 +793,15 @@ def select_boresch_anchors():
   # P3: receptor residue with COM-COM distance to L1 in [0.5, 1.2] nm, else closest
   cand = [(np.linalg.norm(rec_groups[rn]["com"] - L1c), rn) for rn in rec_pool]
   in_range = [(d, rn) for d, rn in cand if 0.5 <= d <= 1.2]
+  # The docstring promises [0.5, 1.2] nm, but an empty in_range falls through to
+  # the global minimum with no cap at all, and the burial filter can exclude the
+  # surface residues that actually form the interface. Say so when it happens:
+  # r0_release is guarded further down, but silence here made an unbounded ref_r
+  # look like a deliberate choice.
+  if not in_range and cand:
+    sys.stderr.write("make_boresch: no pooled receptor group 0.5-1.2 nm from L1; "
+                     "P3 falls back to the global minimum at %.3f nm\n"
+                     % min(cand)[0])
   P3 = min(in_range or cand)[1]
   P3c = rec_groups[P3]["com"]
 
@@ -692,13 +833,19 @@ def select_boresch_anchors():
   def pick_noncollinear(pool, exclude, p, q):
     # Prefer a residue local to both existing anchors (within ARM_MAX) that
     # maximizes non-collinearity; relax the locality cap only if none qualifies.
-    for local in (True, False):
+    # The relaxed pass used to have NO cap, and since it ranks by tri_area, which
+    # grows with distance from the line pq, it actively selected the most distant
+    # non-collinear residue available. That left P1-P2 (phi_A) and L2-L3 (phi_C)
+    # unbounded. Keep the retry, since removing it turns these cases into hard
+    # aborts, but bound the relaxed pass by the box instead of by nothing.
+    relaxed_cap = 0.6 * PULL_LIMIT if PULL_LIMIT else ARM_MAX
+    for cap in (ARM_MAX, relaxed_cap):
       best, best_area = None, -1.0
       for rn in pool:
         if rn in exclude:
           continue
         c = (lig_groups.get(rn) or rec_groups.get(rn))["com"]
-        if local and (np.linalg.norm(c - p) > ARM_MAX or np.linalg.norm(c - q) > ARM_MAX):
+        if np.linalg.norm(c - p) > cap or np.linalg.norm(c - q) > cap:
           continue
         a = tri_area(p, q, c)
         if a > best_area:
@@ -770,6 +917,19 @@ ref_phC = dihedral_deg(P3c, L1c, L2c, L3c)          # deg  phi_C
 # would leave the thermodynamic cycle unclosed. Only the distance moves; the
 # angle/dihedral references (rate 0) keep their measured values.
 r0_release = ref_r + args.pull_dist
+
+# Covers both anchor modes, including every burial fallback that relaxes its own
+# cap. GROMACS aborts at grompp when any checked pair exceeds PULL_LIMIT, so
+# without this the failure surfaced as a dead cycle rather than a failed setup.
+# 60% leaves room for the fluctuation on top of the switched reference: 2KTF sits
+# at 1.882 against a 2.427 threshold.
+if PULL_LIMIT and r0_release > 0.6 * PULL_LIMIT:
+  abort("BORESCH_R_TOO_LARGE",
+        "ref_r %.3f + pull_dist %.3f = %.3f nm exceeds 60%% of the GROMACS pull "
+        "limit %.3f nm (0.49 * shortest box vector); increase the editconf "
+        "padding or reselect anchors"
+        % (ref_r, args.pull_dist, r0_release, PULL_LIMIT))
+
 thA0 = ref_thA * DEG2RAD
 thB0 = ref_thB * DEG2RAD
 prodK = K_R * (K_ANG_RAD ** 5)   # Kr * KthA*KthB*KphA*KphB*KphC (all angles equal)
@@ -1019,6 +1179,22 @@ write_pull_block("bindrev_fe.mdp", pg_rev, co_rev)  # reverse: rebinding (lambda
 # bonus. Verified that grompp accepts the reduced pull setup from the unbinding
 # leg's checkpoint, that mdrun runs on it, and that the rebinding leg still
 # grompps from the hold's checkpoint with the full block restored.
+#
+# Sharpening the mechanism, because it reads as if a restraint were removed. Their
+# force constant is already kB = 0 at lambda = 1, so they restrained nothing here
+# either way; what the hold loses is only the CHECK. The interface surfaces keep
+# relaxing apart for the full 5 ns, and the rebinding leg grompps from this leg's
+# checkpoint with the full block restored, so whatever they drifted to is what
+# bindrev is checked against at t = 0. Measured over 8 cycles on 2KTF: bindfwd
+# peaks at 2.40-3.07 nm (always at its end), the hold runs on unchecked to
+# 2.88-3.88 nm, and bindrev starts at 2.41-3.56 nm against a 4.045 nm limit before
+# decaying within 400 ps. The first frame of bindrev, not the unbinding leg, is
+# what the box padding in job_fe.run has to cover.
+#
+# Do not "fix" this by tethering the dropped pairs during the hold. A flat-bottom
+# tether present only in nptrev is absent from the lambda = 1 Hamiltonian of
+# bind_fe and bindrev_fe, so it would bias the starting distribution handed to the
+# reverse leg, which is the equilibrium end state the Crooks analysis assumes.
 pg_hold, co_hold = build_coords("unbind", "rev")
 co_hold = [c for c in co_hold if c.get("boresch")]
 for c in co_hold:
@@ -1030,6 +1206,126 @@ pg_b_fwd, co_b_fwd = build_coords("bound", "fwd")
 pg_b_rev, co_b_rev = build_coords("bound", "rev")
 write_pull_block("boundfwd.mdp", pg_b_fwd, co_b_fwd)
 write_pull_block("boundrev.mdp", pg_b_rev, co_b_rev)
+
+
+#======================================================
+# PART 6 - Read the pull block back through GROMACS
+#
+# Everything above is open loop: the six Boresch coordinates are measured with
+# this file's own helpers, written into four .mdp files, and never verified. A
+# one-character sign error in dihedral_deg therefore survived into production and
+# cost days of GPU time, because a mirror-image phi reference is not visibly
+# wrong anywhere. It only shows up as strain once mdrun starts.
+#
+# So grompp the forward block at nsteps = 0 against the same structure the
+# references were measured from, run zero steps, and compare GROMACS's own pullx
+# against what was emitted. This catches sign conventions, group ordering, unit
+# errors and index drift in one test, for about 6 s per setup.
+#
+# The FORWARD block, not the hold: bindrev_fe and nptrev_fe carry
+# init = ref_r + pull_dist, so on the bound reference their distance coordinate
+# legitimately differs from its init by pull_dist and the check would misfire.
+#======================================================
+
+CHECK_TOL_DEG = 0.5     # 0.19 sigma at K_ANG_RAD; mass repartitioning alone is 0.96
+CHECK_TOL_NM = 0.005
+
+
+def wrap180(x):
+  return (x + 180.0) % 360.0 - 180.0
+
+
+def verify_pull_block(mdp):
+  """Re-measure the emitted pull coordinates with GROMACS. None if not run."""
+  if not args.readback:
+    return None
+  if not os.path.isfile(args.topol):
+    sys.stderr.write("make_boresch: skipping the pull readback, no %s\n"
+                     % args.topol)
+    return None
+  if not shutil.which("gmx"):
+    sys.stderr.write("make_boresch: skipping the pull readback, gmx not on PATH\n")
+    return None
+  work = ".pullcheck"
+  try:
+    os.makedirs(work, exist_ok=True)
+    probe = os.path.join(work, "probe.mdp")
+    with open(probe, "w") as f:
+      for line in open(mdp):
+        k = line.split("=")[0].strip()
+        # pull-print-com1/2 are the obsolete spellings; grompp refuses a file
+        # carrying both those and the modern pull-print-com that we append.
+        if k in ("nsteps", "pull-nstxout", "nstxout-compressed", "nstlog",
+                 "nstenergy", "continuation", "gen_vel", "free-energy",
+                 "init-lambda", "delta-lambda", "nstdhdl",
+                 "pull-print-com", "pull-print-com1", "pull-print-com2"):
+          continue
+        f.write(line)
+      f.write("\nnsteps = 0\npull-nstxout = 1\npull-print-com = no\n"
+              "continuation = yes\ngen_vel = no\nfree-energy = no\n")
+    tpr = os.path.join(work, "probe.tpr")
+    r = subprocess.run(["gmx", "grompp", "-f", probe, "-c", args.input,
+                        "-r", args.input, "-p", args.topol, "-n", "index.ndx",
+                        "-o", tpr, "-maxwarn", "20"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+      sys.stderr.write("make_boresch: pull readback grompp failed:\n%s\n"
+                       % r.stderr[-2000:])
+      return False
+    r = subprocess.run(["gmx", "mdrun", "-s", tpr, "-nt", "1", "-nb", "cpu",
+                        "-deffnm", os.path.join(work, "probe")],
+                       capture_output=True, text=True)
+    xvg = os.path.join(work, "probe_pullx.xvg")
+    if r.returncode != 0 or not os.path.isfile(xvg):
+      sys.stderr.write("make_boresch: pull readback mdrun failed:\n%s\n"
+                       % r.stderr[-2000:])
+      return False
+    row = None
+    for line in open(xvg):
+      if not line.startswith(("#", "@")):
+        row = [float(v) for v in line.split()]
+        break
+    if not row:
+      sys.stderr.write("make_boresch: pull readback produced no pullx row\n")
+      return False
+    return row[1:]
+  except (OSError, ValueError) as e:
+    sys.stderr.write("make_boresch: pull readback error: %s\n" % e)
+    return False
+  finally:
+    shutil.rmtree(work, ignore_errors=True)
+
+
+_read = verify_pull_block("bind_fe.mdp")
+if _read is False:
+  abort("PULL_READBACK_FAILED",
+        "could not read the emitted pull block back through GROMACS")
+elif _read is not None:
+  # The six Boresch coordinates are written last, in this order.
+  names = ["r", "theta_A", "theta_B", "phi_A", "phi_B", "phi_C"]
+  want = [ref_r, ref_thA, ref_thB, ref_phA, ref_phB, ref_phC]
+  got = _read[-6:] if len(_read) >= 6 else []
+  bad = []
+  for nm, w, g in zip(names, want, got):
+    if nm == "r":
+      d = abs(g - w)
+      ok = d <= CHECK_TOL_NM
+    else:
+      d = abs(wrap180(g - w))
+      ok = d <= CHECK_TOL_DEG
+    sys.stderr.write("make_boresch: readback %-8s emitted %10.4f  gromacs "
+                     "%10.4f  diff %8.4f%s\n"
+                     % (nm, w, g, d, "" if ok else "   MISMATCH"))
+    if not ok:
+      bad.append("%s off by %.4f" % (nm, d))
+  if len(got) < 6:
+    abort("PULL_READBACK_FAILED",
+          "pullx returned %d columns, expected at least 6" % len(_read))
+  if bad:
+    abort("PULL_READBACK_MISMATCH",
+          "GROMACS does not reproduce the emitted Boresch references (%s). A "
+          "sign or ordering convention in this file disagrees with the pull "
+          "code; do not run on this setup." % "; ".join(bad))
 
 #======================================================
 # Output: number of moving pull coords whose forces feed the pull integrator.
