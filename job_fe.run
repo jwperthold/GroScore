@@ -88,6 +88,12 @@ if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   rm -f emin_solv.tpr emin_solv.edr emin_solv.log emin_solv.trr
   rm -f index.ndx numpertres.gs numpertres.tmp bind.mdp nptrev.mdp bindrev.mdp
   rm -f boresch_failed.gs boresch_analytical.gs boresch_anchors.gs
+  # Probe pass: the small-box system the production box size is measured from.
+  # boxpad.gs goes with it, since a padding measured against a discarded solute
+  # must not be reused after the topology is re-derived.
+  rm -f topol_probe.top box_probe.gro box_solv_probe.gro ions_probe.tpr
+  rm -f solv_ions_probe.gro emin_probe*.* index_probe.ndx nvt_?_probe.*
+  rm -f npt_probe.* boxpad.gs boxpad.tmp boxpad_used.gs
   rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
   rm -rf amber19sb.ff
 fi
@@ -534,6 +540,103 @@ with open('$CUTOUT_PDB', 'w') as f:
     if [[ "$et" == "0" ]]; then
       echo "after equilibration no entangled loops were found."
       echo $STRUCT_ID "OK" >> ../results_0.gs
+
+      # ===== PROBE PASS: equilibrate small, measure, then size the real box =====
+      #
+      # The production box has to satisfy the GROMACS pull check, 0.49 * the
+      # shortest box vector, against interface pairs that only separate once the
+      # partners come apart. That demand is not predictable from the minimised
+      # structure: the rigorous static bound asks for -d 3.96, and the interface
+      # pair set taken from emin_vac.gro has Jaccard 0.31 against the real one. So
+      # the size was a constant, 1.5 and then 1.8, measured once on 2KTF.
+      #
+      # It does not have to be. The bound complex never needs the production box:
+      # the largest checked pull pair in the bound reference is 1.18 nm on 2KTF
+      # against a limit of 3.29 nm even at -d 1.00. So the long equilibration runs
+      # HERE, in a small box, purely to be measured, and the production box is
+      # then built from what it measured. The circularity is broken by running the
+      # measurement in a box that does not need to be right.
+      #
+      # This trajectory is also what make_boresch.py takes its backbone RMSF from.
+      # Its atom numbering is identical to the production system for atoms 1..N of
+      # the solute, since only the solvent count differs, and make_boresch reads
+      # geometry from -f and fluctuations from --traj as separate inputs.
+      PROBEPAD=$(awk -v r="$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp)" \
+                     'BEGIN{ if (r+0 <= 0) r = 1.0; printf "%.2f", r/2 + 0.5 }')
+      if [[ ! -f boxpad.gs ]]; then
+        echo "Probe pass: equilibrating in a small box (-d $PROBEPAD) to measure the production box."
+        cp topol.top topol_probe.top
+        if [[ ! -f box_probe.gro ]]; then
+          gmx editconf -f emin_vac.gro -o box_probe.gro -bt dodecahedron -d $PROBEPAD
+        fi
+        if [[ ! -f box_solv_probe.gro ]]; then
+          gmx solvate -cp box_probe.gro -cs $WATER_BOX -o box_solv_probe.gro -p topol_probe.top
+          python3 ../../utils/fix_topol_intermolecular.py -p topol_probe.top
+        fi
+        if [[ ! -f ions_probe.tpr ]]; then
+          gmx grompp -r box_solv_probe.gro -f $MDP_DIR/emin_vac.mdp -c box_solv_probe.gro -o ions_probe -maxwarn 2
+        fi
+        if [[ ! -f solv_ions_probe.gro ]]; then
+          echo -e "SOL\n" | gmx genion -s ions_probe.tpr -o solv_ions_probe.gro -p topol_probe.top -pname NA -nname CL -conc 0.15 -neutral
+          python3 ../../utils/fix_topol_intermolecular.py -p topol_probe.top
+        fi
+        if [[ ! -f emin_probe_sd.gro ]]; then
+          gmx grompp -r solv_ions_probe.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions_probe.gro -p topol_probe.top -o emin_probe_sd -maxwarn 2
+          gmx mdrun -nt $nt $GPUOPT -deffnm emin_probe_sd
+        fi
+        if [[ ! -f emin_probe.gro ]]; then
+          gmx grompp -r solv_ions_probe.gro -f $MDP_DIR/emin_solv_cg.mdp -c emin_probe_sd.gro -p topol_probe.top -o emin_probe -maxwarn 2
+          gmx mdrun -nt $nt $GPUOPT -deffnm emin_probe
+        fi
+        if [[ ! -f emin_probe.gro ]]; then
+          echo "Stage 0 failed: probe minimisation produced no emin_probe.gro."
+          echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+          exit 0
+        fi
+        if [[ ! -f index_probe.ndx ]]; then
+          echo -e "! \"Water\"\nq\n" | gmx make_ndx -f emin_probe.gro -o index_probe.ndx
+          python3 ../../utils/make_cluster_group.py -f emin_probe.gro -n index_probe.ndx
+        fi
+        prev=emin_probe
+        for stage in 1 2 3 4 5; do
+          if [[ ! -f nvt_${stage}_probe.gro ]]; then
+            if [[ "$prev" == "emin_probe" ]]; then
+              gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c emin_probe.gro -p topol_probe.top -o nvt_${stage}_probe -n index_probe.ndx -maxwarn 10
+            else
+              gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o nvt_${stage}_probe -n index_probe.ndx -maxwarn 10
+            fi
+            timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_${stage}_probe
+          fi
+          prev=nvt_${stage}_probe
+        done
+        if [[ ! -f npt_probe.tpr ]]; then
+          gmx grompp -r emin_probe.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_probe.tpr -t nvt_5_probe.cpt -p topol_probe.top -o npt_probe -n index_probe.ndx -maxwarn 10
+        fi
+        if [[ ! -f npt_probe.gro ]]; then
+          CPI=""
+          [[ -f npt_probe.cpt ]] && CPI="-cpi npt_probe.cpt"
+          timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_probe $CPI
+        fi
+        if [[ ! -f npt_probe.gro ]]; then
+          echo "Stage 0 failed: probe equilibration did not finish (no npt_probe.gro)."
+          echo "  Re-running this structure resumes from npt_probe.cpt."
+          echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+          exit 0
+        fi
+        # Running maximum over the whole probe run, on Protein_Struct, clustered.
+        python3 ../../utils/measure_box.py -f npt_probe.xtc -s npt_probe.tpr \
+                -n index_probe.ndx -g Protein_Struct -c emin_vac.gro \
+                --pad 1.5 > boxpad.tmp
+        MB_RC=$?
+        if [[ $MB_RC -ne 0 || ! -s boxpad.tmp ]]; then
+          echo "Stage 0 failed: measure_box.py exited $MB_RC."
+          echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+          rm -f boxpad.tmp
+          exit 0
+        fi
+        mv boxpad.tmp boxpad.gs
+      fi
+
       if [[ ! -f box.gro ]]; then
         # Two independent requirements. Solvation is NOT the binding one.
         #
@@ -564,23 +667,32 @@ with open('$CUTOUT_PDB', 'w') as f:
         # asks for -d 3.96, and the interface pair set from emin_vac.gro has
         # Jaccard 0.31 against the real one). Until that exists, boxpad.gs is the
         # manual override for a structure known to need more.
-        BOXPAD_DEFAULT=1.8
+        # boxpad.gs is written by the probe pass above, from measure_box.py, and
+        # is authoritative when present: L = D_max + 2*1.5 with D_max the running
+        # maximum solute atom-atom distance over the probe equilibration. It is
+        # clamped to [FLOOR, 4.0] only as a sanity range, not to steer it.
+        # BOXPAD_FALLBACK is used only when no probe ran, e.g. a directory set up
+        # before this change. It is the old 2KTF-derived constant and is a guess
+        # for any other complex, which is the whole reason for the probe.
+        BOXPAD_FALLBACK=1.8
         RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp)
         [[ -z "$RVDW" ]] && RVDW=1.0
         FLOOR=$(awk -v r="$RVDW" -v p="$PULL_DIST" 'BEGIN{printf "%.2f", r/2 + p/2}')
-        BOXPAD=$(awk -v f="$FLOOR" -v d="$BOXPAD_DEFAULT" 'BEGIN{printf "%.2f", (f>d)?f:d}')
-        # boxpad.gs overrides, for a structure known to need more. Cap growth so a
-        # typo cannot ask for a box that will not fit in memory.
+        BOXPAD=""
         if [[ -s boxpad.gs ]]; then
-          WANT=$(awk 'NR==1{print $1}' boxpad.gs)
-          if awk -v w="$WANT" -v b="$BOXPAD" 'BEGIN{exit !(w+0 > b+0 && w+0 <= 4.0)}'; then
-            echo "Box padding raised to $WANT nm by boxpad.gs (was $BOXPAD)."
+          WANT=$(awk 'NR==1{print $1+0}' boxpad.gs)
+          if awk -v w="$WANT" -v f="$FLOOR" 'BEGIN{exit !(w >= f && w <= 4.0)}'; then
             BOXPAD=$WANT
+            echo "Box padding: -d $BOXPAD nm, measured (boxpad.gs)."
           else
-            echo "Ignoring boxpad.gs value '$WANT': not in (${BOXPAD}, 4.0]."
+            echo "boxpad.gs value '$WANT' outside [$FLOOR, 4.0]; ignoring it."
           fi
         fi
-        echo "Box padding: -d $BOXPAD nm (solvation floor $FLOOR = rvdw $RVDW / 2 + pull_dist $PULL_DIST / 2; pull-check default $BOXPAD_DEFAULT)."
+        if [[ -z "$BOXPAD" ]]; then
+          BOXPAD=$(awk -v f="$FLOOR" -v d="$BOXPAD_FALLBACK" 'BEGIN{printf "%.2f", (f>d)?f:d}')
+          echo "Box padding: -d $BOXPAD nm, NOT measured (no usable boxpad.gs; floor $FLOOR, fallback $BOXPAD_FALLBACK)."
+        fi
+        echo "$BOXPAD" > boxpad_used.gs
         echo "$BOXPAD" > boxpad_used.gs
         gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d $BOXPAD
       fi
@@ -677,14 +789,16 @@ with open('$CUTOUT_PDB', 'w') as f:
     timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_init
   fi
   if [[ ! -f npt_init.tpr ]]; then
-    # npt_init_fe.mdp, not npt_fe.mdp: the setup equilibration runs 11 ns with
-    # 10 ps frames because make_boresch.py measures backbone flexibility from
-    # this trajectory. The per-cycle equilibration below stays at 1 ns.
+    # npt_fe.mdp (1 ns), not npt_init_fe.mdp (11 ns): the long equilibration has
+    # moved to the probe pass, which is where the box size is measured and where
+    # make_boresch.py takes its backbone RMSF from. All this run has to do is
+    # relax the freshly added solvent around an already-equilibrated solute and
+    # produce the reference structure the restraints are built on.
     # Runs straight off the NVT ladder: C-rescale is first order, so it relaxes
     # the box monotonically instead of oscillating the way Parrinello-Rahman does
     # from a box that has never been pressure-coupled, and needs no weak-coupling
     # stage in front of it.
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
+    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
   fi
   if [[ ! -f npt_init.gro ]]; then
     # 600m, not the 60m every shorter stage uses. This leg is 11 ns: at the
@@ -734,7 +848,15 @@ with open('$CUTOUT_PDB', 'w') as f:
   # Write to a temp name and promote on success. Redirecting straight into
   # numpertres.gs meant a crashed make_boresch.py still created the file the
   # checks below look for, 0 bytes and indistinguishable from a real result.
-  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist $PULL_DIST --pull-rate 0.00005 --tpr npt_init.tpr --topol topol.top > numpertres.tmp
+  # Geometry from the production reference (-f), fluctuations from the probe run
+  # (--traj/--tpr). They are separate inputs by design: the reference COM of every
+  # anchor group comes from -f, while eps and the frame-rotation check come from
+  # the trajectory, and both are insensitive to which box the trajectory was run
+  # in. Solute atom numbering is identical between the two systems, only the
+  # solvent count differs, so the atom-number mapping holds.
+  BOR_TRAJ=npt_probe.xtc; BOR_TPR=npt_probe.tpr
+  if [[ ! -s $BOR_TRAJ ]]; then BOR_TRAJ=npt_init.xtc; BOR_TPR=npt_init.tpr; fi
+  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR --topol topol.top > numpertres.tmp
   MB_RC=$?
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
