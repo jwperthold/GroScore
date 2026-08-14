@@ -480,7 +480,12 @@ def tri_area(p, q, r):
 TRAJ_SKIP_PS = 1000.0   # discard as equilibration before measuring
 R_GROUP = 0.70          # nm, radius of a candidate group about its seed CA
 N_MIN_ATOMS = 18        # backbone-only, so 18 atoms is 6 residues
-EPS_MAX = 0.045         # nm, ceiling on a group's COM RMSF
+# Escalating ceilings on a group's COM RMSF, in nm. The measured path is tried at
+# each in turn before the burial heuristic is considered at all, because burial
+# has no fluctuation information whatsoever and a slightly noisy measured group
+# still beats it. The relative frame rotation, not eps, is the acceptance
+# criterion. Replaces a single EPS_MAX = 0.045.
+EPS_LADDER = (0.045, 0.060, 0.080)
 ARM_MIN = 0.60          # nm, shortest useful lever arm
 MIN_SIN = 0.35          # sin of the angle between a triad's two edges
 ROT_MAX_DEG = 8.0       # acceptance: relative frame rotation over the trajectory
@@ -566,8 +571,8 @@ def measure_rigidity(prot_data, traj, row_of):
   return anums, fit, dict(zip(anums, rmsf))
 
 
-def build_rigid_groups(prot_data, anums, fit, label=""):
-  """Compact backbone groups, keyed by seed residue, with measured COM RMSF."""
+def residue_index(prot_data, anums):
+  """Per-residue backbone lookup shared by the group builders."""
   idx_of = {a: i for i, a in enumerate(anums)}
   xyz_of = {rec[3]: np.array(rec[4:7], dtype=float) for rec in prot_data}
   by_res, ca_of = {}, {}
@@ -577,32 +582,51 @@ def build_rigid_groups(prot_data, anums, fit, label=""):
       if atomname == "CA":
         ca_of[resnum] = np.array([x, y, z])
   full = [r for r in by_res if all(a in by_res[r] for a in BACKBONE)]
+  return by_res, ca_of, idx_of, xyz_of, full
+
+
+def make_group(residues, by_res, idx_of, xyz_of, fit):
+  """A pull group from a residue list, with its COM, COM time series and RMSF.
+
+  The reference COM comes from args.input via xyz_of, not from com_t[0]. The
+  trajectory is only -pbc whole, so the two proteins can sit in different periodic
+  images in any given frame, and every cross-protein quantity built from it (r,
+  the two angles, the three dihedrals, dG_release) would then be wrong.
+  args.input is clustered, and is also the snapshot the interface restraints and
+  the elastic network use, so the whole restraint set refers to one structure.
+  eps and relative_rotation stay on com_t: both are insensitive to imaging."""
+  atoms = [by_res[r][a] for r in residues for a in BACKBONE]
+  if len(atoms) < N_MIN_ATOMS:
+    return None
+  cols = [idx_of[a] for a in atoms]
+  w = np.array([mass_of(by_res[r][a], a) for r in residues for a in BACKBONE])
+  com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
+  eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
+  xyz = np.array([xyz_of[a] for a in atoms])
+  return {"atoms": atoms, "com": (xyz * w[:, None]).sum(0) / w.sum(),
+          "com_t": com_t, "eps": eps, "nres": len(residues),
+          "residues": list(residues)}
+
+
+def build_rigid_groups(prot_data, anums, fit, eps_max, label=""):
+  """Candidate groups, keyed by seed residue, filtered on measured COM RMSF.
+
+  These OVERLAP: a residue within R_GROUP of two seeds belongs to both. They are
+  candidates for ranking only; the triad that wins is rebuilt disjointly by
+  partition_triad before anything is written."""
+  by_res, ca_of, idx_of, xyz_of, full = residue_index(prot_data, anums)
   groups = {}
   n_small, all_eps = 0, []
   for seed in full:
     near = [r for r in full if np.linalg.norm(ca_of[r] - ca_of[seed]) <= R_GROUP]
-    atoms = [by_res[r][a] for r in near for a in BACKBONE]
-    if len(atoms) < N_MIN_ATOMS:
+    g = make_group(near, by_res, idx_of, xyz_of, fit)
+    if g is None:
       n_small += 1
       continue
-    cols = [idx_of[a] for a in atoms]
-    w = np.array([mass_of(by_res[r][a], a) for r in near for a in BACKBONE])
-    com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
-    eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
-    all_eps.append(eps)
-    if eps > EPS_MAX:
+    all_eps.append(g["eps"])
+    if g["eps"] > eps_max:
       continue
-    # The reference COM comes from args.input, not from com_t[0]. The trajectory
-    # is only -pbc whole, so the two proteins can sit in different periodic
-    # images in any given frame, and every cross-protein quantity built from it
-    # (r, the two angles, the three dihedrals, dG_release) would then be wrong.
-    # args.input is clustered. It is also the snapshot the interface restraints
-    # and the elastic network already use, so the whole restraint set now refers
-    # to one structure instead of two 10 ns apart. eps and relative_rotation stay
-    # on com_t: both are insensitive to imaging.
-    xyz = np.array([xyz_of[a] for a in atoms])
-    groups[seed] = {"atoms": atoms, "com": (xyz * w[:, None]).sum(0) / w.sum(),
-                    "com_t": com_t, "eps": eps, "nres": len(near)}
+    groups[seed] = g
   # thin out overlapping seeds: keep the quietest of any cluster of nearby COMs
   keep = {}
   for s in sorted(groups, key=lambda s: groups[s]["eps"]):
@@ -613,12 +637,51 @@ def build_rigid_groups(prot_data, anums, fit, label=""):
   # back to the burial heuristic, and without this the reason was invisible.
   sys.stderr.write("make_boresch: %s: %d residues, %d seeds too small, "
                    "%d measured (eps median %.3f, min %.3f nm), %d under "
-                   "EPS_MAX %.3f, %d after 0.5 nm thinning\n"
+                   "eps_max %.3f, %d after 0.5 nm thinning\n"
                    % (label, len(full), n_small, len(all_eps),
                       float(np.median(all_eps)) if all_eps else float("nan"),
                       min(all_eps) if all_eps else float("nan"),
-                      len(groups), EPS_MAX, len(keep)))
+                      len(groups), eps_max, len(keep)))
   return keep
+
+
+def partition_triad(seeds, prot_data, anums, fit, eps_max):
+  """Rebuild a triad so that no atom belongs to two of its groups.
+
+  The candidate groups overlap heavily: on 2KTF the selected L2 and L3 shared 12
+  of 24 atoms and P2/P3 shared 18 of 33, because the 0.5 nm thinning is on COM
+  separation and says nothing about membership. Shared atoms pull the two COMs
+  toward each other, which shortens the lever arm, and the frame error goes as
+  eps/L, so the overlap costs accuracy twice: a shorter L and a COM that moves
+  with its neighbour.
+
+  Each residue in the union of the three neighbourhoods is assigned to its NEAREST
+  seed, which is the even split the geometry allows and which pushes the three
+  COMs apart rather than pulling them together. Returns None if the split starves
+  a group below N_MIN_ATOMS or pushes one over eps_max, in which case the caller
+  moves on to the next-ranked triad."""
+  by_res, ca_of, idx_of, xyz_of, full = residue_index(prot_data, anums)
+  owned = {s: [] for s in seeds}
+  for r in full:
+    d = [(np.linalg.norm(ca_of[r] - ca_of[s]), s) for s in seeds]
+    dist, s = min(d)
+    if dist <= R_GROUP:
+      owned[s].append(r)
+  out = {}
+  for s in seeds:
+    g = make_group(sorted(owned[s]), by_res, idx_of, xyz_of, fit)
+    if g is None or g["eps"] > eps_max:
+      return None
+    out[s] = g
+  # Disjoint by construction, but assert it: a silent overlap here would be a
+  # correlated pair of Boresch coordinates that eq.32 does not model.
+  seen = set()
+  for s in seeds:
+    a = set(out[s]["atoms"])
+    if a & seen:
+      return None
+    seen |= a
+  return out
 
 
 def rank_triads(groups, arm_max):
@@ -689,60 +752,119 @@ def try_measured_anchors():
                      "is split across periodic images in the trajectory; "
                      "falling back to the burial heuristic\n" % worst)
     return None
-  g1 = build_rigid_groups(prot1_data, a1, fit1, "receptor")
-  g2 = build_rigid_groups(prot2_data, a2, fit2, "ligand")
-  sys.stderr.write("make_boresch: %d frames, rigid candidate groups: "
-                   "receptor %d, ligand %d\n" % (len(traj), len(g1), len(g2)))
-  if len(g1) < 3 or len(g2) < 3:
-    sys.stderr.write("make_boresch: too few rigid groups, falling back\n")
-    return None
-
   arm_max = 0.35 * min(BOX_VEC) if BOX_VEC else 1.2
-  T1, T2 = rank_triads(g1, arm_max), rank_triads(g2, arm_max)
-  if not T1 or not T2:
-    sys.stderr.write("make_boresch: no triad satisfied the arm/conditioning "
-                     "limits (arm_max %.2f nm), falling back\n" % arm_max)
-    return None
 
   def ang(a, b, c):
     v1, v2 = a - b, c - b
     return math.degrees(math.acos(np.clip(
         np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)), -1, 1)))
 
-  best = None
-  for Pt in T1:
-    for Lt in T2:
-      # P3 and L1 carry r: take the closest cross pair of the two triads.
-      pairs = [(np.linalg.norm(g1[p]["com"] - g2[l]["com"]), p, l)
-               for p in Pt for l in Lt]
-      r_cross, P3, L1 = min(pairs)
-      # ARM_MIN/arm_max above bound the three INTRA-protein edges of each triad;
-      # rank_triads never sees a cross pair, so without this r was whatever the
-      # closest approach of two rigidity-selected triads happened to be. Triads
-      # are ranked on COM RMSF, arm length and conditioning, not on proximity to
-      # the interface: over 2KTF's own residues the worst valid combination gives
-      # r + pull_dist = 4.408 nm against a 4.045 nm limit.
-      if PULL_LIMIT and r_cross + args.pull_dist > 0.9 * PULL_LIMIT:
+  def disjoint_triads(T, prot_data, anums, fit, eps_max, label):
+    """Rebuild each ranked triad with its atoms uniquely owned, then re-check.
+
+    The candidate groups overlap, so the arms and the conditioning that
+    rank_triads measured are not the ones the restraint will actually see. Splits
+    move the COMs apart, which can only lengthen the arms, but it also changes eps
+    and can starve a group, so everything is re-tested on the split geometry."""
+    out = []
+    for t in T:
+      d = partition_triad(t, prot_data, anums, fit, eps_max)
+      if d is None:
         continue
-      rest_p = [k for k in Pt if k != P3]
-      rest_l = [k for k in Lt if k != L1]
-      for P2, P1 in (rest_p, rest_p[::-1]):
-        for L2, L3 in (rest_l, rest_l[::-1]):
-          thA = ang(g1[P2]["com"], g1[P3]["com"], g2[L1]["com"])
-          thB = ang(g1[P3]["com"], g2[L1]["com"], g2[L2]["com"])
-          if not (ANG_LO <= thA <= ANG_HI and ANG_LO <= thB <= ANG_HI):
-            continue
-          rot = relative_rotation(g1, g2, (P1, P2, P3), (L1, L2, L3))
-          eps = max(g1[k]["eps"] for k in Pt) + max(g2[k]["eps"] for k in Lt)
-          if best is None or rot < best[0]:
-            best = (rot, eps, {"P1": P1, "P2": P2, "P3": P3,
-                               "L1": L1, "L2": L2, "L3": L3})
-  if best is None:
-    sys.stderr.write("make_boresch: no anchor set met the angle window, "
-                     "falling back\n")
+      c = [d[k]["com"] for k in t]
+      e = [float(np.linalg.norm(c[1] - c[0])), float(np.linalg.norm(c[2] - c[0])),
+           float(np.linalg.norm(c[2] - c[1]))]
+      if min(e) < ARM_MIN or max(e) > arm_max:
+        continue
+      sin = float(np.linalg.norm(np.cross(c[1] - c[0], c[2] - c[0])) / (e[0] * e[1]))
+      if sin < MIN_SIN:
+        continue
+      out.append((tuple(t), d))
+    sys.stderr.write("make_boresch: %s: %d ranked triads, %d survive the "
+                     "disjoint split\n" % (label, len(T), len(out)))
+    return out
+
+  def search(eps_max):
+    """One round at a given rigidity threshold. (rot, anchors, g1, g2) or None."""
+    g1 = build_rigid_groups(prot1_data, a1, fit1, eps_max, "receptor")
+    g2 = build_rigid_groups(prot2_data, a2, fit2, eps_max, "ligand")
+    if len(g1) < 3 or len(g2) < 3:
+      sys.stderr.write("make_boresch: too few rigid groups at eps_max %.3f\n"
+                       % eps_max)
+      return None
+    T1, T2 = rank_triads(g1, arm_max), rank_triads(g2, arm_max)
+    if not T1 or not T2:
+      sys.stderr.write("make_boresch: no triad satisfied the arm/conditioning "
+                       "limits (arm_max %.2f nm) at eps_max %.3f\n"
+                       % (arm_max, eps_max))
+      return None
+    D1 = disjoint_triads(T1, prot1_data, a1, fit1, eps_max, "receptor")
+    D2 = disjoint_triads(T2, prot2_data, a2, fit2, eps_max, "ligand")
+    if not D1 or not D2:
+      return None
+
+    best = None
+    for Pt, d1 in D1:
+      for Lt, d2 in D2:
+        # P3 and L1 carry r: take the closest cross pair of the two triads.
+        pairs = [(np.linalg.norm(d1[p]["com"] - d2[l]["com"]), p, l)
+                 for p in Pt for l in Lt]
+        r_cross, P3, L1 = min(pairs)
+        # ARM_MIN/arm_max bound the three INTRA-protein edges of each triad;
+        # rank_triads never sees a cross pair, so without this r was whatever the
+        # closest approach of two rigidity-selected triads happened to be. Over
+        # 2KTF's own residues the worst valid combination gives
+        # r + pull_dist = 4.408 nm against a 4.045 nm limit.
+        if PULL_LIMIT and r_cross + args.pull_dist > 0.9 * PULL_LIMIT:
+          continue
+        rest_p = [k for k in Pt if k != P3]
+        rest_l = [k for k in Lt if k != L1]
+        for P2, P1 in (rest_p, rest_p[::-1]):
+          for L2, L3 in (rest_l, rest_l[::-1]):
+            thA = ang(d1[P2]["com"], d1[P3]["com"], d2[L1]["com"])
+            thB = ang(d1[P3]["com"], d2[L1]["com"], d2[L2]["com"])
+            if not (ANG_LO <= thA <= ANG_HI and ANG_LO <= thB <= ANG_HI):
+              continue
+            rot = relative_rotation(d1, d2, (P1, P2, P3), (L1, L2, L3))
+            if best is None or rot < best[0]:
+              best = (rot, {"P1": P1, "P2": P2, "P3": P3,
+                            "L1": L1, "L2": L2, "L3": L3}, d1, d2)
+    if best is None:
+      sys.stderr.write("make_boresch: no anchor set met the angle window at "
+                       "eps_max %.3f\n" % eps_max)
+    return best
+
+  # Escalate the rigidity threshold rather than giving up on the measured path.
+  # EPS_MAX is an absolute cut on a quantity that moves with the system, the force
+  # field and the barostat: on 2KTF the receptor median went 0.030 -> 0.048 nm
+  # between two runs of the same structure. A side whose groups all sit slightly
+  # above the cut is still better served by its own quietest measured groups than
+  # by the burial heuristic, which has no fluctuation information at all.
+  #
+  # The rotation is what actually decides quality, so EVERY round runs and the
+  # best rotation wins. Stopping at the first round that merely clears ROT_MAX_DEG
+  # is tempting and wrong: on 2KTF the disjoint split leaves the ligand only one
+  # surviving triad at eps_max 0.045, and a looser threshold admits more candidate
+  # groups, hence more triads to choose between, which can only help the minimum.
+  # A looser eps does not mean floppier anchors are used, only that more are
+  # considered; the ones that win are still the ones with the least rotation.
+  chosen, chosen_eps = None, None
+  for eps_max in EPS_LADDER:
+    sys.stderr.write("make_boresch: --- anchor search at eps_max %.3f nm ---\n"
+                     % eps_max)
+    r = search(eps_max)
+    if r is None:
+      continue
+    sys.stderr.write("make_boresch: eps_max %.3f gives %.1f deg\n" % (eps_max, r[0]))
+    if chosen is None or r[0] < chosen[0]:
+      chosen, chosen_eps = r, eps_max
+  if chosen is None:
+    sys.stderr.write("make_boresch: no measured anchor set at any eps_max in %s, "
+                     "falling back to the burial heuristic\n" % (EPS_LADDER,))
     return None
 
-  rot, eps, anch = best
+  rot, anch, g1, g2 = chosen
+  sys.stderr.write("make_boresch: accepted the eps_max %.3f round\n" % chosen_eps)
   sys.stderr.write("make_boresch: selected anchors give %.1f deg RMS relative "
                    "frame rotation over the equilibration (limit %.1f)\n"
                    % (rot, ROT_MAX_DEG))
