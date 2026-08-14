@@ -93,6 +93,13 @@ parser.add_argument('--restart', action='store_true',
                          "and, with a larger -n, adds new ones.")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job_fe.run into archived (.tar.gz) structures.")
 parser.add_argument('--temp', type=float, default=310.0, help="Temperature in K (default: 310).")
+parser.add_argument('--n-boot-bar', dest='n_boot_bar', type=int, default=5000, metavar='N',
+                    help="Bootstrap rows for the BAR confidence intervals (default: 5000). "
+                         "avg and CGI always use 50000; BAR is a root-find per row rather "
+                         "than a closed form, so it runs on a prefix of the same resample. "
+                         "5000 rows know their own CI to about 1%%, which is well inside the "
+                         "CI itself. Raise it if a run shows the BAR CI moving materially "
+                         "between 5000 and 50000.")
 parser.add_argument('--rmsd-warn', type=float, default=10.0, metavar='A',
                     help="Warn about cycles whose re-bound backbone RMSD exceeds this "
                          "value in Angstrom (default: 10.0). Free energies are always "
@@ -227,7 +234,7 @@ def _stream_cgi(fwd, rev):
   return out
 
 def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
-                     n_boot=50000, seed=12345):
+                     n_boot=50000, n_boot_bar=5000, seed=12345):
   """Joint cycle-level bootstrap for one structure.
 
   Point estimates and 95% CIs for dG_intro, dG_unbind and dG_bind under BOTH the
@@ -304,6 +311,29 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
     both = np.isfinite(ic) & np.isfinite(uc)
     if both.sum() > 1:
       r['bind_cgi_ci'] = 1.96 * float(np.std(-(ic[both] + uc[both] + dG_release)))
+
+  # BAR CIs, on a PREFIX of the same index. avg and CGI are closed forms over a
+  # resampled row and cost microseconds for all 50000; BAR is a root-find per row
+  # and costs about 1000x that, so it runs on the first n_boot_bar rows only. The
+  # bootstrap standard deviation has relative error 1/sqrt(2B), so 5000 rows know
+  # their own CI to 1%, which is far inside the CI itself.
+  #
+  # A prefix, not a fresh draw: the same cycles must resample together across both
+  # streams, or bind_bar_ci silently becomes the independent-error combination
+  # instead of carrying the intro/unbind covariance. That covariance is the reason
+  # this bootstrap is joint at all.
+  nb = min(n_boot_bar, n_boot)
+  jdx = idx[:nb]
+  ib = est.bar_bootstrap(Wi, Wr, RT, jdx) if np.isfinite(r['intro_bar']) else None
+  ub = est.bar_bootstrap(Wf, Wv, RT, jdx) if np.isfinite(r['unb_bar']) else None
+  if ib is not None and np.isfinite(ib).sum() > 1:
+    r['intro_bar_ci'] = 1.96 * float(np.nanstd(ib))
+  if ub is not None and np.isfinite(ub).sum() > 1:
+    r['unb_bar_ci'] = 1.96 * float(np.nanstd(ub))
+  if ib is not None and ub is not None:
+    both = np.isfinite(ib) & np.isfinite(ub)
+    if both.sum() > 1:
+      r['bind_bar_ci'] = 1.96 * float(np.std(-(ib[both] + ub[both] + dG_release)))
   return r
 
 #------------------------------------------------------
@@ -1282,7 +1312,8 @@ def score(structids):
       continue
 
     dG_release = analytical[sid]
-    r = score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release)
+    r = score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
+                        n_boot_bar=args.n_boot_bar)
 
     # Rebinding sanity check: the thermodynamic cycle only closes if the
     # rebinding leg put the partners back into the pose the bound leg started
