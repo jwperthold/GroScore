@@ -45,6 +45,37 @@ if args.ngpus and not args.run_local:
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
 from local_runner import launch_local, print_local_status
+import estimators as est
+
+#------------------------------------------------------
+# Temperature, for BAR only.
+#
+# Deliberately NOT a --temp flag. groscore_fe.py has one and it never reaches
+# grompp: ref_t is fixed in the mdp templates, so passing --temp 300 there would
+# silently hand the estimator the wrong kT for a 310 K simulation. Nothing in the
+# classic pipeline can change the simulation temperature either, so a flag here
+# would only create a second copy of that trap. The value is checked against the
+# mdp at startup instead, so the two cannot drift apart unnoticed.
+T_REF = 310.0
+RT = 0.00831446261815324 * T_REF          # kJ/mol
+
+
+def check_ref_t(forcefield):
+  """Warn, never abort, if the force field's mdp does not run at T_REF."""
+  mdp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "settings", forcefield, "bind.mdp")
+  try:
+    with open(mdp) as f:
+      for line in f:
+        if line.strip().startswith("ref_t"):
+          vals = [float(v) for v in line.split("=")[1].split()]
+          if any(abs(v - T_REF) > 0.5 for v in vals):
+            print("WARNING: %s has ref_t = %s but groscore.py assumes %.1f K for "
+                  "the BAR column; that column will be wrong."
+                  % (mdp, " ".join("%g" % v for v in vals), T_REF))
+          return
+  except (OSError, ValueError, IndexError):
+    pass                                  # missing or unparseable: not fatal
 
 #------------------------------------------------------
 
@@ -358,8 +389,32 @@ def calculate_scores(frenstruct, structids, numstructs, num_cycles, use_max_data
       if not np.isnan(cgi_stderr):
         cgi_ci95 = 1.96 * cgi_stderr
 
-    fren.append((structids[i], avg_score, avg_ci95, num_cycles_used, rmsd_mean, rmsd_max))
-    frencgi.append((structids[i], cgi_score, cgi_ci95, num_cycles_used, rmsd_mean, rmsd_max))
+    # BAR, as a comparison column only: the classic score stays the average.
+    #
+    # NOTE the negation. utils/estimators.py takes the reverse work in its OWN
+    # sign, but `pushes` arrive here already sign-ALIGNED, because job.run calls
+    # integrate.py without -r for both directions so the reversed force integral
+    # flips the sign for free. Negating here rather than inside the estimator
+    # keeps one convention in the module and the asymmetry visible where it
+    # originates. tests/test_bar.py pins both directions.
+    #
+    # Expect BAR_NO_OVERLAP on essentially every structure: forward and reverse
+    # works are separated by ~132 RT at the current pull rate, and BAR cannot
+    # measure a crossing region that contains no samples. The suppression is the
+    # informative part, so it is recorded per structure rather than left in prose.
+    bar_score, bar_note = est.bar(pulls, [-p for p in pushes], RT)
+    bar_ci95 = float('nan')
+    if not np.isnan(bar_score) and len(pulls) >= est.BAR_MIN_N:
+      idx = np.random.default_rng(12345).integers(0, len(pulls),
+                                                  size=(5000, len(pulls)))
+      b = est.bar_bootstrap(pulls, [-p for p in pushes], RT, idx)
+      if np.isfinite(b).sum() > 1:
+        bar_ci95 = 1.96 * float(np.nanstd(b))
+
+    fren.append((structids[i], avg_score, avg_ci95, num_cycles_used, rmsd_mean, rmsd_max,
+                 bar_score, bar_ci95, bar_note))
+    frencgi.append((structids[i], cgi_score, cgi_ci95, num_cycles_used, rmsd_mean, rmsd_max,
+                    bar_score, bar_ci95, bar_note))
 
   return fren, frencgi
 
@@ -396,23 +451,34 @@ def rmsd_flag(rmsd_max, threshold):
 def write_score_file(path, header, structids, scored, struct_status, threshold):
   """Write one scores_*.gs file.
 
-  scored: {struct_id: (score, ci95, ncycles, rmsd_mean, rmsd_max)} for the
-  structures that produced data; every other structure is written with its
-  stage-0 status so the file always lists all of sp.gs.
+  scored: {struct_id: (score, ci95, ncycles, rmsd_mean, rmsd_max, bar, bar_ci,
+  bar_note)} for the structures that produced data; every other structure is
+  written with its stage-0 status so the file always lists all of sp.gs.
+
+  BAR is APPENDED, never inserted. Every consumer of these files reads parts[0]
+  and parts[1] under a len(parts) >= 2 guard and ignores the rest
+  (benchmark/capri_benchmark/capri_common.py, haddock_benchmark's
+  analyze_correlation.py and analyze_convergence.py, ppb_benchmark's ppb_table.py
+  and ppb_subset_scatter.py), so appending breaks none of them and inserting
+  would break all five. The Score column stays the average or CGI as before;
+  BAR is a comparison column and is not the classic engine's score.
   """
   with open(path, "w") as f:
     f.write(header)
-    f.write("# Structure_ID  Score  CI95  Cycles_Used  RMSD_mean_A  RMSD_max_A  RMSD_flag\n")
+    f.write("# Structure_ID  Score  CI95  Cycles_Used  RMSD_mean_A  RMSD_max_A  "
+            "RMSD_flag  BAR  BAR_CI95  BAR_note\n")
     for struct_id in structids:
       if struct_id in scored:
-        score, ci95, nc, rmean, rmax = scored[struct_id]
+        score, ci95, nc, rmean, rmax, bar, bar_ci, bar_note = scored[struct_id]
         score_cols = ("nan\tnan" if np.isnan(score) else "%.1f\t%.1f"%(score, ci95))
-        f.write("%s\t%s\t%d\t%s\t%s\t%s\n"%(struct_id, score_cols, nc,
+        bar_cols = ("nan\tnan" if np.isnan(bar) else "%.1f\t%.1f"%(bar, bar_ci))
+        f.write("%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n"%(struct_id, score_cols, nc,
                                             rmsd_cell(rmean), rmsd_cell(rmax),
-                                            rmsd_flag(rmax, threshold)))
+                                            rmsd_flag(rmax, threshold),
+                                            bar_cols, bar_note or "nan"))
       else:
         status = struct_status.get(struct_id, "nan")
-        f.write("%s\t%s\t%s\t0\tnan\tnan\tnan\n"%(struct_id, status, status))
+        f.write("%s\t%s\t%s\t0\tnan\tnan\tnan\tnan\tnan\tnan\n"%(struct_id, status, status))
 
 #------------------------------------------------------
 
@@ -604,6 +670,8 @@ while j <= args.numruns*2:
 
       sys.stdout.write("\rCalculating scores for cycle %d... "%current_cycle)
       sys.stdout.flush()
+      if current_cycle == 1:
+        check_ref_t(args.forcefield)      # BAR needs kT; warn if the mdp disagrees
 
       # Write score files for each cycle threshold (1 to current_cycle)
       for cycle_threshold in range(1, current_cycle + 1):
