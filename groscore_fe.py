@@ -951,13 +951,18 @@ def leg_stats(fwd, rev):
   # How many of the 2n sampled works land inside the OTHER direction's observed
   # range, and -- when none do -- how much empty work separates the two ranges.
   # Both are order statistics, so no distributional assumption enters.
-  inside = int(((f >= ral.min()) & (f <= ral.max())).sum()
-               + ((ral >= f.min()) & (ral <= f.max())).sum()) if len(f) else 0
+  #
+  # est.overlap_count is the SAME function that decides whether BAR is reported,
+  # so the OVL verdict on the figure, the ovl column in the Gaussian report and
+  # BAR_NO_OVERLAP in scores_fe.gs cannot disagree about what overlap means.
+  inside = est.overlap_count(f, v)
   gap = max(0.0, max(f.min(), ral.min()) - min(f.max(), ral.max())) if len(f) else float('nan')
+  bar_v, bar_note = est.bar(f, v, RT)
   return {'n': len(f),
           'avg': float(_stream_avg(f, v)),
           'cgi': float(_stream_cgi(f[None, :], v[None, :])[0]) if len(f) >= 3
                  else float('nan'),
+          'bar': bar_v, 'bar_note': bar_note,
           'diss': float((f.mean() + v.mean()) / 2.0),   # per-direction dissipation
           'sd_f': float(f.std()), 'sd_r': float(v.std()),
           'inside': inside, 'gap': float(gap),
@@ -996,6 +1001,14 @@ def _panel(ax, fwd, rev, title, nbins, st):
   ax.axvline(avg, color=INK, lw=2.0, label="avg  %.1f" % avg)
   if np.isfinite(cgi):
     ax.axvline(cgi, color=INK, lw=2.0, ls="--", label="CGI  %.1f" % cgi)
+  # BAR is the reported estimate, so it is drawn even though it usually sits close
+  # to the other two: where it does NOT, the leg has not converged and the figure
+  # should say so. A suppressed BAR is labelled with its reason rather than
+  # silently omitted, so an absent rule cannot be mistaken for an absent leg.
+  if np.isfinite(st.get('bar', float('nan'))):
+    ax.axvline(st['bar'], color=INK, lw=2.0, ls=":", label="BAR  %.1f" % st['bar'])
+  elif st.get('bar_note'):
+    ax.plot([], [], ' ', label="BAR  %s" % st['bar_note'].replace("BAR_", "").lower())
 
   # Gaussian fits -- these are exactly what CGI intersects, so drawing them shows
   # whether the reported crossing sits inside the sampled region or is
@@ -1135,6 +1148,14 @@ FLAG_HELP = {
  "",
  "  Only exactly zero is flagged, because that statement needs no assumption",
  "  about shape. Read the count as well; a handful is little better than none.",
+ "",
+ "  A flagged leg has NO BAR value: scores_fe.gs carries nan and a Note of",
+ "  BAR_NO_OVERLAP_INTRO or BAR_NO_OVERLAP_UNBIND. That is the same count as this",
+ "  flag, not a second opinion. avg and CGI are still reported, because they are",
+ "  model extrapolations by construction and were never claiming otherwise; BAR",
+ "  is refused instead of reported because it looks like a measurement. Its",
+ "  solver returns a confident finite number on separated data, with the wrong",
+ "  sign at the dissipation the unbinding leg currently runs at.",
 ],
 "SEP": [
  "SEP: the histograms sit further apart than the cycles can span",
