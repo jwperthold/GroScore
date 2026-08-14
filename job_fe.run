@@ -565,22 +565,32 @@ with open('$CUTOUT_PDB', 'w') as f:
                      'BEGIN{ if (r+0 <= 0) r = 1.0; printf "%.2f", r/2 + 0.5 }')
       if [[ ! -f boxpad.gs ]]; then
         echo "Probe pass: equilibrating in a small box (-d $PROBEPAD) to measure the production box."
-        cp topol.top topol_probe.top
         if [[ ! -f box_probe.gro ]]; then
           gmx editconf -f emin_vac.gro -o box_probe.gro -bt dodecahedron -d $PROBEPAD
         fi
-        if [[ ! -f box_solv_probe.gro ]]; then
+        # Solvate, ionise and the topology they mutate are ONE step, guarded on
+        # the last file the sequence produces. They cannot be guarded
+        # individually: topol_probe.top is derived from the dry topol.top and then
+        # rewritten by both solvate and genion, so a directory re-entered after a
+        # partial probe would reset the topology to dry, skip the solvate whose
+        # output already exists, and hand grompp a dry topology against solvated
+        # coordinates. That is exactly the atom-count mismatch this block failed
+        # with the first time it ran. Re-deriving from scratch costs about 5 s.
+        if [[ ! -f solv_ions_probe.gro ]]; then
+          rm -f box_solv_probe.gro ions_probe.tpr topol_probe.top
+          cp topol.top topol_probe.top
           gmx solvate -cp box_probe.gro -cs $WATER_BOX -o box_solv_probe.gro -p topol_probe.top
           python3 ../../utils/fix_topol_intermolecular.py -p topol_probe.top
-        fi
-        if [[ ! -f ions_probe.tpr ]]; then
-          # -p is mandatory here: the default is topol.top, which at this point is
-          # still the DRY topology, while the coordinates are solvated.
+          # -p is mandatory here: the default is topol.top, which is the DRY
+          # topology, while the coordinates are solvated.
           gmx grompp -r box_solv_probe.gro -f $MDP_DIR/emin_vac.mdp -c box_solv_probe.gro -p topol_probe.top -o ions_probe -maxwarn 2
-        fi
-        if [[ ! -f solv_ions_probe.gro ]]; then
           echo -e "SOL\n" | gmx genion -s ions_probe.tpr -o solv_ions_probe.gro -p topol_probe.top -pname NA -nname CL -conc 0.15 -neutral
           python3 ../../utils/fix_topol_intermolecular.py -p topol_probe.top
+        fi
+        if [[ ! -f solv_ions_probe.gro ]]; then
+          echo "Stage 0 failed: probe solvation produced no solv_ions_probe.gro."
+          echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+          exit 0
         fi
         if [[ ! -f emin_probe_sd.gro ]]; then
           gmx grompp -r solv_ions_probe.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions_probe.gro -p topol_probe.top -o emin_probe_sd -maxwarn 2
