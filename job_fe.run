@@ -167,6 +167,31 @@ fi
 # Get absolute path to GroScore root (two levels up from structure directory)
 GROSCORE_ROOT="$(cd ../.. && pwd)"
 MDP_DIR="${GROSCORE_ROOT}/settings/$FORCEFIELD"
+
+# Simulation temperature, READ FROM THE MDP rather than repeated as a literal.
+#
+# make_boresch.py needs it for the analytical Boresch term, and that value goes
+# straight into the thermodynamic cycle, so a temperature that disagrees with the
+# one the legs actually run at is a silent error in every dG_bind. This used to be
+# passed as a hard-coded -T 310 sitting a few hundred lines away from the mdp it
+# had to agree with, which is the same shape as the two temperature traps already
+# found in the scoring scripts. Deriving it removes the constant instead of
+# checking it.
+REF_T=$(awk -F= '/^ *ref_t *=/{n=split($2,a," "); print a[1]; exit}' $MDP_DIR/bind_fe.mdp 2>/dev/null)
+# Both tc-grps must be at the same temperature: a two-bath setup would make "the"
+# simulation temperature ambiguous and eq.32 wrong for at least one of them.
+REF_T_ALL=$(awk -F= '/^ *ref_t *=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp 2>/dev/null)
+if [[ -n "$REF_T_ALL" ]] && [[ $(echo "$REF_T_ALL" | tr ' ' '\n' | grep -c . ) -gt 1 ]]; then
+  if [[ $(echo "$REF_T_ALL" | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l) -ne 1 ]]; then
+    echo "WARNING: $MDP_DIR/bind_fe.mdp couples groups to different temperatures ($REF_T_ALL);"
+    echo "  using $REF_T K for the analytical Boresch term, which is right for at most one of them."
+  fi
+fi
+if ! [[ "$REF_T" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "WARNING: could not read ref_t from $MDP_DIR/bind_fe.mdp; assuming 310 K for the"
+  echo "  analytical Boresch term. If the legs do not run at 310 K, dG_release is wrong."
+  REF_T=310
+fi
 if [[ "$FORCEFIELD" == "charmm36" ]]; then
   # Add local forcefield directory to GMXLIB so GROMACS can find charmm36-jul2022.ff
   if [[ -n "${GMXLIB:-}" ]]; then
@@ -868,7 +893,7 @@ with open('$CUTOUT_PDB', 'w') as f:
   # solvent count differs, so the atom-number mapping holds.
   BOR_TRAJ=npt_probe.xtc; BOR_TPR=npt_probe.tpr
   if [[ ! -s $BOR_TRAJ ]]; then BOR_TRAJ=npt_init.xtc; BOR_TPR=npt_init.tpr; fi
-  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T 310 --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR --topol topol.top > numpertres.tmp
+  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T $REF_T --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR --topol topol.top > numpertres.tmp
   MB_RC=$?
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
