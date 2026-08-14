@@ -71,6 +71,17 @@ export GMX_MAXBACKUP=-1
 # rate they were actually run at.
 PULL_DIST=1.0
 
+# Fields in one results_fe.d row:
+#   STRUCT_ID cycle
+#   W_intro  WuA_pull WuA_dhdl  WuB_pull WuB_dhdl  WrB_pull WrB_dhdl  WrA_pull WrA_dhdl  W_remove
+#   RMSD
+# i.e. 2 + 10 works + 1 = 13. Named because the completeness gate and the writer
+# must agree on it: a gate that checks fewer fields than the writer emits marks a
+# cycle done on works it never looked at, and that cycle is then dropped by
+# groscore_fe.py and lost when the structure archives. The writer asserts against
+# this constant, so the two cannot drift apart silently.
+FE_RESULT_NF=13
+
 # Restart recovery: detect and clean up stale intermediate files from failed runs.
 # If conf.gro exists but emin_solv.gro doesn't, a previous setup attempt failed
 # partway through. Clean up ALL setup files and start from scratch to avoid
@@ -1188,14 +1199,27 @@ fi
     #     values were never repaired after the legs were re-run.
     # Integration is cheap (the .xvg.gz are kept), so this backfills in seconds.
     RESFILE=../results_fe.d/${STRUCT_ID}_c${cycle}.gs
-    # A stored result counts as final only if it is a complete 9-field line whose
-    # six work values are numeric; anything else (missing, truncated by a failed
-    # integration, NaN from a leg that had not finished, or an 8-field line from
-    # before the RMSD column existed) is recomputed. Only fields 3-8 are checked
-    # for NaN: a cycle whose RMSD could not be computed is still a valid result
-    # and must not be re-integrated on every restart.
+    # A stored result counts as final only if it is a complete line of the CURRENT
+    # width whose every work value is numeric; anything else (missing, truncated by
+    # a failed integration, NaN from a leg that had not finished, or a narrower
+    # line from before the ramp was split) is recomputed.
+    #
+    # The range is 3 .. NF-1, i.e. DERIVED, and the width is required to be exactly
+    # FE_RESULT_NF. It used to be the literal 3..8 with NF>=9, which was correct for
+    # a 9-field row and quietly wrong the moment the row grew to 13: the last four
+    # works, the whole of rebinding stage A and the restraint-removal leg, fell
+    # outside the window. A cycle that lost them was still marked .done, still
+    # counted toward the requested total, and still let the structure archive --
+    # after which read_works drops the row for those very NaNs and the cycle is
+    # gone for good. Field NF is the rebinding RMSD, which is diagnostic only, so a
+    # cycle whose RMSD could not be computed is still a valid result.
+    complete_row() {
+      awk -v want="$FE_RESULT_NF" \
+        'NR==1 && NF==want {ok=1; for(i=3;i<=NF-1;i++) if($i=="NaN"||$i=="nan") ok=0}
+         END{exit !ok}' "$1"
+    }
     NEEDS_RESULT=1
-    if [[ -f $RESFILE ]] && awk 'NR==1 && NF>=9{ok=1; for(i=3;i<=8;i++) if($i=="NaN"||$i=="nan") ok=0} END{exit !ok}' $RESFILE; then
+    if [[ -f $RESFILE ]] && complete_row $RESFILE; then
       NEEDS_RESULT=0
     fi
     if [[ $NEEDS_RESULT -eq 1 ]]; then
@@ -1219,10 +1243,32 @@ fi
       # force into work by multiplying by the rate, so integrating stage B at
       # stage A's rate would rescale it by 7. One constant used to cover the whole
       # leg; with a split leg it cannot.
-      rate_of() { awk -v n="$1" '$1=="stage_rate_nm_ps" && $2==n {print ($3<0?-$3:$3); exit}' boresch_analytical.gs; }
-      RATE_A=$(rate_of bindfwdA); RATE_B=$(rate_of bindfwdB)
-      [[ -z "$RATE_A" ]] && RATE_A=$PULL_RATE
-      [[ -z "$RATE_B" ]] && RATE_B=$PULL_RATE
+      # integrate.py wants the magnitude (the direction is carried by
+      # groscore_fe.py's SIGN_PULL_FWD/REV), and printf rather than passing the
+      # field through keeps one output format whichever sign is stored.
+      rate_of() {
+        awk -v n="$1" '$1=="stage_rate_nm_ps" && $2==n {printf "%.10g", ($3<0?-$3:$3); exit}' \
+            boresch_analytical.gs
+      }
+      # Each of the FOUR pull legs is read separately rather than reusing the
+      # forward stage's rate for its reverse. They are equal today because the
+      # stages are the same length in both directions, and that is exactly the
+      # kind of thing that stops being true without anyone noticing.
+      RATE_fA=$(rate_of bindfwdA); RATE_fB=$(rate_of bindfwdB)
+      RATE_rB=$(rate_of bindrevB); RATE_rA=$(rate_of bindrevA)
+      # NO FALLBACK RATE. The old code could substitute $PULL_RATE because there
+      # was one rate for the whole leg; with a split leg that constant is right
+      # for neither stage (it would inflate A by 2.5x and shrink B by 2.9x). The
+      # rate multiplies the work, so a guessed one produces a wrong number that
+      # looks exactly like a right one. Missing rate -> the stage is not
+      # integrated at all, the field stays NaN, and the cycle is redone.
+      for _r in RATE_fA RATE_fB RATE_rB RATE_rA; do
+        if [[ -z "${!_r}" ]]; then
+          echo "ERROR: no stage_rate_nm_ps for $_r in boresch_analytical.gs; the pull" >&2
+          echo "       work of that stage in cycle $cycle stays NaN rather than being" >&2
+          echo "       integrated at a guessed rate." >&2
+        fi
+      done
 
       # The same argument on the dhdl channel. integrate_dhdl.py rebuilds the
       # lambda ramp from --direction alone, which assumes the leg spans the WHOLE
@@ -1230,31 +1276,48 @@ fi
       # 1.0 and come out 3.3x too large, with nothing to show for it. So the
       # actual span is read out of the mdp the stage ran with, which is where the
       # split is defined in the first place.
+      # --leg-ps goes with it: mdrun writes dhdl on multiples of nstdhdl and does
+      # not force a final row at nsteps, so with the span alone a leg whose nsteps
+      # is not a multiple of nstdhdl has its whole ramp stretched onto the rows it
+      # did record. Every mdp here divides evenly today, so this changes no number
+      # now; it stops the next reshaping of the ramp from changing one silently.
       lam_span() {
         awk -F= '
           /^ *init-lambda *=/  {gsub(/[ \t]/,"",$2); i=$2}
           /^ *delta-lambda *=/ {gsub(/[ \t]/,"",$2); d=$2}
           /^ *nsteps *=/       {gsub(/[ \t]/,"",$2); n=$2}
-          END { if (i=="" || d=="" || n=="") exit 1
-                printf "--lambda-start %.10g --lambda-end %.10g", i, i + d*n }' "$1"
+          /^ *dt *=/           {gsub(/[ \t]/,"",$2); t=$2}
+          END { if (i=="" || d=="" || n=="" || t=="") exit 1
+                printf "--lambda-start %.10g --lambda-end %.10g --leg-ps %.10g",
+                       i, i + d*n, n*t }' "$1"
       }
       LAM_fA=$(lam_span bindfwdA_fe.mdp); LAM_fB=$(lam_span bindfwdB_fe.mdp)
       LAM_rB=$(lam_span bindrevB_fe.mdp); LAM_rA=$(lam_span bindrevA_fe.mdp)
       LAM_bf=$(lam_span boundfwd.mdp);    LAM_br=$(lam_span boundrev.mdp)
+      # An empty span is the same trap as a guessed rate, and quieter: the
+      # variable expands to nothing, integrate_dhdl.py falls back to its 0 -> 1
+      # default, and a 0 -> 0.3 stage silently comes back 3.33x too large. So an
+      # unreadable span disables that integration rather than defaulting it.
+      for _l in LAM_fA LAM_fB LAM_rB LAM_rA LAM_bf LAM_br; do
+        if [[ -z "${!_l}" ]]; then
+          echo "ERROR: could not read the lambda span for $_l; the corresponding dhdl" >&2
+          echo "       work of cycle $cycle stays NaN rather than being integrated 0->1." >&2
+        fi
+      done
 
       W_intro="NaN"; W_remove="NaN"
       WuA_pull="NaN"; WuA_dhdl="NaN"; WuB_pull="NaN"; WuB_dhdl="NaN"
       WrB_pull="NaN"; WrB_dhdl="NaN"; WrA_pull="NaN"; WrA_dhdl="NaN"
-      [[ -f boundfwd_${cycle}_dhdl.xvg ]]  && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd $LAM_bf)
-      [[ -f bindfwdA_${cycle}_pullf.xvg ]] && WuA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_A)
-      [[ -f bindfwdA_${cycle}_dhdl.xvg ]]  && WuA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdA_${cycle}_dhdl.xvg --direction fwd $LAM_fA)
-      [[ -f bindfwdB_${cycle}_pullf.xvg ]] && WuB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_B)
-      [[ -f bindfwdB_${cycle}_dhdl.xvg ]]  && WuB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdB_${cycle}_dhdl.xvg --direction fwd $LAM_fB)
-      [[ -f bindrevB_${cycle}_pullf.xvg ]] && WrB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_B)
-      [[ -f bindrevB_${cycle}_dhdl.xvg ]]  && WrB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevB_${cycle}_dhdl.xvg --direction rev $LAM_rB)
-      [[ -f bindrevA_${cycle}_pullf.xvg ]] && WrA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_A)
-      [[ -f bindrevA_${cycle}_dhdl.xvg ]]  && WrA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevA_${cycle}_dhdl.xvg --direction rev $LAM_rA)
-      [[ -f boundrev_${cycle}_dhdl.xvg ]]  && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev $LAM_br)
+      [[ -f boundfwd_${cycle}_dhdl.xvg && -n "$LAM_bf" ]]  && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd $LAM_bf)
+      [[ -f bindfwdA_${cycle}_pullf.xvg && -n "$RATE_fA" ]] && WuA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_fA)
+      [[ -f bindfwdA_${cycle}_dhdl.xvg && -n "$LAM_fA" ]]  && WuA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdA_${cycle}_dhdl.xvg --direction fwd $LAM_fA)
+      [[ -f bindfwdB_${cycle}_pullf.xvg && -n "$RATE_fB" ]] && WuB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_fB)
+      [[ -f bindfwdB_${cycle}_dhdl.xvg && -n "$LAM_fB" ]]  && WuB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdB_${cycle}_dhdl.xvg --direction fwd $LAM_fB)
+      [[ -f bindrevB_${cycle}_pullf.xvg && -n "$RATE_rB" ]] && WrB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_rB)
+      [[ -f bindrevB_${cycle}_dhdl.xvg && -n "$LAM_rB" ]]  && WrB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevB_${cycle}_dhdl.xvg --direction rev $LAM_rB)
+      [[ -f bindrevA_${cycle}_pullf.xvg && -n "$RATE_rA" ]] && WrA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_rA)
+      [[ -f bindrevA_${cycle}_dhdl.xvg && -n "$LAM_rA" ]]  && WrA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevA_${cycle}_dhdl.xvg --direction rev $LAM_rA)
+      [[ -f boundrev_${cycle}_dhdl.xvg && -n "$LAM_br" ]]  && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev $LAM_br)
       # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state
       # this cycle was equilibrated in (npt_c$cycle) and the end of the rebinding
       # leg (bindrev_$cycle). A large value means the partners did not return to
@@ -1279,6 +1342,14 @@ fi
       # holds exist to make possible. groscore_fe.py does both.
       echo "$STRUCT_ID $cycle $W_intro $WuA_pull $WuA_dhdl $WuB_pull $WuB_dhdl $WrB_pull $WrB_dhdl $WrA_pull $WrA_dhdl $W_remove $RMSD" \
         > $RESFILE
+      # The gate below trusts FE_RESULT_NF to be the width this line has. Assert
+      # it here rather than discovering the mismatch as silently-dropped cycles.
+      _nf=$(awk 'NR==1{print NF}' $RESFILE)
+      if [[ "$_nf" != "$FE_RESULT_NF" ]]; then
+        echo "ERROR: result row has $_nf fields, FE_RESULT_NF says $FE_RESULT_NF." >&2
+        echo "       Refusing to mark cycle $cycle done on a row the gate cannot check." >&2
+        CYCLE_FAILED=1
+      fi
       gzip -f boundfwd_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg \
               bindfwdA_${cycle}_pullf.xvg bindfwdA_${cycle}_dhdl.xvg \
               bindfwdB_${cycle}_pullf.xvg bindfwdB_${cycle}_dhdl.xvg \
@@ -1290,10 +1361,10 @@ fi
       # unrecoverable. A cycle whose legs died partway writes its NaN row (so the
       # next run repairs it rather than re-simulating from scratch) but no marker,
       # and reports failure so the runner shows it instead of logging "done".
-      if awk 'NR==1 && NF>=9{ok=1; for(i=3;i<=8;i++) if($i=="NaN"||$i=="nan") ok=0} END{exit !ok}' $RESFILE; then
+      if complete_row $RESFILE; then
         touch results_fe_c${cycle}.done
       else
-        echo "Cycle $cycle FAILED: not all six works are numeric, no .done written:"
+        echo "Cycle $cycle FAILED: not every work is numeric, no .done written:"
         echo "  $(cat $RESFILE)"
         CYCLE_FAILED=1
       fi

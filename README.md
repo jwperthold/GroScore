@@ -235,7 +235,7 @@ A cycle's work only describes the intended binding event if the push leg actuall
 | Engine | Reference (bound) | Query (re-bound) | Stored in |
 |--------|-------------------|------------------|-----------|
 | `groscore.py` (classic) | `npt_c<N>.gro` | `bindrev_<2N>.gro` | 3rd column of `results_<2N>.gs` |
-| `groscore_fe.py` (FE) | `npt_c<N>.gro` | `bindrev_<N>.gro` | 9th column of `results_fe.d/<id>_c<N>.gs` |
+| `groscore_fe.py` (FE) | `npt_c<N>.gro` | `bindrevA_<N>.gro` | last column of `results_fe.d/<id>_c<N>.gs` |
 
 ### Reading the result
 

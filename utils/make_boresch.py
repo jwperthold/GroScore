@@ -1368,6 +1368,15 @@ STAGES = [
     ("bindrevA_fe.mdp",   U_SPLIT,  0.0),
 ]
 stage_rates = {}
+# Where the six Boresch coordinates ended up inside bindfwdA's block, captured
+# from the coords themselves rather than assumed. The readback below used to take
+# the last six columns, which is only the right answer when the elastic network
+# is empty: build_coords emits interface coords, then the Boresch distance, then
+# the elastic network, then the five angles and dihedrals. A partner with three
+# or more terminal-anchor residues produces a non-empty network, and the readback
+# would then compare the Boresch r against an elastic-network pair distance and
+# abort a setup that is in fact correct.
+boresch_idx = []
 for _name, _u0, _u1 in STAGES:
   _ps = leg_ps(_name)
   if _ps is None:
@@ -1376,6 +1385,8 @@ for _name, _u0, _u1 in STAGES:
   _dir = "fwd" if _u1 >= _u0 else "rev"
   _pg, _co = build_coords("unbind", _dir, u_from=_u0, u_to=_u1, ps=_ps)
   write_pull_block(_name, _pg, _co)
+  if _name == "bindfwdA_fe.mdp":
+    boresch_idx = [i for i, c in enumerate(_co) if c.get("boresch")]
   stage_rates[_name] = (0.0 if _u1 == _u0
                         else (_u1 - _u0) * args.pull_dist / _ps)
 
@@ -1535,10 +1546,15 @@ if _read is False:
   abort("PULL_READBACK_FAILED",
         "could not read the emitted pull block back through GROMACS")
 elif _read is not None:
-  # The six Boresch coordinates are written last, in this order.
+  # The six Boresch coordinates, in emission order, located by the marker
+  # build_coords set on them rather than by counting back from the end.
   names = ["r", "theta_A", "theta_B", "phi_A", "phi_B", "phi_C"]
   want = [ref_r, ref_thA, ref_thB, ref_phA, ref_phB, ref_phC]
-  got = _read[-6:] if len(_read) >= 6 else []
+  if len(boresch_idx) != 6:
+    abort("PULL_READBACK_FAILED",
+          "expected 6 Boresch coordinates in bindfwdA_fe.mdp, found %d"
+          % len(boresch_idx))
+  got = [_read[i] for i in boresch_idx] if max(boresch_idx) < len(_read) else []
   bad = []
   for nm, w, g in zip(names, want, got):
     if nm == "r":
@@ -1554,7 +1570,8 @@ elif _read is not None:
       bad.append("%s off by %.4f" % (nm, d))
   if len(got) < 6:
     abort("PULL_READBACK_FAILED",
-          "pullx returned %d columns, expected at least 6" % len(_read))
+          "pullx returned %d columns, too few to hold the Boresch coordinates "
+          "at %s" % (len(_read), boresch_idx))
   if bad:
     abort("PULL_READBACK_MISMATCH",
           "GROMACS does not reproduce the emitted Boresch references (%s). A "

@@ -27,7 +27,7 @@ Two properties carry that design, and neither is visible in a finished number:
 Run:  python3 tests/test_staged.py
 """
 
-import math, os, shutil, subprocess, sys, tempfile
+import math, os, re, shutil, subprocess, sys, tempfile
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,6 +105,43 @@ RB = integrate(os.path.join(work, "rB.xvg"), "rev", True, 1.0, U_SPLIT)
 RA = integrate(os.path.join(work, "rA.xvg"), "rev", True, U_SPLIT, 0.0)
 check("reverse stages sum to minus the forward total",
       abs((RB + RA) + WW) < 0.05, "%.3f vs %.3f" % (RB + RA, -WW))
+
+# The span alone is not sufficient. mdrun writes dhdl on multiples of nstdhdl and
+# does not force a final record at nsteps, so a leg whose nsteps is not a multiple
+# of nstdhdl stops recording early. Without --leg-ps the ramp is then stretched
+# onto the rows that WERE recorded and the work is inflated by
+# nsteps/(nstdhdl*floor(nsteps/nstdhdl)); with it, lambda comes off the clock and
+# the integral covers the span actually run. Every shipped mdp divides evenly, so
+# this is latent -- which is exactly why it needs a test.
+LEG_PS, REC_PS = 1050.0, 1000.0
+t_short = np.arange(0.0, REC_PS + 1e-9, 100.0)
+lam_short = U_SPLIT * t_short / LEG_PS
+short_path = os.path.join(work, "short.xvg")
+with open(short_path, "w") as f:
+  f.write('@ s0 legend "dH/dl fep-lambda = 0.0000"\n')
+  for ti, li in zip(t_short, lam_short):
+    f.write("%.4f  %.6f\n" % (ti, dvdl(li)))
+
+def integrate_legps(path, l0, l1, leg_ps=None):
+  cmd = [sys.executable, INTEGRATE, "-f", path, "--direction", "fwd",
+         "--lambda-start", str(l0), "--lambda-end", str(l1)]
+  if leg_ps is not None:
+    cmd += ["--leg-ps", str(leg_ps)]
+  out = subprocess.run(cmd, capture_output=True, text=True)
+  return float(out.stdout.split()[0]), out.stderr
+
+truth_short = float(np.trapezoid(dvdl(lam_short), lam_short))
+w_stretch, _ = integrate_legps(short_path, 0.0, U_SPLIT)
+w_clock, err_short = integrate_legps(short_path, 0.0, U_SPLIT, LEG_PS)
+check("--leg-ps integrates the span actually recorded",
+      abs(w_clock - truth_short) < 1e-6, "%.4f" % w_clock)
+check("without it the ramp is stretched",
+      abs(w_stretch / truth_short - LEG_PS / REC_PS) < 0.002,
+      "%.4f, i.e. %.4fx" % (w_stretch, w_stretch / truth_short))
+check("and a short leg says so on stderr", "short of" in err_short)
+w_even, err_even = integrate_legps(os.path.join(work, "A.xvg"), 0.0, U_SPLIT, 15000.0)
+check("--leg-ps changes nothing when the rows reach the last step",
+      abs(w_even - WA) < 1e-9 and "short of" not in err_even)
 
 # The spans job_fe.run passes come out of the mdps, so the mdps must say what the
 # protocol says. Checked on the shipped set rather than a copy.
@@ -269,6 +306,54 @@ check("the joint CI is not the quadrature of the stage CIs",
 check("dG_bind and its CI are finite",
       np.isfinite(col("STAGED", "dGbind_bar")) and
       np.isfinite(col("STAGED", "dGbind_bar_CI")))
+
+#------------------------------------------------------
+# 3. the completeness gate covers every work in the row
+#------------------------------------------------------
+#
+# job_fe.run decides a cycle is finished, writes its .done marker and lets the
+# structure archive on the strength of this one awk expression. It used to check
+# fields 3-8, which covered the whole of a 9-field row and then silently stopped
+# covering the last four works when the ramp was split and the row grew to 13. A
+# cycle that lost its rebinding stage A was marked complete, counted toward the
+# requested total, and then dropped by read_works for those very NaNs, which
+# loses it for good once the structure is tarred. The gate is extracted from the
+# script itself rather than restated here, so this cannot pass against a copy.
+
+print("")
+print("3. the cycle-completeness gate")
+
+job = open(os.path.join(REPO, "job_fe.run")).read()
+m = re.search(r"complete_row\(\)\s*\{(.*?)\n\s*\}", job, re.S)
+nf = re.search(r"^FE_RESULT_NF=(\d+)", job, re.M)
+check("complete_row() and FE_RESULT_NF are both defined", bool(m) and bool(nf))
+
+if m and nf:
+  awk_body = m.group(1)
+  awk_src = re.search(r"'(.*?)'", awk_body, re.S).group(1)
+  width = int(nf.group(1))
+  check("the declared width matches the writer",
+        width == 13, "FE_RESULT_NF=%d" % width)
+
+  def gate(row):
+    p = os.path.join(work, "row.gs")
+    open(p, "w").write(row + "\n")
+    return subprocess.run(["awk", "-v", "want=%d" % width, awk_src, p]).returncode == 0
+
+  full = "X 1 " + " ".join("%g" % (i + 1) for i in range(10)) + " 1.5"
+  check("a complete row is accepted", gate(full))
+  check("a NaN RMSD alone is still accepted",
+        gate("X 1 " + " ".join("%g" % (i + 1) for i in range(10)) + " NaN"))
+  # Every work position, including the four the old window could not see.
+  for pos in range(3, 3 + 10):
+    f = full.split()
+    f[pos - 1] = "NaN"
+    check("NaN in field %-2d is rejected%s"
+          % (pos, "  (outside the old 3-8 window)" if pos > 8 else ""),
+          not gate(" ".join(f)))
+  check("a legacy 9-field row is recomputed", not gate("X 1 1 2 3 4 5 6 1.5"))
+  check("a truncated row is recomputed",
+        not gate("X 1 1 2 3 4 5 6 7 8 9 10"))
 
 shutil.rmtree(work, ignore_errors=True)
 

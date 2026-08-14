@@ -120,9 +120,16 @@ def incomplete_cycles(rundir=".", resultsdir="results_fe.d"):
   """[(struct_id, cycle), ...] whose row exists but has a non-numeric work.
 
   Mirrors the completeness rule job_fe.run uses to decide whether to write a
-  .done marker: fields 3-8 are the six works and must all be numeric. Field 9 is
-  the rebinding RMSD, which is diagnostic only -- a cycle whose RMSD could not be
-  computed is still a valid result."""
+  .done marker: every field from the third to the second-last is a work and must
+  be numeric. The LAST field is the rebinding RMSD, which is diagnostic only, so a
+  cycle whose RMSD could not be computed is still a valid result.
+
+  The range is derived rather than written out. It was `f[2:8]`, which matched the
+  9-field row it was written for and then silently stopped covering the last four
+  works when the unbinding ramp was split and the row grew to 13: a cycle that
+  lost its whole rebinding stage A looked complete here and was never queued for
+  repair. Deriving it means the next change to the row width cannot reintroduce
+  that. Rows narrower than the pre-split minimum are ignored as unparseable."""
   out = []
   for path in sorted(glob.glob(os.path.join(rundir, resultsdir, "*.gs"))):
     try:
@@ -130,7 +137,7 @@ def incomplete_cycles(rundir=".", resultsdir="results_fe.d"):
         f = line.split()
         if len(f) < 8 or line.lstrip().startswith("#"):
           continue
-        works = f[2:8]
+        works = f[2:-1]
         if any(w.lower() == "nan" for w in works):
           out.append((f[0], f[1]))
     except OSError:

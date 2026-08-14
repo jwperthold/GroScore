@@ -109,7 +109,7 @@ Each cycle's work values only describe the intended binding event if the push le
 | Engine | Reference | Query | Written to |
 |--------|-----------|-------|------------|
 | `job.run` (classic) | `npt_c<N>.gro` | `bindrev_<2N>.gro` | 3rd column of `results_<2N>.gs` |
-| `job_fe.run` (FE) | `npt_c<N>.gro` | `bindrev_<N>.gro` | 9th column of `results_fe.d/<id>_c<N>.gs` |
+| `job_fe.run` (FE) | `npt_c<N>.gro` | `bindrevA_<N>.gro` | last column of `results_fe.d/<id>_c<N>.gs` |
 
 Both frames are made whole, reduced to the `Protein` group and image-corrected three ways each (self-fix, `pbc cluster`, combined); the minimum of the 3×3 RMSD grid is taken, so a chain sitting in the wrong periodic image cannot fake a large value. Values are always computed and never abort a run — `groscore.py` / `groscore_fe.py` summarise them, add `RMSD_mean_A` / `RMSD_max_A` columns to the score files, and flag structures above `--rmsd-warn` (default 10 Å) as `HIGH_RMSD`. A missing or failed measurement is recorded as `nan` and changes nothing.
 

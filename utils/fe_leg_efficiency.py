@@ -134,7 +134,12 @@ def read_works():
     the legacy work. STAGED collects which rows were genuinely staged."""
     out = {}
     pat = os.path.join(args.resultsdir, "%s_c*.gs" % args.struct)
-    for path in sorted(glob.glob(pat)) + ["results_fe.gs"]:
+    # Legacy results_fe.gs FIRST, per-cycle files last, because the last writer of
+    # a cycle wins. groscore_fe.read_works resolves the same collision the same
+    # way; read in the other order, a stale pre-split row left in results_fe.gs
+    # would override its own repaired per-cycle file and silently disable the
+    # staged analysis in this tool alone.
+    for path in ["results_fe.gs"] + sorted(glob.glob(pat)):
         if not os.path.isfile(path):
             continue
         for line in open(path):
@@ -400,13 +405,31 @@ else:
 # the switch and no amount of equilibration up front will remove it.
 
 W_intro = np.array([works[c][0] for c in ks])
-W_unb = np.array([SIGN_PULL_FWD * works[c][1] + works[c][2] for c in ks])
+# The WHOLE unbinding ramp, both stages, whatever --leg is being analysed: this
+# section is about two different legs of the same cycle, not about the selected
+# one, and the quantity named W_unbind has to be the quantity that is labelled.
+# Slots 1,2 alone were the whole ramp before the split and became stage A after
+# it, silently dropping stage B; summing 1,2,3,4 is correct on both formats,
+# since read_works widens a legacy row with zeros in the stage-B slots.
+W_unb = np.array([SIGN_PULL_FWD * (works[c][1] + works[c][3])
+                  + works[c][2] + works[c][4] for c in ks])
 if n >= 4:
+    r_unb = np.corrcoef(W_intro, W_unb)[0, 1]
     print("")
-    print("-- independent legs of the same cycle")
-    print("   corr(W_intro, W_unbind) = %+.2f   (near zero: the spread is made during"
-          % np.corrcoef(W_intro, W_unb)[0, 1])
-    print("   the switch, not inherited from the starting structure)")
+    print("-- independent legs of the same cycle (whole ramp, not just --leg %s)"
+          % args.leg)
+    print("   corr(W_intro, W_unbind) = %+.2f" % r_unb)
+    # The conclusion is drawn from the number rather than asserted alongside it.
+    # It used to be printed unconditionally, so a correlation that contradicted
+    # it still read as evidence for it.
+    if abs(r_unb) < 0.3:
+        print("   Near zero: the spread is made during the switch, not inherited")
+        print("   from the starting structure, so equilibrating longer up front")
+        print("   will not narrow the work distribution.")
+    else:
+        print("   NOT near zero: the cycles differ partly by where they started,")
+        print("   so some of the spread is inherited and a longer bound-state")
+        print("   equilibration (npt_fe) could narrow it.")
 
 # ---- 4. what each lever costs ------------------------------------------------
 
