@@ -164,6 +164,7 @@ elif _cfg.get("numruns") != str(args.numruns):
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
 from local_runner import launch_local, print_local_status
+import estimators as est
 
 RT = 0.00831446261815324 * args.temp  # kJ/mol
 
@@ -249,7 +250,9 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
   r = dict(n=ncyc,
            intro_avg=nan, intro_avg_ci=nan, intro_cgi=nan, intro_cgi_ci=nan,
            unb_avg=nan, unb_avg_ci=nan, unb_cgi=nan, unb_cgi_ci=nan,
-           bind_avg=nan, bind_avg_ci=nan, bind_cgi=nan, bind_cgi_ci=nan)
+           bind_avg=nan, bind_avg_ci=nan, bind_cgi=nan, bind_cgi_ci=nan,
+           intro_bar=nan, intro_bar_ci=nan, unb_bar=nan, unb_bar_ci=nan,
+           bind_bar=nan, bind_bar_ci=nan, intro_bar_note="", unb_bar_note="")
   if ncyc == 0:
     return r
 
@@ -262,6 +265,21 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
     r['unb_cgi']   = float(_stream_cgi(Wf[None, :], Wv[None, :])[0])
     if np.isfinite(r['intro_cgi']) and np.isfinite(r['unb_cgi']):
       r['bind_cgi'] = -(r['intro_cgi'] + r['unb_cgi'] + dG_release)
+
+  # BAR, the headline estimator. Both streams pass their reverse works RAW: that
+  # is estimators.py's convention and this file's, so unlike _stream_avg and
+  # _stream_cgi, which negate internally, nothing is flipped here.
+  #
+  # The overlap guard inside est.bar runs before the solve and returns NaN plus a
+  # reason rather than a number, because a degenerate BAR is indistinguishable
+  # from a good one by inspection: at the dissipation the unbinding leg currently
+  # runs at, the solver returns a confident value with the wrong sign. A leg with
+  # no overlap therefore has no BAR column at all, which is the intended outcome.
+  r['intro_bar'], r['intro_bar_note'] = est.bar(Wi, Wr, RT)
+  r['unb_bar'],   r['unb_bar_note']   = est.bar(Wf, Wv, RT)
+  if np.isfinite(r['intro_bar']) and np.isfinite(r['unb_bar']):
+    r['bind_bar'] = -(r['intro_bar'] + r['unb_bar'] + dG_release)
+
   if ncyc < 2:
     return r
 
@@ -1292,27 +1310,52 @@ def score(structids):
   rows_valid = [row for row in rows if row[1] is not None and np.isfinite(row[1]['bind_avg'])]
   rows_valid.sort(key=lambda row: row[1]['bind_avg'])
 
-  # dG_bind, dG_intro and dG_unbind are each reported under BOTH the average and
-  # CGI estimators, each with its own 95% CI. The dG_bind CIs come from the joint
-  # cycle bootstrap (they include the dG_intro/dG_unbind covariance, so they are
-  # NOT simply the quadrature of the component CIs).
+  # dG_bind, dG_intro and dG_unbind are each reported under all three estimators,
+  # each with its own 95% CI. BAR leads because it is the headline: it makes no
+  # distributional assumption, where CGI assumes both work histograms are Gaussian
+  # and reads dG off where they cross. avg and CGI are retained so the three can
+  # be compared per structure, which is the cheapest available check on whether a
+  # leg has converged. A BAR column reading nan is not a failure to compute; it
+  # means the leg had no forward/reverse overlap, and Note says which one.
+  # The dG_bind CIs come from the joint cycle bootstrap (they include the
+  # dG_intro/dG_unbind covariance, so they are NOT the quadrature of the
+  # component CIs).
   # RMSD_mean/RMSD_max are the rebinding sanity check (Angstrom); a structure with
   # any cycle above --rmsd-warn additionally carries HIGH_RMSD in Note.
-  cols = ("dGbind_avg  dGbind_avg_CI  pKD_avg  pKD_avg_CI  dGbind_cgi  dGbind_cgi_CI  pKD_cgi  pKD_cgi_CI  "
-          "dG_intro_avg  dG_intro_avg_CI  dG_intro_cgi  dG_intro_cgi_CI  "
-          "dG_unbind_avg  dG_unbind_avg_CI  dG_unbind_cgi  dG_unbind_cgi_CI  "
+  #
+  # N_NUMERIC is DERIVED, not written out. It used to be a literal 19 repeated in
+  # the pending-row branch below, which silently had to be kept in step with this
+  # string by hand.
+  cols = ("dGbind_bar  dGbind_bar_CI  pKD_bar  pKD_bar_CI  "
+          "dGbind_avg  dGbind_avg_CI  pKD_avg  pKD_avg_CI  "
+          "dGbind_cgi  dGbind_cgi_CI  pKD_cgi  pKD_cgi_CI  "
+          "dG_intro_bar  dG_intro_bar_CI  dG_intro_avg  dG_intro_avg_CI  dG_intro_cgi  dG_intro_cgi_CI  "
+          "dG_unbind_bar  dG_unbind_bar_CI  dG_unbind_avg  dG_unbind_avg_CI  dG_unbind_cgi  dG_unbind_cgi_CI  "
           "dG_release  RMSD_mean_A  RMSD_max_A  Ncycles  Note")
+  N_NUMERIC = len(cols.split()) - 2          # every column but Ncycles and Note
   with open("scores_fe.gs", "w") as f:
     f.write("# GroScore-FE absolute binding free energies (kJ/mol; pKD dimensionless, T=%.1f K)\n" % args.temp)
     f.write("# Structure_ID  " + "  ".join(cols.split()) + "\n")
     for sid, r, gr, n, note in rows:
       if r is None:
-        f.write("\t".join([sid] + ["nan"] * 19 + [str(n), note or ""]) + "\n")
+        f.write("\t".join([sid] + ["nan"] * N_NUMERIC + [str(n), note or ""]) + "\n")
       else:
-        vals = [cell(r['bind_avg']), cell(r['bind_avg_ci']), cell(pkd(r['bind_avg'])), cell(pkd_ci(r['bind_avg_ci'])),
+        # A BAR leg that was suppressed says so in Note, appended to whatever is
+        # already there, comma-joined so a single grep finds either token.
+        bar_notes = []
+        if r.get('intro_bar_note'):
+          bar_notes.append(r['intro_bar_note'] + "_INTRO")
+        if r.get('unb_bar_note'):
+          bar_notes.append(r['unb_bar_note'] + "_UNBIND")
+        if bar_notes:
+          note = ",".join(([note] if note else []) + bar_notes)
+        vals = [cell(r['bind_bar']), cell(r['bind_bar_ci']), cell(pkd(r['bind_bar'])), cell(pkd_ci(r['bind_bar_ci'])),
+                cell(r['bind_avg']), cell(r['bind_avg_ci']), cell(pkd(r['bind_avg'])), cell(pkd_ci(r['bind_avg_ci'])),
                 cell(r['bind_cgi']), cell(r['bind_cgi_ci']), cell(pkd(r['bind_cgi'])), cell(pkd_ci(r['bind_cgi_ci'])),
+                cell(r['intro_bar']), cell(r['intro_bar_ci']),
                 cell(r['intro_avg']), cell(r['intro_avg_ci']),
                 cell(r['intro_cgi']), cell(r['intro_cgi_ci']),
+                cell(r['unb_bar']), cell(r['unb_bar_ci']),
                 cell(r['unb_avg']), cell(r['unb_avg_ci']),
                 cell(r['unb_cgi']), cell(r['unb_cgi_ci']),
                 cell(gr), cell(r['rmsd_mean']), cell(r['rmsd_max'])]
