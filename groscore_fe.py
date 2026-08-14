@@ -1229,6 +1229,7 @@ def plot_works(legs, stats):
   TITLES = {"restraints": "bound-state restraints (dhdl)",
             "unbind A":   "unbinding stage A (pull + dhdl)",
             "unbind B":   "unbinding stage B (pull + dhdl)",
+            "unbind A+B": "whole ramp, stages summed (pull + dhdl)",
             "unbind/rebind": "unbinding / rebinding (pull + dhdl)"}
 
   by_leg = {(sid, name): st for sid, name, st in stats}
@@ -1496,11 +1497,17 @@ def score(structids):
       # free energy the two stage panels already show, its histograms are expected
       # to be far apart, and its numbers still appear in the table below as the
       # baseline the split is measured against.
+      # "unbind A+B" is NOT a leg: no simulation of that name runs. It is the two
+      # stages added together, i.e. the whole ramp treated as the single process
+      # it used to be, and it is what dG_unbind_1s is computed from. It is named
+      # for the arithmetic rather than for a leg so the table cannot be read as
+      # reporting a simulation that no longer exists. On an unstaged run the ramp
+      # really is one leg, and there it keeps the leg's name.
       chan = [("restraints", W_intro, W_remove, True)]
       if staged:
         chan += [("unbind A", WA_f, WA_r, True),
                  ("unbind B", WB_f, WB_r, True),
-                 ("unbind/rebind", Wtot_f, Wtot_r, False)]
+                 ("unbind A+B", Wtot_f, Wtot_r, False)]
       else:
         chan.append(("unbind/rebind", Wtot_f, Wtot_r, True))
       legs.append((sid, chan))
