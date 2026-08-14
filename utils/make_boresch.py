@@ -480,11 +480,13 @@ def tri_area(p, q, r):
 TRAJ_SKIP_PS = 1000.0   # discard as equilibration before measuring
 R_GROUP = 0.70          # nm, radius of a candidate group about its seed CA
 N_MIN_ATOMS = 18        # backbone-only, so 18 atoms is 6 residues
-# Escalating ceilings on a group's COM RMSF, in nm. The measured path is tried at
-# each in turn before the burial heuristic is considered at all, because burial
-# has no fluctuation information whatsoever and a slightly noisy measured group
-# still beats it. The relative frame rotation, not eps, is the acceptance
-# criterion. Replaces a single EPS_MAX = 0.045.
+# Escalating ceilings on a group's COM RMSF, in nm, tried IN ORDER, first success
+# wins. eq.32 assumes the anchor points sit in rigid bodies, so this is a physical
+# requirement and not a tuning knob: the tightest ceiling that yields an anchor
+# set is the right one, and each later entry is a concession to a structure that
+# cannot supply groups that quiet. The burial heuristic is only reached when every
+# entry fails, since burial carries no fluctuation information at all.
+# Replaces a single EPS_MAX = 0.045.
 EPS_LADDER = (0.045, 0.060, 0.080)
 ARM_MIN = 0.60          # nm, shortest useful lever arm
 MIN_SIN = 0.35          # sin of the angle between a triad's two edges
@@ -841,30 +843,44 @@ def try_measured_anchors():
   # above the cut is still better served by its own quietest measured groups than
   # by the burial heuristic, which has no fluctuation information at all.
   #
-  # The rotation is what actually decides quality, so EVERY round runs and the
-  # best rotation wins. Stopping at the first round that merely clears ROT_MAX_DEG
-  # is tempting and wrong: on 2KTF the disjoint split leaves the ligand only one
-  # surviving triad at eps_max 0.045, and a looser threshold admits more candidate
-  # groups, hence more triads to choose between, which can only help the minimum.
-  # A looser eps does not mean floppier anchors are used, only that more are
-  # considered; the ones that win are still the ones with the least rotation.
+  # Serial: take the FIRST round that yields an anchor set and stop.
+  #
+  # Do not be tempted to run every round and keep the one with the least frame
+  # rotation. eq.32 derives the standard-state term for anchor points held fixed
+  # in two RIGID bodies, so a group's COM RMSF is a direct measure of how well the
+  # derivation applies, not merely a knob controlling how many candidates there
+  # are. Relative frame rotation is a different quantity: two floppy triads that
+  # happen to co-rotate score well on it while still breaking the rigid-body
+  # premise underneath the analytical term. So the tightest threshold that works
+  # wins, and a looser one is only ever a concession to a structure that cannot
+  # supply rigid enough groups.
+  #
+  # It is also much cheaper. A round is seconds; running the whole ladder and
+  # scoring every result cost 2m32s on 2KTF, and the extra rounds are wasted work
+  # on every structure that succeeds at 0.045.
+  #
+  # The concrete cost of choosing this way, measured on 2KTF: 0.045 accepts a set
+  # rotating 6.6 deg where 0.060 would have found 4.5 deg. Both clear ROT_MAX_DEG,
+  # and the 0.045 groups are the more rigid ones, which is the trade being made
+  # deliberately.
   chosen, chosen_eps = None, None
   for eps_max in EPS_LADDER:
     sys.stderr.write("make_boresch: --- anchor search at eps_max %.3f nm ---\n"
                      % eps_max)
     r = search(eps_max)
-    if r is None:
-      continue
-    sys.stderr.write("make_boresch: eps_max %.3f gives %.1f deg\n" % (eps_max, r[0]))
-    if chosen is None or r[0] < chosen[0]:
+    if r is not None:
       chosen, chosen_eps = r, eps_max
+      break
+    sys.stderr.write("make_boresch: eps_max %.3f found nothing, relaxing\n"
+                     % eps_max)
   if chosen is None:
     sys.stderr.write("make_boresch: no measured anchor set at any eps_max in %s, "
                      "falling back to the burial heuristic\n" % (EPS_LADDER,))
     return None
 
   rot, anch, g1, g2 = chosen
-  sys.stderr.write("make_boresch: accepted the eps_max %.3f round\n" % chosen_eps)
+  sys.stderr.write("make_boresch: accepted the first round that succeeded, "
+                   "eps_max %.3f\n" % chosen_eps)
   sys.stderr.write("make_boresch: selected anchors give %.1f deg RMS relative "
                    "frame rotation over the equilibration (limit %.1f)\n"
                    % (rot, ROT_MAX_DEG))
