@@ -40,7 +40,7 @@ tc-grps                  = Protein Non-Protein
 tau_t                    = 0.1  0.1
 ref_t                    = 310  310
 
-pcoupl                   = Parrinello-Rahman
+pcoupl                   = C-rescale
 pcoupltype               = isotropic
 tau_p                    = 2.0
 ref_p                    = 1.0
