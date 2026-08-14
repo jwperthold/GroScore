@@ -1180,14 +1180,44 @@ k_inter = 25000.0 / numinterdis if numinterdis > 0 else 0.0
 def boresch_group_ndx(role):
   return "bor_%s" % role
 
-def build_coords(family, direction):
+def leg_ps(filename):
+  """Length of a leg in ps, read from the mdp it is about to be written into.
+
+  The unbinding leg is split into stages of different length, so each stage needs
+  its own pull rate. Deriving that rate from the mdp's own nsteps*dt means the
+  rate and the leg length cannot drift apart: they are the same number by
+  construction, rather than two constants that have to be kept in step by hand.
+  Returns None if the file is unreadable, and the caller then refuses to write."""
+  try:
+    ns = dt = None
+    for line in open(filename):
+      k = line.split("=")[0].strip()
+      if k == "nsteps":
+        ns = int(float(line.split("=")[1].split(";")[0]))
+      elif k == "dt":
+        dt = float(line.split("=")[1].split(";")[0])
+    return None if (ns is None or dt is None) else ns * dt
+  except (OSError, ValueError, IndexError):
+    return None
+
+
+def build_coords(family, direction, u_from=None, u_to=None, ps=None):
   """Return (pull_groups, coords) for a leg.
 
   family    : 'unbind'  -> interface(moving, k->0) + EN(fixed) + Boresch(0->full)
               'bound'   -> interface(fixed, 0->full) + EN(fixed), no Boresch
-  direction : 'fwd' (init at bound geometry) or 'rev' (init at unbound geometry,
-              rate negated). For 'bound' both use rate 0; direction only flips
-              which endpoint init sits at (irrelevant, kept for symmetry).
+  direction : 'fwd' or 'rev'. With u_from/u_to given this only selects the
+              family's endpoint conventions; the geometry comes from u_from/u_to.
+
+  u_from/u_to are the fraction of --pull-dist the reference has travelled at the
+  start and end of THIS stage, so a stage covering 0.3 -> 1.0 starts its moving
+  coordinates already 0.3*pull_dist out and moves the remaining 0.7 over `ps`.
+  pull-coordN-start = no makes init absolute, so this offset is mandatory: without
+  it stage B would jump back to the bound geometry. u_from == u_to gives rate 0,
+  which is what makes a hold contribute no work.
+
+  Omitting them reproduces the old single-stage behaviour (0 -> 1 forward,
+  1 -> 0 reverse) at the constant --pull-rate.
   """
   pull_groups = []          # list of ndx group names (index = position+1)
   group_index = {}          # ndx name -> pull-group index
@@ -1200,11 +1230,19 @@ def build_coords(family, direction):
 
   coords = []
   sign = 1.0 if direction == "fwd" else -1.0
-  off = 0.0 if direction == "fwd" else args.pull_dist   # rev starts at unbound
+  if u_from is None:                       # legacy single-stage behaviour
+    u_from = 0.0 if direction == "fwd" else 1.0
+    u_to = 1.0 if direction == "fwd" else 0.0
+    stage_rate = sign * args.pull_rate
+  else:
+    # Rate follows from the distance this stage covers and the time it is given.
+    stage_rate = 0.0 if (u_to == u_from or not ps) else \
+                 (u_to - u_from) * args.pull_dist / ps
+  off = u_from * args.pull_dist            # where this stage's references start
 
   if family == "unbind":
     # 1) Interface restraints FIRST (moving) so pull integrator sums them first.
-    rate = sign * args.pull_rate
+    rate = stage_rate
     for i, j, dist in interdis:
       g1 = gidx("a_%d" % prot1_data[i][3])
       g2 = gidx("a_%d" % prot2_data[j][3])
@@ -1306,11 +1344,53 @@ def write_pull_block(filename, pull_groups, coords):
       f.write("pull-coord%d-kB          = %.8f\n" % (ci, c["kB"]))
       f.write("\n")
 
-# Unbinding / rebinding leg
-pg_fwd, co_fwd = build_coords("unbind", "fwd")
-pg_rev, co_rev = build_coords("unbind", "rev")
-write_pull_block("bind_fe.mdp", pg_fwd, co_fwd)     # forward: unbinding (lambda 0->1)
-write_pull_block("bindrev_fe.mdp", pg_rev, co_rev)  # reverse: rebinding (lambda 1->0)
+# Unbinding / rebinding leg, split at u = U_SPLIT.
+#
+# The rupture carries 75% of the leg's dissipation in the first 30% of the
+# distance, so stage A is given most of the time and stage B the rest. Each stage
+# gets its own rate, derived from its own mdp's nsteps*dt so the two cannot drift
+# apart, and its own init offset, because pull-coordN-start = no makes init
+# absolute and stage B has to resume where stage A stopped.
+#
+# The 1 ns holds at U_SPLIT carry rate 0 and delta-lambda 0, so they contribute no
+# work. They exist so the two stages can be estimated separately: adding their
+# per-cycle works would rebuild the unstaged distribution and gain nothing.
+# Unlike the unbound hold below, holdmid KEEPS its interface coordinates, because
+# at lambda = U_SPLIT their force constant is still (1 - U_SPLIT) of full and they
+# are doing real work holding the partly separated interface.
+U_SPLIT = 0.3
+STAGES = [
+    ("bindfwdA_fe.mdp",   0.0,      U_SPLIT),
+    ("holdmid_fe.mdp",    U_SPLIT,  U_SPLIT),
+    ("bindfwdB_fe.mdp",   U_SPLIT,  1.0),
+    ("bindrevB_fe.mdp",   1.0,      U_SPLIT),
+    ("holdmidrev_fe.mdp", U_SPLIT,  U_SPLIT),
+    ("bindrevA_fe.mdp",   U_SPLIT,  0.0),
+]
+stage_rates = {}
+for _name, _u0, _u1 in STAGES:
+  _ps = leg_ps(_name)
+  if _ps is None:
+    abort("STAGE_MDP_MISSING",
+          "cannot read nsteps/dt from %s, so its pull rate is undefined" % _name)
+  _dir = "fwd" if _u1 >= _u0 else "rev"
+  _pg, _co = build_coords("unbind", _dir, u_from=_u0, u_to=_u1, ps=_ps)
+  write_pull_block(_name, _pg, _co)
+  stage_rates[_name] = (0.0 if _u1 == _u0
+                        else (_u1 - _u0) * args.pull_dist / _ps)
+
+# Each stage's rate is recorded next to the geometry, for the same reason the
+# single rate always was: integrate.py turns the time integral of the pull force
+# into work by multiplying by the rate, so a stage integrated at another stage's
+# rate is silently rescaled. With one rate that could be a constant; with three it
+# cannot. Appended rather than written above because the rates are only known once
+# each stage's mdp has been read.
+with open("boresch_analytical.gs", "a") as f:
+  f.write("u_split               %.4f\n" % U_SPLIT)
+  for _name, _u0, _u1 in STAGES:
+    f.write("stage_rate_nm_ps  %-20s %.8f  # u %.2f -> %.2f over %g ps\n"
+            % (_name.replace("_fe.mdp", "").replace(".mdp", ""),
+               stage_rates[_name], _u0, _u1, leg_ps(_name) or 0.0))
 
 # Hold leg at the unbound restrained state (lambda = 1): only the Boresch
 # coordinates, with zero rate. job_fe.run pins init-lambda = 1, delta-lambda = 0.
@@ -1447,7 +1527,10 @@ def verify_pull_block(mdp):
     shutil.rmtree(work, ignore_errors=True)
 
 
-_read = verify_pull_block("bind_fe.mdp")
+# bindfwdA is the block whose inits ARE the bound references (u_from = 0), so it
+# is the only stage the readback can compare against the reference structure. Any
+# later stage legitimately sits u_from*pull_dist away and would false-positive.
+_read = verify_pull_block("bindfwdA_fe.mdp")
 if _read is False:
   abort("PULL_READBACK_FAILED",
         "could not read the emitted pull block back through GROMACS")

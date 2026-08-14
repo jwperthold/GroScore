@@ -1,12 +1,11 @@
-; bind_fe.mdp - FE unbinding leg (forward). Interface restraints fade out
-; (k -> kB=0) while Boresch restraints fade in (k=0 -> kB); the interface and
-; Boresch-r references move outward at pull-rate to +1.0 nm. The full pull block
-; (groups + coords) is appended by make_boresch.py.
+; holdmidrev_fe.mdp - 1 ns equilibrium hold at u = 0.3 on the way back, so
+; stage A reversed starts from an equilibrated lambda = 0.3 ensemble rather
+; than from wherever stage B reversed happened to end.
 ;
-; nsteps 5000000 * dt 0.004 = 20000 ps.
+; nsteps 250000 * dt 0.004 = 1000 ps.
 
 integrator               = md
-nsteps                   = 5000000
+nsteps                   = 250000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -16,7 +15,7 @@ compressed-x-precision   = 1000
 nstvout                  = 0
 nstfout                  = 0
 nstenergy                = 2000
-nstlog                   = 10000
+nstlog                   = 2000
 nstcalcenergy            = 100
 
 comm-mode                = linear
@@ -24,21 +23,23 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = all-bonds
+constraints              = h-bonds
 lincs_iter               = 1
 lincs_order              = 6
 
-cutoff-scheme            = verlet
+cutoff-scheme            = Verlet
 ns_type                  = grid
-rlist                    = 1.4
-rcoulomb                 = 1.4
-rvdw                     = 1.4
+rlist                    = 1.2
+rcoulomb                 = 1.2
+rvdw                     = 1.2
+rvdw-switch              = 1.0
 
-vdwtype                  = cut-off
-vdw-modifier             = none
+vdwtype                  = cutoff
+vdw-modifier             = force-switch
 
 coulombtype              = PME
-coulomb-modifier         = none
+
+DispCorr                 = no
 
 tcoupl                   = V-rescale
 tc-grps                  = Protein Non-Protein
@@ -58,8 +59,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 0
-delta-lambda             = 2.00000000e-07
+init-lambda              = 0.3
+delta-lambda             = 0
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes
@@ -73,4 +74,4 @@ pull-print-com2          = no
 pull-print-ref-value     = no
 pull-print-components    = no
 pull-nstxout             = 0
-pull-nstfout             = 500
+pull-nstfout             = 0

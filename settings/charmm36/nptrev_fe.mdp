@@ -1,10 +1,13 @@
 ; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1)
 ; between the unbinding and rebinding legs. No switching (delta-lambda = 0).
+; 3 ns, down from 5: the Boresch channel equilibrates inside 1 ns (drift across
+; the old 5 ns was 0.031 +- 1.87 kJ/mol, p = 0.91) and the interface kept
+; drifting away from the rebinding reference for as long as the hold ran.
 ;
-; nsteps 1250000 * dt 0.004 = 5000 ps.
+; nsteps 750000 * dt 0.004 = 3000 ps.
 
 integrator               = md
-nsteps                   = 1250000
+nsteps                   = 750000
 dt                       = 0.004
 mass-repartition-factor  = 3
 

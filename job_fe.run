@@ -177,18 +177,18 @@ MDP_DIR="${GROSCORE_ROOT}/settings/$FORCEFIELD"
 # had to agree with, which is the same shape as the two temperature traps already
 # found in the scoring scripts. Deriving it removes the constant instead of
 # checking it.
-REF_T=$(awk -F= '/^ *ref_t *=/{n=split($2,a," "); print a[1]; exit}' $MDP_DIR/bind_fe.mdp 2>/dev/null)
+REF_T=$(awk -F= '/^ *ref_t *=/{n=split($2,a," "); print a[1]; exit}' $MDP_DIR/bindfwdA_fe.mdp 2>/dev/null)
 # Both tc-grps must be at the same temperature: a two-bath setup would make "the"
 # simulation temperature ambiguous and eq.32 wrong for at least one of them.
-REF_T_ALL=$(awk -F= '/^ *ref_t *=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp 2>/dev/null)
+REF_T_ALL=$(awk -F= '/^ *ref_t *=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' $MDP_DIR/bindfwdA_fe.mdp 2>/dev/null)
 if [[ -n "$REF_T_ALL" ]] && [[ $(echo "$REF_T_ALL" | tr ' ' '\n' | grep -c . ) -gt 1 ]]; then
   if [[ $(echo "$REF_T_ALL" | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l) -ne 1 ]]; then
-    echo "WARNING: $MDP_DIR/bind_fe.mdp couples groups to different temperatures ($REF_T_ALL);"
+    echo "WARNING: $MDP_DIR/bindfwdA_fe.mdp couples groups to different temperatures ($REF_T_ALL);"
     echo "  using $REF_T K for the analytical Boresch term, which is right for at most one of them."
   fi
 fi
 if ! [[ "$REF_T" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  echo "WARNING: could not read ref_t from $MDP_DIR/bind_fe.mdp; assuming 310 K for the"
+  echo "WARNING: could not read ref_t from $MDP_DIR/bindfwdA_fe.mdp; assuming 310 K for the"
   echo "  analytical Boresch term. If the legs do not run at 310 K, dG_release is wrong."
   REF_T=310
 fi
@@ -586,7 +586,7 @@ with open('$CUTOUT_PDB', 'w') as f:
       # Its atom numbering is identical to the production system for atoms 1..N of
       # the solute, since only the solvent count differs, and make_boresch reads
       # geometry from -f and fluctuations from --traj as separate inputs.
-      PROBEPAD=$(awk -v r="$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp)" \
+      PROBEPAD=$(awk -v r="$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bindfwdA_fe.mdp)" \
                      'BEGIN{ if (r+0 <= 0) r = 1.0; printf "%.2f", r/2 + 0.5 }')
       if [[ ! -f boxpad.gs ]]; then
         echo "Probe pass: equilibrating in a small box (-d $PROBEPAD) to measure the production box."
@@ -712,7 +712,7 @@ with open('$CUTOUT_PDB', 'w') as f:
         # before this change. It is the old 2KTF-derived constant and is a guess
         # for any other complex, which is the whole reason for the probe.
         BOXPAD_FALLBACK=1.8
-        RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bind_fe.mdp)
+        RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bindfwdA_fe.mdp)
         [[ -z "$RVDW" ]] && RVDW=1.0
         FLOOR=$(awk -v r="$RVDW" -v p="$PULL_DIST" 'BEGIN{printf "%.2f", r/2 + p/2}')
         BOXPAD=""
@@ -881,7 +881,7 @@ with open('$CUTOUT_PDB', 'w') as f:
   # from the equilibrated reference structure. make_boresch.py appends the full
   # pull block to each leg .mdp and emits the analytical Boresch term.
   echo "Generating FE restraints (interface + Boresch + elastic network)."
-  cp $MDP_DIR/bind_fe.mdp $MDP_DIR/bindrev_fe.mdp $MDP_DIR/nptrev_fe.mdp $MDP_DIR/boundfwd.mdp $MDP_DIR/boundrev.mdp ./
+  cp $MDP_DIR/bindfwdA_fe.mdp $MDP_DIR/holdmid_fe.mdp $MDP_DIR/bindfwdB_fe.mdp $MDP_DIR/nptrev_fe.mdp $MDP_DIR/bindrevB_fe.mdp $MDP_DIR/holdmidrev_fe.mdp $MDP_DIR/bindrevA_fe.mdp $MDP_DIR/boundfwd.mdp $MDP_DIR/boundrev.mdp ./
   # Write to a temp name and promote on success. Redirecting straight into
   # numpertres.gs meant a crashed make_boresch.py still created the file the
   # checks below look for, 0 bytes and indistinguishable from a real result.
@@ -937,7 +937,7 @@ with open('$CUTOUT_PDB', 'w') as f:
   [[ -s numpertres.gs ]]         || SETUP_MISSING="$SETUP_MISSING numpertres.gs"
   [[ -s boresch_analytical.gs ]] || SETUP_MISSING="$SETUP_MISSING boresch_analytical.gs"
   [[ -s boresch_anchors.gs ]]    || SETUP_MISSING="$SETUP_MISSING boresch_anchors.gs"
-  for m in bind_fe.mdp bindrev_fe.mdp nptrev_fe.mdp boundfwd.mdp boundrev.mdp; do
+  for m in bindfwdA_fe.mdp holdmid_fe.mdp bindfwdB_fe.mdp nptrev_fe.mdp bindrevB_fe.mdp holdmidrev_fe.mdp bindrevA_fe.mdp boundfwd.mdp boundrev.mdp; do
     grep -q '^pull-ngroups' "$m" 2>/dev/null || SETUP_MISSING="$SETUP_MISSING $m:pull-block"
   done
   if [[ -n "$SETUP_MISSING" ]]; then
@@ -1122,27 +1122,56 @@ fi
       gmx mdrun -nt $nt $GPUOPT -deffnm boundfwd_${cycle} -dhdl boundfwd_${cycle}_dhdl.xvg
     fi
     require_gro boundfwd_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Leg 2: unbinding (interface -> Boresch handoff + separation; pull + dhdl)
-    if [[ ! -f bindfwd_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f bind_fe.mdp -c boundfwd_${cycle}.tpr -t boundfwd_${cycle}.cpt -p topol.top -o bindfwd_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm bindfwd_${cycle} -pf bindfwd_${cycle}_pullf.xvg -dhdl bindfwd_${cycle}_dhdl.xvg
+    # Legs 2a/2b: unbinding, SPLIT at u = 0.3 with an equilibrium hold between.
+    #
+    # 75% of this leg's dissipation happens in the first 0.3 nm, so stage A takes
+    # 15 ns over that 0.3 nm and stage B 5 ns over the remaining 0.7. The hold is
+    # what makes the split worth having: it lets the two stages be estimated
+    # separately, and adding their per-cycle works instead would reproduce the
+    # unstaged distribution exactly. It carries delta-lambda = 0 and pull rate 0,
+    # so it contributes no work. Each stage continues from the previous stage's
+    # checkpoint, so lambda and the pull references stay continuous across the
+    # whole leg.
+    if [[ ! -f bindfwdA_${cycle}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f bindfwdA_fe.mdp -c boundfwd_${cycle}.tpr -t boundfwd_${cycle}.cpt -p topol.top -o bindfwdA_${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt $GPUOPT -deffnm bindfwdA_${cycle} -pf bindfwdA_${cycle}_pullf.xvg -dhdl bindfwdA_${cycle}_dhdl.xvg
     fi
-    require_gro bindfwd_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Hold the unbound, Boresch-restrained state
+    require_gro bindfwdA_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    if [[ ! -f holdmid_${cycle}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f holdmid_fe.mdp -c bindfwdA_${cycle}.tpr -t bindfwdA_${cycle}.cpt -p topol.top -o holdmid_${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt $GPUOPT -deffnm holdmid_${cycle}
+    fi
+    require_gro holdmid_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    if [[ ! -f bindfwdB_${cycle}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f bindfwdB_fe.mdp -c holdmid_${cycle}.tpr -t holdmid_${cycle}.cpt -p topol.top -o bindfwdB_${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt $GPUOPT -deffnm bindfwdB_${cycle} -pf bindfwdB_${cycle}_pullf.xvg -dhdl bindfwdB_${cycle}_dhdl.xvg
+    fi
+    require_gro bindfwdB_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    # Hold the unbound, Boresch-restrained state (3 ns)
     if [[ ! -f nptrev_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f nptrev_fe.mdp -c bindfwd_${cycle}.tpr -t bindfwd_${cycle}.cpt -p topol.top -o nptrev_${cycle} -n index.ndx -maxwarn 10
+      gmx grompp -r emin_solv.gro -f nptrev_fe.mdp -c bindfwdB_${cycle}.tpr -t bindfwdB_${cycle}.cpt -p topol.top -o nptrev_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm nptrev_${cycle}
     fi
     require_gro nptrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Leg 3: rebinding (reverse of unbinding; pull + dhdl)
-    if [[ ! -f bindrev_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f bindrev_fe.mdp -c nptrev_${cycle}.tpr -t nptrev_${cycle}.cpt -p topol.top -o bindrev_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm bindrev_${cycle} -pf bindrev_${cycle}_pullf.xvg -dhdl bindrev_${cycle}_dhdl.xvg
+    # Legs 3b/3a: rebinding, the same split traversed in reverse.
+    if [[ ! -f bindrevB_${cycle}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f bindrevB_fe.mdp -c nptrev_${cycle}.tpr -t nptrev_${cycle}.cpt -p topol.top -o bindrevB_${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt $GPUOPT -deffnm bindrevB_${cycle} -pf bindrevB_${cycle}_pullf.xvg -dhdl bindrevB_${cycle}_dhdl.xvg
     fi
-    require_gro bindrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    require_gro bindrevB_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    if [[ ! -f holdmidrev_${cycle}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f holdmidrev_fe.mdp -c bindrevB_${cycle}.tpr -t bindrevB_${cycle}.cpt -p topol.top -o holdmidrev_${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt $GPUOPT -deffnm holdmidrev_${cycle}
+    fi
+    require_gro holdmidrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
+    if [[ ! -f bindrevA_${cycle}.gro ]]; then
+      gmx grompp -r emin_solv.gro -f bindrevA_fe.mdp -c holdmidrev_${cycle}.tpr -t holdmidrev_${cycle}.cpt -p topol.top -o bindrevA_${cycle} -n index.ndx -maxwarn 10
+      gmx mdrun -nt $nt $GPUOPT -deffnm bindrevA_${cycle} -pf bindrevA_${cycle}_pullf.xvg -dhdl bindrevA_${cycle}_dhdl.xvg
+    fi
+    require_gro bindrevA_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
     # Leg 4: bound-state restraint removal (dhdl only, lambda 1 -> 0)
     if [[ ! -f boundrev_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f boundrev.mdp -c bindrev_${cycle}.tpr -t bindrev_${cycle}.cpt -p topol.top -o boundrev_${cycle} -n index.ndx -maxwarn 10
+      gmx grompp -r emin_solv.gro -f boundrev.mdp -c bindrevA_${cycle}.tpr -t bindrevA_${cycle}.cpt -p topol.top -o boundrev_${cycle} -n index.ndx -maxwarn 10
       gmx mdrun -nt $nt $GPUOPT -deffnm boundrev_${cycle} -dhdl boundrev_${cycle}_dhdl.xvg
     fi
     require_gro boundrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
@@ -1170,8 +1199,9 @@ fi
       NEEDS_RESULT=0
     fi
     if [[ $NEEDS_RESULT -eq 1 ]]; then
-      for w in boundfwd_${cycle}_dhdl bindfwd_${cycle}_pullf bindfwd_${cycle}_dhdl \
-               bindrev_${cycle}_pullf bindrev_${cycle}_dhdl boundrev_${cycle}_dhdl; do
+      for w in boundfwd_${cycle}_dhdl boundrev_${cycle}_dhdl \
+               bindfwdA_${cycle}_pullf bindfwdA_${cycle}_dhdl bindfwdB_${cycle}_pullf bindfwdB_${cycle}_dhdl \
+               bindrevB_${cycle}_pullf bindrevB_${cycle}_dhdl bindrevA_${cycle}_pullf bindrevA_${cycle}_dhdl; do
         [[ ! -f ${w}.xvg && -f ${w}.xvg.gz ]] && gunzip ${w}.xvg.gz
       done
       # Never let a failed integration (crash, missing module, empty output) turn
@@ -1184,13 +1214,47 @@ fi
         [[ -z "$out" ]] && out="NaN"
         printf '%s' "$out"
       }
-      W_intro="NaN"; Wu_pull="NaN"; Wu_dhdl="NaN"; Wr_pull="NaN"; Wr_dhdl="NaN"; W_remove="NaN"
-      [[ -f boundfwd_${cycle}_dhdl.xvg ]] && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd)
-      [[ -f bindfwd_${cycle}_pullf.xvg ]] && Wu_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwd_${cycle}_pullf.xvg -nr $NUMPERTRES -r $PULL_RATE)
-      [[ -f bindfwd_${cycle}_dhdl.xvg ]]  && Wu_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwd_${cycle}_dhdl.xvg --direction fwd)
-      [[ -f bindrev_${cycle}_pullf.xvg ]] && Wr_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrev_${cycle}_pullf.xvg -nr $NUMPERTRES -r $PULL_RATE)
-      [[ -f bindrev_${cycle}_dhdl.xvg ]]  && Wr_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrev_${cycle}_dhdl.xvg --direction rev)
-      [[ -f boundrev_${cycle}_dhdl.xvg ]] && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev)
+      # Each stage is integrated at ITS OWN pull rate, read back from
+      # boresch_analytical.gs. integrate.py turns the time integral of the pull
+      # force into work by multiplying by the rate, so integrating stage B at
+      # stage A's rate would rescale it by 7. One constant used to cover the whole
+      # leg; with a split leg it cannot.
+      rate_of() { awk -v n="$1" '$1=="stage_rate_nm_ps" && $2==n {print ($3<0?-$3:$3); exit}' boresch_analytical.gs; }
+      RATE_A=$(rate_of bindfwdA); RATE_B=$(rate_of bindfwdB)
+      [[ -z "$RATE_A" ]] && RATE_A=$PULL_RATE
+      [[ -z "$RATE_B" ]] && RATE_B=$PULL_RATE
+
+      # The same argument on the dhdl channel. integrate_dhdl.py rebuilds the
+      # lambda ramp from --direction alone, which assumes the leg spans the WHOLE
+      # of lambda: a stage that only crosses 0 -> 0.3 would be integrated over
+      # 1.0 and come out 3.3x too large, with nothing to show for it. So the
+      # actual span is read out of the mdp the stage ran with, which is where the
+      # split is defined in the first place.
+      lam_span() {
+        awk -F= '
+          /^ *init-lambda *=/  {gsub(/[ \t]/,"",$2); i=$2}
+          /^ *delta-lambda *=/ {gsub(/[ \t]/,"",$2); d=$2}
+          /^ *nsteps *=/       {gsub(/[ \t]/,"",$2); n=$2}
+          END { if (i=="" || d=="" || n=="") exit 1
+                printf "--lambda-start %.10g --lambda-end %.10g", i, i + d*n }' "$1"
+      }
+      LAM_fA=$(lam_span bindfwdA_fe.mdp); LAM_fB=$(lam_span bindfwdB_fe.mdp)
+      LAM_rB=$(lam_span bindrevB_fe.mdp); LAM_rA=$(lam_span bindrevA_fe.mdp)
+      LAM_bf=$(lam_span boundfwd.mdp);    LAM_br=$(lam_span boundrev.mdp)
+
+      W_intro="NaN"; W_remove="NaN"
+      WuA_pull="NaN"; WuA_dhdl="NaN"; WuB_pull="NaN"; WuB_dhdl="NaN"
+      WrB_pull="NaN"; WrB_dhdl="NaN"; WrA_pull="NaN"; WrA_dhdl="NaN"
+      [[ -f boundfwd_${cycle}_dhdl.xvg ]]  && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd $LAM_bf)
+      [[ -f bindfwdA_${cycle}_pullf.xvg ]] && WuA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_A)
+      [[ -f bindfwdA_${cycle}_dhdl.xvg ]]  && WuA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdA_${cycle}_dhdl.xvg --direction fwd $LAM_fA)
+      [[ -f bindfwdB_${cycle}_pullf.xvg ]] && WuB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_B)
+      [[ -f bindfwdB_${cycle}_dhdl.xvg ]]  && WuB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdB_${cycle}_dhdl.xvg --direction fwd $LAM_fB)
+      [[ -f bindrevB_${cycle}_pullf.xvg ]] && WrB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_B)
+      [[ -f bindrevB_${cycle}_dhdl.xvg ]]  && WrB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevB_${cycle}_dhdl.xvg --direction rev $LAM_rB)
+      [[ -f bindrevA_${cycle}_pullf.xvg ]] && WrA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_A)
+      [[ -f bindrevA_${cycle}_dhdl.xvg ]]  && WrA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevA_${cycle}_dhdl.xvg --direction rev $LAM_rA)
+      [[ -f boundrev_${cycle}_dhdl.xvg ]]  && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev $LAM_br)
       # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state
       # this cycle was equilibrated in (npt_c$cycle) and the end of the rebinding
       # leg (bindrev_$cycle). A large value means the partners did not return to
@@ -1198,9 +1262,9 @@ fi
       # it started from. Always computed, never fatal -- groscore_fe.py flags it
       # (see --rmsd-warn).
       RMSD="NaN"
-      if [[ -f npt_c${cycle}.gro && -f bindrev_${cycle}.gro ]]; then
+      if [[ -f npt_c${cycle}.gro && -f bindrevA_${cycle}.gro ]]; then
         RMSD=$(integrate_or_nan python3 ../../utils/rebound_rmsd.py \
-                 --ref npt_c${cycle}.gro --query bindrev_${cycle}.gro \
+                 --ref npt_c${cycle}.gro --query bindrevA_${cycle}.gro \
                  -s emin_solv.tpr -n index.ndx --tag c${cycle})
         echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
       fi
@@ -1208,10 +1272,18 @@ fi
       # cycles running as parallel array tasks, many writers would race on the
       # same file. groscore_fe.py merges results_fe.d/ with any legacy file.
       mkdir -p ../results_fe.d
-      echo "$STRUCT_ID $cycle $W_intro $Wu_pull $Wu_dhdl $Wr_pull $Wr_dhdl $W_remove $RMSD" \
+      # The unbinding channel now carries two stages per direction, so the row is
+      # 13 fields rather than 9. The stages are stored SEPARATELY on purpose:
+      # summing them recovers the unstaged work exactly, so nothing is lost, but
+      # separate storage also allows the staged estimate that the intermediate
+      # holds exist to make possible. groscore_fe.py does both.
+      echo "$STRUCT_ID $cycle $W_intro $WuA_pull $WuA_dhdl $WuB_pull $WuB_dhdl $WrB_pull $WrB_dhdl $WrA_pull $WrA_dhdl $W_remove $RMSD" \
         > $RESFILE
-      gzip -f boundfwd_${cycle}_dhdl.xvg bindfwd_${cycle}_pullf.xvg bindfwd_${cycle}_dhdl.xvg \
-              bindrev_${cycle}_pullf.xvg bindrev_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg 2>/dev/null
+      gzip -f boundfwd_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg \
+              bindfwdA_${cycle}_pullf.xvg bindfwdA_${cycle}_dhdl.xvg \
+              bindfwdB_${cycle}_pullf.xvg bindfwdB_${cycle}_dhdl.xvg \
+              bindrevB_${cycle}_pullf.xvg bindrevB_${cycle}_dhdl.xvg \
+              bindrevA_${cycle}_pullf.xvg bindrevA_${cycle}_dhdl.xvg 2>/dev/null
       # Written last and ONLY for a complete cycle, so .done really does mean
       # "fully finished" -- the archive check below counts these, and a structure
       # that tarred itself up on the strength of half-finished cycles would be

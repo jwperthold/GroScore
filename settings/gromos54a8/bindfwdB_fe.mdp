@@ -1,13 +1,11 @@
-; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1)
-; between the unbinding and rebinding legs. No switching (delta-lambda = 0).
-; 3 ns, down from 5: the Boresch channel equilibrates inside 1 ns (drift across
-; the old 5 ns was 0.031 +- 1.87 kJ/mol, p = 0.91) and the interface kept
-; drifting away from the rebinding reference for as long as the hold ran.
+; bindfwdB_fe.mdp - FE unbinding, STAGE B: u 0.3 -> 1.0 nm over 5 ns,
+; lambda 0.3 -> 1. The tail, which carries about 11% of the dissipation and
+; previously received 70% of the time.
 ;
-; nsteps 750000 * dt 0.004 = 3000 ps.
+; nsteps 1250000 * dt 0.004 = 5000 ps.
 
 integrator               = md
-nsteps                   = 750000
+nsteps                   = 1250000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -17,7 +15,7 @@ compressed-x-precision   = 1000
 nstvout                  = 0
 nstfout                  = 0
 nstenergy                = 2000
-nstlog                   = 2000
+nstlog                   = 10000
 nstcalcenergy            = 100
 
 comm-mode                = linear
@@ -25,23 +23,21 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = h-bonds
+constraints              = all-bonds
 lincs_iter               = 1
 lincs_order              = 6
 
-cutoff-scheme            = Verlet
+cutoff-scheme            = verlet
 ns_type                  = grid
-rlist                    = 1.0
-rcoulomb                 = 1.0
-rvdw                     = 1.0
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
 
-vdwtype                  = cutoff
-vdw-modifier             = Potential-shift
+vdwtype                  = cut-off
+vdw-modifier             = none
 
 coulombtype              = PME
-fourierspacing           = 0.125
-
-DispCorr                 = EnerPres
+coulomb-modifier         = none
 
 tcoupl                   = V-rescale
 tc-grps                  = Protein Non-Protein
@@ -61,8 +57,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 1
-delta-lambda             = 0
+init-lambda              = 0.3
+delta-lambda             = 5.60000000e-07
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes
@@ -76,4 +72,4 @@ pull-print-com2          = no
 pull-print-ref-value     = no
 pull-print-components    = no
 pull-nstxout             = 0
-pull-nstfout             = 0
+pull-nstfout             = 500

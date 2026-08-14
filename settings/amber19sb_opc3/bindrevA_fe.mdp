@@ -1,11 +1,11 @@
-; bindrev_fe.mdp - FE rebinding leg (reverse of bind_fe). lambda ramps 1 -> 0:
-; interface restraints fade back in, Boresch fade out, references move inward
-; from +1.0 nm back to the bound geometry.
+; bindrevA_fe.mdp - FE rebinding, STAGE A reversed: u 0.3 -> 0 over 15 ns,
+; lambda 0.3 -> 0. Pairs with bindfwdA. This is the re-contact, where 78% of
+; the reverse leg's work variance was measured to be generated.
 ;
-; nsteps 5000000 * dt 0.004 = 20000 ps.
+; nsteps 3750000 * dt 0.004 = 15000 ps.
 
 integrator               = md
-nsteps                   = 5000000
+nsteps                   = 3750000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -59,8 +59,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 1
-delta-lambda             = -2.00000000e-07
+init-lambda              = 0.3
+delta-lambda             = -8.00000000e-08
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

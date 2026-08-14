@@ -42,10 +42,22 @@ NORM = NormalDist()
 SIGN_PULL_FWD = -1.0
 SIGN_PULL_REV = +1.0
 
-# Which mdp/prefix pair each leg is made of: (forward tag, reverse tag, mdp).
+# Which mdp/prefix pair each leg is made of, and where its works sit in the
+# canonical row read_works() returns:
+#   (forward tag, reverse tag, mdp(s), forward pull index, reverse pull index)
+# The dhdl field always follows its pull field, so one index locates the pair.
+#
+# The ramp runs in two stages either side of an equilibrium hold, so unbindA and
+# unbindB are the two real switching processes and are what the friction and cost
+# model below apply to. "unbind" is their sum: a valid Crooks process (the hold
+# does no work) and so a valid work distribution, but one with no trace files of
+# its own, and the trajectory diagnosis is skipped for it on staged data.
 LEGS = {
-    "unbind": ("bindfwd", "bindrev", "bind_fe.mdp"),
-    "bound": ("boundfwd", "boundrev", "boundfwd.mdp"),
+    "unbindA": ("bindfwdA", "bindrevA", ("bindfwdA_fe.mdp",), 1, 7),
+    "unbindB": ("bindfwdB", "bindrevB", ("bindfwdB_fe.mdp",), 3, 5),
+    "unbind":  ("bindfwd",  "bindrev",  ("bindfwdA_fe.mdp", "bindfwdB_fe.mdp",
+                                         "bind_fe.mdp"), None, None),
+    "bound":   ("boundfwd", "boundrev", ("boundfwd.mdp",), None, None),
 }
 
 ap = argparse.ArgumentParser(
@@ -71,21 +83,29 @@ args = ap.parse_args()
 
 RT = 0.00831446261815324 * args.temp
 SDIR = args.dir or args.struct
-FWD_TAG, REV_TAG, LEG_MDP = LEGS[args.leg]
+FWD_TAG, REV_TAG, LEG_MDPS, IF, IR = LEGS[args.leg]
 
 
 # ---- small readers -----------------------------------------------------------
 
-def mdp_time_ns(path):
-    """Simulated time of an mdp, in ns, or nan."""
-    try:
-        text = open(path).read()
-    except OSError:
-        return float("nan")
-    def get(key):
-        m = re.search(r"^\s*%s\s*=\s*([0-9.eE+-]+)" % key, text, re.M)
-        return float(m.group(1)) if m else float("nan")
-    return get("nsteps") * get("dt") / 1000.0
+def mdp_time_ns(*names):
+    """Simulated time of the given mdps in ns, summed over those that exist.
+
+    Several names because a leg can be made of more than one mdp (the staged ramp)
+    and because the legacy single-ramp mdp is accepted alongside them: whichever
+    files the structure directory actually has are the ones that ran."""
+    tot, seen = 0.0, False
+    for name in names:
+        try:
+            text = open(os.path.join(SDIR, name)).read()
+        except OSError:
+            continue
+        def get(key):
+            m = re.search(r"^\s*%s\s*=\s*([0-9.eE+-]+)" % key, text, re.M)
+            return float(m.group(1)) if m else float("nan")
+        tot += get("nsteps") * get("dt") / 1000.0
+        seen = True
+    return tot if seen else float("nan")
 
 
 def boresch_value(key):
@@ -106,8 +126,12 @@ def two_cols(path):
 
 
 def read_works():
-    """{cycle: [W_intro, Wu_pull, Wu_dhdl, Wr_pull, Wr_dhdl, W_remove]}, NaN rows
-    dropped exactly as groscore_fe.read_works drops them."""
+    """{cycle: [W_intro, WuA_pull, WuA_dhdl, WuB_pull, WuB_dhdl,
+                WrB_pull, WrB_dhdl, WrA_pull, WrA_dhdl, W_remove]},
+    NaN rows dropped exactly as groscore_fe.read_works drops them, and legacy
+    9-field rows widened the same way it widens them: the single ramp goes in the
+    stage-A slots with zeros for stage B, so summing the stages still reproduces
+    the legacy work. STAGED collects which rows were genuinely staged."""
     out = {}
     pat = os.path.join(args.resultsdir, "%s_c*.gs" % args.struct)
     for path in sorted(glob.glob(pat)) + ["results_fe.gs"]:
@@ -115,15 +139,25 @@ def read_works():
             continue
         for line in open(path):
             f = line.split()
-            if len(f) < 8 or f[0] != args.struct:
+            staged = len(f) >= 12
+            nw = 10 if staged else 6
+            if len(f) < 2 + nw or f[0] != args.struct:
                 continue
             try:
-                vals = [float(x) for x in f[2:8]]
+                vals = [float(x) for x in f[2:2 + nw]]
             except ValueError:
                 continue
-            if not any(math.isnan(v) for v in vals):
-                out[int(f[1])] = vals
+            if any(math.isnan(v) for v in vals):
+                continue
+            if not staged:
+                vals = [vals[0], vals[1], vals[2], 0.0, 0.0,
+                        0.0, 0.0, vals[3], vals[4], vals[5]]
+            out[int(f[1])] = vals
+            STAGED[int(f[1])] = staged
     return out
+
+
+STAGED = {}
 
 
 def leg_pair(works):
@@ -131,10 +165,18 @@ def leg_pair(works):
     ks = sorted(works)
     if args.leg == "bound":
         f = np.array([works[c][0] for c in ks])
-        r_raw = np.array([works[c][5] for c in ks])
+        r_raw = np.array([works[c][9] for c in ks])
+        return ks, f, r_raw, -r_raw
+
+    def stage(i, j, sign):
+        return np.array([sign * works[c][i] + works[c][j] for c in ks])
+
+    if args.leg == "unbind":     # the whole ramp: both stages summed
+        f = stage(1, 2, SIGN_PULL_FWD) + stage(3, 4, SIGN_PULL_FWD)
+        r_raw = stage(7, 8, SIGN_PULL_REV) + stage(5, 6, SIGN_PULL_REV)
     else:
-        f = np.array([SIGN_PULL_FWD * works[c][1] + works[c][2] for c in ks])
-        r_raw = np.array([SIGN_PULL_REV * works[c][3] + works[c][4] for c in ks])
+        f = stage(IF, IF + 1, SIGN_PULL_FWD)
+        r_raw = stage(IR, IR + 1, SIGN_PULL_REV)
     return ks, f, r_raw, -r_raw
 
 
@@ -185,6 +227,10 @@ if not works:
     sys.exit("No complete cycles for %s in %s/ (or results_fe.gs)."
              % (args.struct, args.resultsdir))
 
+if args.leg in ("unbindA", "unbindB") and not all(STAGED.values()):
+    sys.exit("%s has unstaged (9-field) results, which carry no per-stage works.\n"
+             "Use --leg unbind for the ramp as a whole." % args.struct)
+
 ks, Wf, Wr_raw, Wr = leg_pair(works)
 n = len(ks)
 sd_f, sd_r = Wf.std(ddof=1), Wr.std(ddof=1)
@@ -193,10 +239,18 @@ pooled = math.sqrt((sd_f ** 2 + sd_r ** 2) / 2.0)
 sep = 2.0 * diss / pooled if pooled > 0 else float("nan")
 sep_max = 2.0 * NORM.inv_cdf(1.0 - 1.0 / n) if n >= 4 else float("nan")
 
-t_leg = mdp_time_ns(os.path.join(SDIR, LEG_MDP))
+t_leg = mdp_time_ns(*LEG_MDPS)
 L = boresch_value("pull_dist_nm")
 if not np.isfinite(L):
     L = 1.0
+# A stage covers its own fraction of the pull, and that fraction is what the
+# header should report: the stages exist precisely because they are not the whole.
+u_split = boresch_value("u_split")
+if np.isfinite(u_split):
+    if args.leg == "unbindA":
+        L *= u_split
+    elif args.leg == "unbindB":
+        L *= 1.0 - u_split
 
 print("")
 print("GroScore-FE leg efficiency -- %s, %s leg" % (args.struct, args.leg))
@@ -248,6 +302,9 @@ if not have_traces:
     if args.leg == "bound":
         print("   The bound legs switch restraints without pulling, so they have no")
         print("   pull channel and never write _DG.dat/_dGdt.dat. Expected.")
+    elif args.leg == "unbind" and any(STAGED.values()):
+        print("   The ramp runs as two stages, so it has no single trace to reduce.")
+        print("   Run --leg unbindA and --leg unbindB for the trajectory diagnosis.")
     else:
         print("   An archived structure keeps them inside its tarball.")
 else:
@@ -353,12 +410,25 @@ if n >= 4:
 
 # ---- 4. what each lever costs ------------------------------------------------
 
-t_bound = mdp_time_ns(os.path.join(SDIR, "boundfwd.mdp"))
-t_hold = mdp_time_ns(os.path.join(SDIR, "nptrev_fe.mdp"))
-fixed = args.equil + (0.0 if math.isnan(t_bound) else 2 * t_bound) \
-        + (0.0 if math.isnan(t_hold) else t_hold)
-t_unb = mdp_time_ns(os.path.join(SDIR, "bind_fe.mdp"))
-per_cycle = 2 * t_unb + fixed
+def nz(x):
+    """nan -> 0: a leg the run does not have costs nothing."""
+    return 0.0 if math.isnan(x) else x
+
+# The cycle costs what it costs whichever leg is being analysed, so it is built
+# once from every leg the structure actually has. bind_fe.mdp is the pre-staging
+# single ramp and is absent on a staged run, as bindfwdA/B are on an unstaged one.
+per_cycle = (args.equil
+             + 2 * nz(mdp_time_ns("boundfwd.mdp"))
+             + nz(mdp_time_ns("nptrev_fe.mdp"))
+             + nz(mdp_time_ns("holdmid_fe.mdp"))
+             + nz(mdp_time_ns("holdmidrev_fe.mdp"))
+             + 2 * nz(mdp_time_ns("bindfwdA_fe.mdp"))
+             + 2 * nz(mdp_time_ns("bindfwdB_fe.mdp"))
+             + 2 * nz(mdp_time_ns("bind_fe.mdp")))
+# Switching time of THIS leg, per direction; everything else in the cycle is
+# fixed with respect to the lever being priced.
+t_unb = nz(t_leg)
+fixed = per_cycle - 2 * t_unb
 
 print("")
 print("-- cost model " + "-" * 64)

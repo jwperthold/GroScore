@@ -1,13 +1,13 @@
-; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1)
-; between the unbinding and rebinding legs. No switching (delta-lambda = 0).
-; 3 ns, down from 5: the Boresch channel equilibrates inside 1 ns (drift across
-; the old 5 ns was 0.031 +- 1.87 kJ/mol, p = 0.91) and the interface kept
-; drifting away from the rebinding reference for as long as the hold ran.
+; holdmid_fe.mdp - 1 ns equilibrium hold at u = 0.3, lambda = 0.3, between the
+; two forward stages. delta-lambda = 0 and pull rate 0, so it contributes no
+; work. It exists so the two stages can be estimated SEPARATELY and their
+; estimates added: summing their per-cycle works instead would reproduce the
+; unstaged distribution exactly and gain nothing.
 ;
-; nsteps 750000 * dt 0.004 = 3000 ps.
+; nsteps 250000 * dt 0.004 = 1000 ps.
 
 integrator               = md
-nsteps                   = 750000
+nsteps                   = 250000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -25,23 +25,21 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = h-bonds
+constraints              = all-bonds
 lincs_iter               = 1
 lincs_order              = 6
 
-cutoff-scheme            = Verlet
+cutoff-scheme            = verlet
 ns_type                  = grid
-rlist                    = 1.0
-rcoulomb                 = 1.0
-rvdw                     = 1.0
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
 
-vdwtype                  = cutoff
-vdw-modifier             = Potential-shift
+vdwtype                  = cut-off
+vdw-modifier             = none
 
 coulombtype              = PME
-fourierspacing           = 0.125
-
-DispCorr                 = EnerPres
+coulomb-modifier         = none
 
 tcoupl                   = V-rescale
 tc-grps                  = Protein Non-Protein
@@ -61,7 +59,7 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 1
+init-lambda              = 0.3
 delta-lambda             = 0
 dhdl-derivatives         = yes
 nstdhdl                  = 500

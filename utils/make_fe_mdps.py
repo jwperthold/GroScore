@@ -41,14 +41,52 @@ FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8"]
 # of which the first 1 ns is discarded as equilibration) and frames (every 10 ps,
 # giving 1000 usable ones). Both are paid once per structure. Sharing one mdp
 # would have added 10 ns to every cycle instead.
+# The unbinding leg is SPLIT at u = 0.3, where 75% of the hysteresis is spent.
+#
+# Measured on 50 cycles of 2KTF: the first 0.3 nm carries 75.5% of the total
+# dissipation and the remaining 0.7 nm carries 10.6%, so a uniform ramp spends
+# 70% of its time where almost nothing dissipates. Stage A now takes 15 ns over
+# 0.3 nm and stage B 5 ns over 0.7 nm, which is 3.5x slower through the rupture
+# and 2.8x faster through the tail, at the same 20 ns per direction.
+#
+# lam_from -> lam_to tracks the same split: lambda runs 0 -> 0.3 over stage A and
+# 0.3 -> 1 over stage B, so the force-constant switching stays proportional to the
+# distance travelled and the two stages join continuously.
+#
+# The 1 ns holds at u = 0.3 are what make the split worth having. Summing the two
+# stages' works per cycle would reproduce the unstaged distribution exactly and
+# improve nothing; estimating each stage separately and adding the estimates is
+# what shrinks the dissipation per estimate, and that is only legitimate because
+# the hold equilibrates between them. Both holds have delta-lambda = 0 and pull
+# rate 0, so neither contributes work.
+#
+# The unbound hold drops 5 ns -> 3 ns: measured drift across the old 5 ns was
+# 0.031 +- 1.87 kJ/mol (p = 0.91), so it was equilibrated within 1 ns, and the
+# interface kept drifting away from the rebinding reference while it ran.
+#
+# Per cycle: 2 + 15 + 1 + 5 + 3 + 5 + 1 + 15 + 2 = 49 ns, unchanged.
 LEGS = {
-    "bind_fe.mdp":     ("bind.mdp",   20000.0, 0, +1, 500, 400.0),
-    "bindrev_fe.mdp":  ("bindrev.mdp", 20000.0, 1, -1, 500, 400.0),
-    "boundfwd.mdp":    ("bind.mdp",    2000.0, 0, +1, 0, 400.0),
-    "boundrev.mdp":    ("bind.mdp",    2000.0, 1, -1, 0, 400.0),
-    "nptrev_fe.mdp":   ("nptrev.mdp",  5000.0, 1,  0, 0, 400.0),
-    "npt_fe.mdp":      ("npt.mdp",     1000.0, None, None, None, 400.0),
-    "npt_init_fe.mdp": ("npt.mdp",    11000.0, None, None, None, 10.0),
+    "bindfwdA_fe.mdp":  ("bind.mdp",   15000.0, 0.0, 0.3, 500, 400.0),
+    "holdmid_fe.mdp":   ("nptrev.mdp",  1000.0, 0.3, 0.3, 0, 400.0),
+    "bindfwdB_fe.mdp":  ("bind.mdp",    5000.0, 0.3, 1.0, 500, 400.0),
+    "nptrev_fe.mdp":    ("nptrev.mdp",  3000.0, 1.0, 1.0, 0, 400.0),
+    "bindrevB_fe.mdp":  ("bindrev.mdp", 5000.0, 1.0, 0.3, 500, 400.0),
+    "holdmidrev_fe.mdp":("nptrev.mdp",  1000.0, 0.3, 0.3, 0, 400.0),
+    "bindrevA_fe.mdp":  ("bindrev.mdp",15000.0, 0.3, 0.0, 500, 400.0),
+    "boundfwd.mdp":     ("bind.mdp",    2000.0, 0.0, 1.0, 0, 400.0),
+    "boundrev.mdp":     ("bind.mdp",    2000.0, 1.0, 0.0, 0, 400.0),
+    "npt_fe.mdp":       ("npt.mdp",     1000.0, None, None, None, 400.0),
+    "npt_init_fe.mdp":  ("npt.mdp",    11000.0, None, None, None, 10.0),
+}
+
+# Distance the pull reference has already travelled when each leg STARTS, in nm,
+# as a fraction of --pull-dist. make_boresch.py adds this to pull-coordN-init for
+# the moving coordinates, because pull-coordN-start = no makes init absolute and
+# stage B has to begin where stage A stopped.
+LEG_U0 = {
+    "bindfwdA_fe.mdp": 0.0, "holdmid_fe.mdp": 0.3, "bindfwdB_fe.mdp": 0.3,
+    "nptrev_fe.mdp":   1.0, "bindrevB_fe.mdp": 1.0, "holdmidrev_fe.mdp": 0.3,
+    "bindrevA_fe.mdp": 0.3, "boundfwd.mdp":    0.0, "boundrev.mdp":     0.0,
 }
 
 # One barostat for every pressure-coupled leg, overriding whatever the base mdp
@@ -82,18 +120,35 @@ LEGS = {
 BAROSTAT_ALL = ("C-rescale", 2.0)
 
 HEADERS = {
-    "bind_fe.mdp": ("; bind_fe.mdp - FE unbinding leg (forward). Interface restraints fade out\n"
-                    "; (k -> kB=0) while Boresch restraints fade in (k=0 -> kB); the interface and\n"
-                    "; Boresch-r references move outward at pull-rate to +1.0 nm. The full pull block\n"
-                    "; (groups + coords) is appended by make_boresch.py.\n"),
-    "bindrev_fe.mdp": ("; bindrev_fe.mdp - FE rebinding leg (reverse of bind_fe). lambda ramps 1 -> 0:\n"
-                       "; interface restraints fade back in, Boresch fade out, references move inward\n"
-                       "; from +1.0 nm back to the bound geometry.\n"),
+    "bindfwdA_fe.mdp": ("; bindfwdA_fe.mdp - FE unbinding, STAGE A: u 0 -> 0.3 nm over 15 ns,\n"
+                        "; lambda 0 -> 0.3. This is the rupture, which carries 75% of the leg's\n"
+                        "; dissipation in 30% of its distance, so it gets 75% of the time. Interface\n"
+                        "; restraints fade out (k -> kB=0) while Boresch fade in (k=0 -> kB). The full\n"
+                        "; pull block (groups + coords) is appended by make_boresch.py.\n"),
+    "holdmid_fe.mdp": ("; holdmid_fe.mdp - 1 ns equilibrium hold at u = 0.3, lambda = 0.3, between the\n"
+                       "; two forward stages. delta-lambda = 0 and pull rate 0, so it contributes no\n"
+                       "; work. It exists so the two stages can be estimated SEPARATELY and their\n"
+                       "; estimates added: summing their per-cycle works instead would reproduce the\n"
+                       "; unstaged distribution exactly and gain nothing.\n"),
+    "bindfwdB_fe.mdp": ("; bindfwdB_fe.mdp - FE unbinding, STAGE B: u 0.3 -> 1.0 nm over 5 ns,\n"
+                        "; lambda 0.3 -> 1. The tail, which carries about 11% of the dissipation and\n"
+                        "; previously received 70% of the time.\n"),
+    "bindrevB_fe.mdp": ("; bindrevB_fe.mdp - FE rebinding, STAGE B reversed: u 1.0 -> 0.3 over 5 ns,\n"
+                        "; lambda 1 -> 0.3. Pairs with bindfwdB for the stage-B work distributions.\n"),
+    "holdmidrev_fe.mdp": ("; holdmidrev_fe.mdp - 1 ns equilibrium hold at u = 0.3 on the way back, so\n"
+                          "; stage A reversed starts from an equilibrated lambda = 0.3 ensemble rather\n"
+                          "; than from wherever stage B reversed happened to end.\n"),
+    "bindrevA_fe.mdp": ("; bindrevA_fe.mdp - FE rebinding, STAGE A reversed: u 0.3 -> 0 over 15 ns,\n"
+                        "; lambda 0.3 -> 0. Pairs with bindfwdA. This is the re-contact, where 78% of\n"
+                        "; the reverse leg's work variance was measured to be generated.\n"),
     "boundfwd.mdp": ("; boundfwd.mdp - Bound-state restraint introduction (dhdl only, no pulling).\n"
                      "; Interface restraints switched ON in the bound state (k=0 -> kB=full).\n"),
     "boundrev.mdp": ("; boundrev.mdp - Bound-state restraint removal (reverse of boundfwd, lambda 1 -> 0).\n"),
     "nptrev_fe.mdp": ("; nptrev_fe.mdp - Hold the unbound, Boresch-restrained state (lambda = 1)\n"
-                      "; between the unbinding and rebinding legs. No switching (delta-lambda = 0).\n"),
+                      "; between the unbinding and rebinding legs. No switching (delta-lambda = 0).\n"
+                      "; 3 ns, down from 5: the Boresch channel equilibrates inside 1 ns (drift across\n"
+                      "; the old 5 ns was 0.031 +- 1.87 kJ/mol, p = 0.91) and the interface kept\n"
+                      "; drifting away from the rebinding reference for as long as the hold ran.\n"),
     "npt_fe.mdp": ("; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before\n"
                    "; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).\n"
                    "; C-rescale, so the configurations handed to boundfwd are drawn from the true\n"
@@ -136,7 +191,7 @@ for ff in FFS:
     d = os.path.join(SET, ff)
     if not os.path.isdir(d):
         print("skip missing %s" % ff); continue
-    for out_name, (base_name, ps, init_lam, lam_dir, pull_fout, xout_ps) in LEGS.items():
+    for out_name, (base_name, ps, lam_from, lam_to, pull_fout, xout_ps) in LEGS.items():
         base_path = os.path.join(d, base_name)
         if not os.path.isfile(base_path):
             print("  %s: missing base %s, skipped" % (ff, base_name)); continue
@@ -155,19 +210,24 @@ for ff in FFS:
         # needs enough frames to measure a backbone RMSF from.
         text = set_param(text, "nstxout-compressed", int(round(xout_ps / dt)))
 
-        if init_lam is not None:                      # a free-energy leg
+        if lam_from is not None:                      # a free-energy leg
             text = set_param(text, "nstcalcenergy", 100)   # nstdhdl must be a multiple
-            dl = 0.0 if lam_dir == 0 else lam_dir * (1.0 / nsteps)
+            # lambda is PER STEP, and the endpoints are now fractional: a stage
+            # that covers 0 -> 0.3 must land exactly on 0.3 so the next stage
+            # starts where this one stopped. A hold has lam_from == lam_to and so
+            # gets delta-lambda = 0 for free, which is also what makes it
+            # contribute no work.
+            dl = (lam_to - lam_from) / nsteps if lam_to != lam_from else 0.0
             fe = ("\n; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----\n"
                   "free-energy              = yes\n"
-                  "init-lambda              = %d\n"
+                  "init-lambda              = %s\n"
                   "delta-lambda             = %s\n"
                   "dhdl-derivatives         = yes\n"
                   "nstdhdl                  = 500\n"
                   "separate-dhdl-file       = yes\n"
                   "calc-lambda-neighbors    = 0\n"
                   "sc-alpha                 = 0\n"
-                  % (init_lam, "0" if dl == 0 else ("%.8e" % dl)))
+                  % (("%g" % lam_from), "0" if dl == 0 else ("%.8e" % dl)))
             pull = ("\n; ---- COM pulling (pull block appended by make_boresch.py) ----\n"
                     "pull                     = yes\n"
                     "pull-print-com1          = no\n"
