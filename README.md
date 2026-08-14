@@ -378,7 +378,7 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 ## Absolute Binding Free Energies (GroScore-FE)
 
-> **Experimental / in development.** Sign conventions and convergence are still being validated; see the caveats at the end of this section.
+> **Experimental / in development.** A sign error in the Boresch dihedral references was found and fixed on 2026-08-14; every free-energy result produced before that is void. Convergence of the unbinding leg is still unresolved. See [Caveats](#caveats) at the end of this section.
 
 The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, hence the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly, i.e. by replacing the many empirical interface restraints with a rigorous, analytically correctable restraint scheme, so that the result approaches an experimentally comparable absolute binding free energy.
 
@@ -516,6 +516,26 @@ All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and 
 The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges, i.e. its forward and reverse work distributions overlap, whereas the unbinding/rebinding legs dominate the CGI error and are given 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If either is changed, both must be changed. The rate is defined in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and consumed by `integrate.py` (`-r`), which converts the time integral of the pull force into work. The hold and the bound legs carry no such coupling and can be changed independently.
 
 The **5 ns unbound hold** (raised from 1 ns on 2026-08-11) is deliberate rather than generous. Measured over 40 cycles of 2KTF, the rebinding works are 2.4× wider than the unbinding works (σ 51.5 vs 21.6), and the reverse leg is the one which starts from the Boresch-restrained separated state, having been given only 1 ns to settle after a 1.0 nm separation. This is short for interfacial water and side chains to relax. An under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing which Crooks requires, and neither longer switching legs nor additional cycles can repair that. At roughly 9 % per cycle against 44 % for doubling a 20 ns leg, it is the cheaper hypothesis to rule out first. Whether it worked can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
+
+### Choosing the Boresch anchors
+
+The six Boresch coordinates fix the relative placement of two anchor triads but say nothing about the shape of either triad, and those edges are intramolecular. If the anchor groups are not themselves rigid the frame wanders, and eq.32, which assumes anchor points fixed in rigid bodies, stops describing what is actually restrained.
+
+Anchors are therefore selected from **measured** backbone rigidity rather than from a static heuristic. Each protein is fitted onto itself frame by frame over the probe trajectory, which removes rigid-body motion and leaves flexibility; candidate groups are compact backbone clusters (0.70 nm about a seed CA, at least 18 atoms) kept only if their measured COM RMSF is below a ceiling, thinned to 0.5 nm COM separation, and ranked on `eps / (arm × conditioning)`. Selecting on measured COM RMSF rather than on size is the point: averaging suppresses only uncorrelated motion, as `1/√N`, so a loop that moves collectively averages to nothing however many atoms it has.
+
+Two refinements matter enough to state:
+
+**The chosen triad is rebuilt with disjoint membership.** Candidate groups are seed neighbourhoods, so a residue near two seeds belongs to both, and the 0.5 nm thinning constrains COM separation only. Shared atoms pull the two COMs together, which shortens the lever arm just as the frame error `eps/L` wants it long, and it leaves the six coordinates correlated in a way the factorised eq.32 does not model. Each residue is reassigned to its nearest of the three seeds and the arms, conditioning and RMSF are all re-tested on the split geometry.
+
+**The rigidity ceiling escalates serially**, `EPS_LADDER = (0.045, 0.060, 0.080)` nm, first success wins. The ceiling is a physical requirement rather than a tuning knob, so the tightest one that yields an anchor set is the right one and later entries are concessions to a structure that cannot supply groups that quiet. The burial heuristic is reached only when every ceiling fails. Note the split starves the candidate pool, which is why the ladder exists: on 2KTF the ligand drops from 3 ranked triads to 1 surviving at 0.045.
+
+The selection is then **validated**: the relative rotation of the two frames is recomputed over the trajectory and reported, with a warning above 8°. The predecessor heuristic, which chose single-residue N/CA/C triads by burial, let the partners rotate 22-52° with every Boresch coordinate satisfied; the measured path reaches 4.5-6.6° on 2KTF.
+
+### Caveats
+
+- **All free-energy results predating 2026-08-14 are void.** `dihedral_deg` returned the negated dihedral, so all three φ references were written to every leg mdp as mirror images. On 2KTF this put 3145 kJ/mol into `dH/dλ` at t=0 and drove θ_B toward the pull-frame singularity, where the `1/sin(θ_B)` lever tore anchor residues apart. `make_boresch.py` now reads its own pull block back through a zero-step grompp and aborts if GROMACS does not reproduce the references it was given.
+- **Convergence of the unbinding leg is unresolved.** Before the sign fix the forward and reverse work distributions had zero overlap at 20 ns, and roughly 700 kJ/mol per cycle of mirror-orientation work went in forward without coming back. Whether that was the whole explanation has not yet been re-measured. Do this before spending anything further on switching time; `utils/fe_leg_efficiency.py` prices the levers.
+- **The classic and FE protocols changed barostat on 2026-08-14.** Results from before are not strictly comparable with results from after.
 
 ## Heteroatom Support
 

@@ -574,7 +574,9 @@ with open('$CUTOUT_PDB', 'w') as f:
           python3 ../../utils/fix_topol_intermolecular.py -p topol_probe.top
         fi
         if [[ ! -f ions_probe.tpr ]]; then
-          gmx grompp -r box_solv_probe.gro -f $MDP_DIR/emin_vac.mdp -c box_solv_probe.gro -o ions_probe -maxwarn 2
+          # -p is mandatory here: the default is topol.top, which at this point is
+          # still the DRY topology, while the coordinates are solvated.
+          gmx grompp -r box_solv_probe.gro -f $MDP_DIR/emin_vac.mdp -c box_solv_probe.gro -p topol_probe.top -o ions_probe -maxwarn 2
         fi
         if [[ ! -f solv_ions_probe.gro ]]; then
           echo -e "SOL\n" | gmx genion -s ions_probe.tpr -o solv_ions_probe.gro -p topol_probe.top -pname NA -nname CL -conc 0.15 -neutral
