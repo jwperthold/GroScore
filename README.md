@@ -183,6 +183,8 @@ Results are written to two output files ranked by binding affinity:
 
 Note that CGI requires at least 20 cycles to fit forward and reverse work distributions; with the default `--numruns 5` only `scores_avg.gs` is produced. Increase `-n` if you want CGI estimates.
 
+Both files also carry `BAR`, `BAR_CI95` and `BAR_note` as **appended** columns. BAR is a comparison column here and not the classic score, which stays the average. On the classic protocol it will read `nan ... BAR_NO_OVERLAP` on essentially every structure, and that is the informative part: forward and reverse works are separated by roughly 132 RT at the current pull rate, so no sampled work lies in the region a bidirectional estimator reads ΔG from. See [why BAR leads the FE scores but not these](#why-bar-is-the-fe-headline-and-not-the-classic-one).
+
 #### Interpreting the score
 
 - **Sign convention**: more negative score ⇄ tighter binding. Predicted pKd is monotonically *decreasing* in the score.
@@ -370,7 +372,7 @@ Each cycle starts fresh from `emin_solv.gro` with independent equilibration, pro
 
 ### Reproducibility
 
-Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at 300 K. The initial-velocity seed in every NVT/NPT/SMD `.mdp` is set to `gen_seed = -1`, i.e. GROMACS picks a fresh seed from the wall clock at submission time. This is deliberate, as independent cycles must sample independent trajectories, but it does mean that scores from a re-submitted run will not be bitwise-identical to the original. The CI95 column in `scores_avg.gs` quantifies the resulting between-cycle variance.
+Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at `gen_temp = 62` K and heats to `ref_t = 310` K over the five-stage NVT ladder. The initial-velocity seed in every NVT/NPT/SMD `.mdp` is set to `gen_seed = -1`, i.e. GROMACS picks a fresh seed from the wall clock at submission time. This is deliberate, as independent cycles must sample independent trajectories, but it does mean that scores from a re-submitted run will not be bitwise-identical to the original. The CI95 column in `scores_avg.gs` quantifies the resulting between-cycle variance.
 
 ### Throughput
 
@@ -407,13 +409,13 @@ All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm3
 python3 utils/make_fe_mdps.py
 ```
 
-Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
+Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. **`dG_bind` and `pKD` are BAR**; the average and CGI values are retained beside them, so the file leads with `dGbind_bar` and then repeats the block for `_avg` and `_cgi`. Three estimators over the same works are the cheapest convergence check there is: where they agree the leg has converged, and where they disagree it has not, whichever number you would rather believe. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
 
 Every scoring pass also writes **`fe_works.png`**, the work distributions of every leg with one row per structure, bound-state legs on the left and unbinding/rebinding (pull work plus dhdl work) on the right. No second command is needed; the figure appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run.
 
 Every structure is plotted, in `sp.gs` order, **16 rows to a file**. Beyond that the figure is paginated into `fe_works_01.png`, `fe_works_02.png` and so on (a run needing only one page keeps the plain `fe_works.png`, and pages left over from an earlier, longer run are removed). Sixteen rows correspond to 1980 × 9792 px and roughly 2 MB. Matplotlib will write a considerably taller image, but GPU textures and most viewers cap a dimension near 16384 px and PIL rejects anything above 89 Mpx as a decompression bomb, hence a single 200-structure sheet would be unopenable as well as costing about 80 s and 1.8 GB to render.
 
-The reverse distribution is drawn sign-aligned (`−W`), so that the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms indicate that the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and the CGI value fall in a region where neither distribution has samples. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2`; the free energy cancels from that sum, hence it measures hysteresis without assuming any ΔG estimate.
+The reverse distribution is drawn sign-aligned (`−W`), so that the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms indicate that the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and the CGI value fall in a region where neither distribution has samples. A third consequence is that such a leg gets **no BAR value at all**, so its rule is absent from the panel and `scores_fe.gs` carries `nan` with the reason in `Note`. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2`; the free energy cancels from that sum, hence it measures hysteresis without assuming any ΔG estimate.
 
 Scoring then prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
 
@@ -516,6 +518,18 @@ All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and 
 The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges, i.e. its forward and reverse work distributions overlap, whereas the unbinding/rebinding legs dominate the CGI error and are given 20 ns each. **The pull rate is tied to the unbinding-leg length**: it must satisfy `rate × unbinding_time = 1.0 nm`, hence 0.00005 nm/ps over 20 ns. If either is changed, both must be changed. The rate is defined in `make_boresch.py` (`--pull-rate`, recorded per structure in `boresch_analytical.gs`) and consumed by `integrate.py` (`-r`), which converts the time integral of the pull force into work. The hold and the bound legs carry no such coupling and can be changed independently.
 
 The **5 ns unbound hold** (raised from 1 ns on 2026-08-11) is deliberate rather than generous. Measured over 40 cycles of 2KTF, the rebinding works are 2.4× wider than the unbinding works (σ 51.5 vs 21.6), and the reverse leg is the one which starts from the Boresch-restrained separated state, having been given only 1 ns to settle after a 1.0 nm separation. This is short for interfacial water and side chains to relax. An under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing which Crooks requires, and neither longer switching legs nor additional cycles can repair that. At roughly 9 % per cycle against 44 % for doubling a 20 ns leg, it is the cheaper hypothesis to rule out first. Whether it worked can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
+
+### Why BAR is the FE headline and not the classic one
+
+BAR (Bennett Acceptance Ratio) is the maximum-likelihood estimator for bidirectional work data and, unlike CGI, assumes nothing about the shape of either distribution. It is therefore the headline for `scores_fe.gs`. It is deliberately *not* the classic engine's score.
+
+Every bidirectional estimator, BAR included, reads ΔG off the region where the forward and sign-aligned reverse works both have samples. The classic protocol has no such region: forward and reverse are separated by a median of 132 RT, with 0 of 46 structures in `bm_amber` overlapping at all and 1 of 2431 in `bm_ppb_amber`. With nothing in the crossing region BAR collapses toward the Jarzynski limit, dominated by the single most extreme work, and a synthetic benchmark at that dissipation puts its error at 3.97 kT against 1.56 for the average. The classic score is also a relative pull work calibrated against experiment downstream by regression rather than an absolute ΔG, so swapping in a tail-dominated estimator would trade a calibrated number for a worse one.
+
+So the classic engine keeps the average and carries BAR as an appended column that mostly reads `nan BAR_NO_OVERLAP`. That suppression is the point: it puts the reason the classic score is not a free energy into the output rather than leaving it in prose.
+
+**A `nan` in a BAR column never means the solver failed.** It means the leg had no overlap and the estimate was refused, with the reason in `Note`. BAR is suppressed rather than flagged because a flagged number still gets plotted and regressed by anything that does not read the flag, and on separated data the solver returns a confident finite value, with the wrong sign at the dissipation the unbinding leg currently runs at. The average and CGI are still reported there, because they are model extrapolations by construction and never claimed otherwise.
+
+The solver lives in `utils/estimators.py` and is shared by both engines. It is implemented in-repo rather than calling pymbar because pymbar's `bar()` cannot be vectorised over bootstrap rows, which would have cost about 73 s per structure against 0.66 s; `tests/test_bar.py` cross-checks against pymbar when it is importable and agrees to ten decimal places.
 
 ### Choosing the Boresch anchors
 

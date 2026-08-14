@@ -19,7 +19,7 @@ GroScore is a computational chemistry toolkit for protein-protein affinity scori
 ## Running GroScore
 
 ```bash
-# Run with default settings (3 cycles, AMBER19SB/OPC3)
+# Run with default settings (5 cycles, AMBER19SB/OPC3)
 python groscore.py
 
 # Run with 10 simulation cycles
@@ -80,6 +80,7 @@ Both orchestrators submit to SLURM by default and run locally with `--run-local 
 | `integrate.py` | Integrates force curves from pulling simulations |
 | `rebound_rmsd.py` | Rebinding sanity check: backbone RMSD of the re-bound structure vs. the bound reference |
 | `local_runner.py` | `--run-local` backend: bounded job pool with one GPU pinned per worker slot (also importable: `launch_local`, `print_local_status`) |
+| `estimators.py` | BAR and the overlap statistic that gates it. **Imported as a module** by both orchestrators, unlike every other entry here, which are run as subprocesses. Numpy/scipy only, no side effects, so `tests/test_bar.py` can import it directly |
 
 ### Simulation Pipeline
 
@@ -90,9 +91,14 @@ Both orchestrators submit to SLURM by default and run locally with `--run-local 
    - Pull simulation (unbinding)
    - Short NPT re-equilibration + Push simulation (binding)
    - Rebinding sanity check (`rebound_rmsd.py`), appended to the cycle's results file
-4. **Final**: Statistical analysis producing two ranking methods:
+4. **Final**: Statistical analysis producing two ranking methods, in two files:
    - `scores_avg.gs` - Simple average of pulls/pushes
    - `scores_cgi.gs` - Crooks Gaussian Intersection
+
+   Both files additionally carry appended `BAR`, `BAR_CI95` and `BAR_note`
+   columns. BAR is a comparison column in the classic engine, NOT its score, and
+   reads `nan BAR_NO_OVERLAP` on essentially every structure because the forward
+   and reverse works do not overlap. In `groscore_fe.py` BAR *is* the headline.
 
 This architecture ensures statistically independent samples by starting each pull/push cycle from a fresh equilibration.
 

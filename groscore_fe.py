@@ -175,6 +175,30 @@ import estimators as est
 
 RT = 0.00831446261815324 * args.temp  # kJ/mol
 
+
+def check_ref_t():
+  """Warn if --temp disagrees with the temperature the mdps actually run at.
+
+  --temp is a post-processing knob only: it sets RT for pKD and for BAR, and it
+  never reaches grompp, where ref_t is fixed in the templates. So --temp 300 on a
+  310 K simulation silently gives both a wrong kT, with nothing to notice it.
+  Warn rather than abort, since scoring an archived run whose settings tree has
+  moved on is legitimate."""
+  mdp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "settings", args.forcefield, "bind_fe.mdp")
+  try:
+    with open(mdp) as f:
+      for line in f:
+        if line.strip().startswith("ref_t"):
+          vals = [float(v) for v in line.split("=")[1].split()]
+          if any(abs(v - args.temp) > 0.5 for v in vals):
+            print("WARNING: --temp %.1f K but %s runs at ref_t = %s. RT is used "
+                  "for pKD and for BAR, so both will be wrong by that ratio."
+                  % (args.temp, mdp, " ".join("%g" % v for v in vals)))
+          return
+  except (OSError, ValueError, IndexError):
+    pass                                  # missing or unparseable: not fatal
+
 # How much of the rebinding-QC warning is printed. The full picture is always in
 # scores_fe.gs; the console only needs enough to know what to look at.
 MAX_FLAGGED_SHOWN = 10   # structures listed in the warning
@@ -1293,6 +1317,7 @@ def print_gaussian_report(stats):
 #------------------------------------------------------
 
 def score(structids):
+  check_ref_t()          # RT feeds pKD and BAR; warn if it does not match the mdp
   status = read_status("results_0.gs", structids)
   analytical = read_analytical("results_analytical.gs")
   works = read_works("results_fe.gs")
