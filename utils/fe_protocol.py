@@ -34,14 +34,32 @@ half barely responds to rate at all: running it 2.8x faster than test2 cost
 worth slowing from the part that is not.
 
 Minimising sum(c_i * t_i^-p_i) at fixed total 20 ns, with the tail held at the
-fastest rate ever actually run (0.14 nm/ns, hence 3.5 ns for its 0.5 nm), gives
-13 / 3.5 / 3.5 ns. Predicted 70.9 kJ/mol against the 78.6 measured, i.e. about
-7.7 kJ/mol for free. The gain REQUIRES taking time from stage A: hold A at 15 ns
-and the remaining 5 ns cannot beat what stage B already gets, so the saving is
-exactly the transfer from a p = 0.69 zone to a p = 1.05 one.
+fastest rate ever actually run (0.14 nm/ns, hence 3.5 ns for its 0.5 nm), gave
+13 / 3.5 / 3.5 ns, and that shape was run as test4. It worked: every stage
+overlapped and BAR closed the whole cycle for the first time.
 
-Those exponents are two-point estimates across runs that differ on six axes, so
-treat the allocation as the best available guess and not as an optimum.
+CURRENT SHAPE, 2026-08-15, 80 ns per cycle. Three changes on top of test4, all
+of them buying reversibility rather than schedule efficiency, because test4
+measured the schedule to be nearly exhausted (Sivak-Crooks leaves 1.14x against
+the 1.43x the three-stage split already took):
+
+  * boundfwd / boundrev 2 -> 5 ns. THE MEASURED DEFECT of test4. The interface
+    restraints are harmonic umbrellas with k_A = 0 -> k_B, so dH/dlambda is
+    exactly 0.5*k_B*S with S the summed squared deviation from the reference.
+    Raising npt_c to 10 ns doubled the strain handed to boundfwd (S 12.7 ->
+    27.7 nm^2) without rescaling the 2 ns switch, and the leg stopped finishing:
+    dH/dlambda at the end sat 71% ABOVE the restrained-equilibrium value, where
+    the same quantity was 6% BELOW it when npt_c was 1 ns. That leg carries 12.7%
+    of the dG_bind variance and, worse, its BAR overlap rested on exactly two
+    cycles out of 47.
+  * stage A 13 -> 17 ns. It carries 80.2% of the dG_bind variance and the
+    rupture peak, u 0.10-0.20, which alone is 30.6% of the ramp hysteresis.
+  * unbound hold 4 -> 6 ns.
+
+Ramp is now 24 ns per direction, so the rates fall to 1.765e-5 / 5.714e-5 /
+1.429e-4 nm/ps. The exponents behind any of this are two-point estimates across
+runs differing on several axes, so treat the allocation as the best available
+guess and not as an optimum.
 """
 import sys
 
@@ -52,14 +70,14 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0, 0.3, 13000.0),
+    ("A", 0.0, 0.3, 17000.0),
     ("B", 0.3, 0.5,  3500.0),
     ("C", 0.5, 1.0,  3500.0),
 ]
 
 HOLD_PS         = 1000.0   # every equilibrium hold on the ramp, both directions
-UNBOUND_HOLD_PS = 4000.0   # the hold at u = PULL_DIST, between the two directions
-BOUND_PS        = 2000.0   # boundfwd / boundrev, the restraint switch (no pull)
+UNBOUND_HOLD_PS = 6000.0   # the hold at u = PULL_DIST, between the two directions
+BOUND_PS        = 5000.0   # boundfwd / boundrev, the restraint switch (no pull)
 NPT_PS          = 10000.0  # per-cycle equilibration of the bound state
 NPT_INIT_PS     = 11000.0  # setup equilibration, once per structure
 

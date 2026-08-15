@@ -487,24 +487,24 @@ equilibrium hold at every boundary in both directions:
 | Leg | Purpose | lambda | Length |
 |---|---|---|---|
 | `npt_c` | equilibrate the bound state | - | 10 ns |
-| `boundfwd` | bound restraints on (dhdl) | 0 -> 1 | 2 ns |
+| `boundfwd` | bound restraints on (dhdl) | 0 -> 1 | 5 ns |
 | `holdfwd0` | hold, bound | 0 | 1 ns |
-| `bindfwdA` | unbind, first 0.3 nm | 0 -> 0.3 | 13 ns |
+| `bindfwdA` | unbind, first 0.3 nm | 0 -> 0.3 | 17 ns |
 | `holdfwd1` | hold | 0.3 | 1 ns |
 | `bindfwdB` | unbind, 0.3 to 0.5 nm | 0.3 -> 0.5 | 3.5 ns |
 | `holdfwd2` | hold | 0.5 | 1 ns |
 | `bindfwdC` | unbind, last 0.5 nm | 0.5 -> 1 | 3.5 ns |
-| `nptrev_fe` | hold unbound | 1 | 4 ns |
+| `nptrev_fe` | hold unbound | 1 | 6 ns |
 | `bindrevC` | rebind, first 0.5 nm | 1 -> 0.5 | 3.5 ns |
 | `holdrev2` | hold | 0.5 | 1 ns |
 | `bindrevB` | rebind, 0.5 to 0.3 nm | 0.5 -> 0.3 | 3.5 ns |
 | `holdrev1` | hold | 0.3 | 1 ns |
-| `bindrevA` | rebind, last 0.3 nm | 0.3 -> 0 | 13 ns |
+| `bindrevA` | rebind, last 0.3 nm | 0.3 -> 0 | 17 ns |
 | `holdrev0` | hold, bound | 0 | 1 ns |
-| `boundrev` | bound restraints off (dhdl) | 1 -> 0 | 2 ns |
-| **per cycle** | | | **64 ns** |
+| `boundrev` | bound restraints off (dhdl) | 1 -> 0 | 5 ns |
+| **per cycle** | | | **80 ns** |
 
-At the default 5 cycles this is **~331 ns/structure**.
+At the default 5 cycles this is **~411 ns/structure**.
 
 #### The protocol is defined in one place
 
@@ -540,13 +540,39 @@ dissipation at the full near-equilibrium rate, and the two-stage split had put i
 in the *fast* stage. The boundary at u = 0.5 separates it from the outer half,
 which barely responds to rate at all: running that half 2.8x faster cost
 1.3 kJ/mol across five windows. Minimising `sum(c_i t_i^-p_i)` at a fixed 20 ns,
-with the tail capped at the fastest rate ever actually run, gives
-**13 / 3.5 / 3.5 ns** and predicts about 7.7 kJ/mol less dissipation for free.
-The saving requires taking time from stage A: hold A at 15 ns and the remaining
-5 ns cannot beat what stage B already had.
+with the tail capped at the fastest rate ever actually run, gave
+**13 / 3.5 / 3.5 ns**, and that shape was run as test4. It worked: every stage
+overlapped and BAR closed the whole cycle for the first time.
 
-Those exponents are two-point estimates across runs that differ on six axes, so
-treat the allocation as the best available guess rather than an optimum.
+The current allocation, **17 / 3.5 / 3.5 ns**, no longer chases schedule
+efficiency, because test4 measured that to be nearly exhausted: Sivak-Crooks on
+the measured friction leaves only 1.14x against the 1.43x the three-stage split
+already took. It buys reversibility instead. Stage A gets 4 ns more because it
+carries 80% of the dG_bind variance and the rupture peak at u 0.10-0.20, which
+alone is 30.6% of the ramp hysteresis. `boundfwd` and `boundrev` go 2 -> 5 ns to
+fix a measured defect (see below), and the unbound hold 4 -> 6 ns.
+
+Those exponents are two-point estimates across runs that differ on several axes,
+so treat any allocation as the best available guess rather than an optimum.
+
+#### Why the bound legs are 5 ns
+
+The interface restraints are harmonic umbrellas switched `k_A = 0 -> k_B`, so the
+free-energy integrand is exactly
+
+    dH/dlambda = 0.5 * k_B * S,   S = sum over pairs of (d - d_ref)^2
+
+i.e. the strain against the reference IS the work. Raising `npt_c` to 10 ns
+doubled the strain handed to `boundfwd` (S 12.7 -> 27.7 nm^2, rms deviation per
+restrained pair 1.65 -> 2.45 A) without rescaling the 2 ns switch, and the leg
+stopped finishing what it started: at the end of `boundfwd`, `dH/dlambda` sat
+**71% above** the restrained-equilibrium value, where the same quantity was 6%
+*below* it when `npt_c` was 1 ns. That leg carries 12.7% of the dG_bind variance,
+and its BAR overlap rested on exactly two cycles out of 47.
+
+The fix is not to shorten `npt_c`: a long bound equilibration is what makes each
+cycle an independent draw from the ensemble the Crooks analysis assumes. It is to
+let the switch keep up with it.
 
 #### The holds, and what they are for
 
