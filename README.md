@@ -348,7 +348,7 @@ Stage 0: Preparation
 └── Energy minimization → emin_solv.gro
 
 Initial Equilibration (for distance restraints)
-└── 5-phase NVT + NPT → npt_init_cluster.gro
+└── 5-phase NVT + NPT → npt_init_cluster.gro   (classic engine)
 
 Independent Cycles (N cycles, default 5)
 ├── Cycle 1:
@@ -577,7 +577,11 @@ emin_vac.gro
   ├── measure_box.py  running max solute atom-atom distance over the probe run
   │                 -> boxpad.gs  (L = D_max + 2 × 1.5 nm)
   └── production    box from boxpad.gs, solvate, minimise, ladder, 1 ns NPT
-                    -> npt_init_cluster.gro, the restraint reference
+                    -> emin_solv.gro, which every cycle starts from
+  the restraint reference is npt_probe_cluster.gro, from the probe run: the
+  production system is deliberately NOT equilibrated here, because each cycle
+  runs its own ladder from emin_solv.gro with fresh velocities and that is what
+  generates the bound-state ensemble
 ```
 
 `make_boresch.py` then takes its geometry from the production reference (`-f`) and its backbone RMSF from the probe trajectory (`--traj`); solute atom numbering is identical between the two systems, only the solvent count differs. On 2KTF the measurement returns `-d 1.844`, within 0.05 nm of the constant it replaces, but it will move on the next complex instead of staying put.

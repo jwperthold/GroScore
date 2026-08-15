@@ -44,7 +44,7 @@ fi
 # Safety check: Exit if any files were modified within the last 70 minutes
 # This prevents running simulations while setup is still in progress
 # 60 minutes matches the timeout duration for individual simulation steps.
-# The npt_init equilibration is the one exception at 600m, so this window no
+# The probe equilibration is the one exception at 600m, so this window no
 # longer covers a setup that is still in its equilibration.
 # Only meaningful in legacy single-job mode: with the setup/cycle split, sibling
 # array tasks are writing files by design, so this check would abort all of them.
@@ -124,7 +124,11 @@ if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   # must not be reused after the topology is re-derived.
   rm -f topol_probe.top box_probe.gro box_solv_probe.gro ions_probe.tpr
   rm -f solv_ions_probe.gro emin_probe*.* index_probe.ndx nvt_?_probe.*
-  rm -f npt_probe.* boxpad.gs boxpad.tmp boxpad_used.gs
+  # npt_probe_* as well as npt_probe.*: the clustered reference the restraints
+  # are measured from is derived from the probe run and is guarded on its own
+  # existence, so a stale one would be reused against a re-derived topology.
+  # `npt_probe.*` does not match `npt_probe_cluster.gro`.
+  rm -f npt_probe.* npt_probe_* boxpad.gs boxpad.tmp boxpad_used.gs
   rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
   rm -rf amber19sb.ff
 fi
@@ -824,86 +828,45 @@ with open('$CUTOUT_PDB', 'w') as f:
   echo -e "! \"Water\"\nq\n" | gmx make_ndx -f emin_solv.gro -o index.ndx
   python3 ../../utils/make_cluster_group.py -f emin_solv.gro -n index.ndx
 
-  # Run one equilibration to generate disres (needs equilibrated structure for distances)
-  
-  if [[ ! -f nvt_1_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_init -maxwarn 10
+  # NO PRODUCTION EQUILIBRATION HERE. The restraint reference comes from the
+  # PROBE run, which is the only equilibration this setup performs.
+  #
+  # There used to be a second one: an NVT ladder plus an NPT leg in the
+  # production box, whose sole surviving product was the reference structure.
+  # It equilibrated the same solute the probe had already equilibrated for
+  # 11 ns, because the production box is built from emin_vac.gro and so starts
+  # from the vacuum-minimised structure again. That is roughly 21 ns per
+  # structure to produce one reference.
+  #
+  # Nothing else consumed it. Every cycle runs its OWN nvt_1..5_c<n> ladder and
+  # its own npt_c<n> from emin_solv.gro with fresh velocities, and that is
+  # deliberate: repeating the same equilibration per cycle with different seeds
+  # is how the bound-state ensemble the Crooks analysis samples is generated.
+  # Pre-equilibrating the production system once would not add to that ensemble,
+  # which is why the production box is still built from emin_vac.gro.
+  #
+  # The reference itself is box-independent: it is a set of solute-solute
+  # distances and angles, and the solute atom numbering is identical between the
+  # probe and production systems (solvate appends water after the solute, and
+  # genion replaces waters, never solute atoms).
+  if [[ ! -f npt_probe_whole.gro ]]; then
+    echo -e "0\n" | gmx trjconv -f npt_probe.gro -s npt_probe.tpr -o npt_probe_whole.gro -pbc whole
   fi
-  if [[ ! -f nvt_1_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_1_init
-  fi
-  if [[ ! -f nvt_2_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_init.tpr -t nvt_1_init.cpt -p topol.top -o nvt_2_init -maxwarn 10
-  fi
-  if [[ ! -f nvt_2_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_2_init
-  fi
-  if [[ ! -f nvt_3_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_init.tpr -t nvt_2_init.cpt -p topol.top -o nvt_3_init -maxwarn 10
-  fi
-  if [[ ! -f nvt_3_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_3_init
-  fi
-  if [[ ! -f nvt_4_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_init.tpr -t nvt_3_init.cpt -p topol.top -o nvt_4_init -maxwarn 10
-  fi
-  if [[ ! -f nvt_4_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_4_init
-  fi
-  if [[ ! -f nvt_5_init.tpr ]]; then
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_init.tpr -t nvt_4_init.cpt -p topol.top -o nvt_5_init -n index.ndx -maxwarn 10
-  fi
-  if [[ ! -f nvt_5_init.gro ]]; then
-    timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_init
-  fi
-  if [[ ! -f npt_init.tpr ]]; then
-    # npt_fe.mdp (1 ns), not npt_init_fe.mdp (11 ns): the long equilibration has
-    # moved to the probe pass, which is where the box size is measured and where
-    # make_boresch.py takes its backbone RMSF from. All this run has to do is
-    # relax the freshly added solvent around an already-equilibrated solute and
-    # produce the reference structure the restraints are built on.
-    # Runs straight off the NVT ladder: C-rescale is first order, so it relaxes
-    # the box monotonically instead of oscillating the way Parrinello-Rahman does
-    # from a box that has never been pressure-coupled, and needs no weak-coupling
-    # stage in front of it.
-    gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c nvt_5_init.tpr -t nvt_5_init.cpt -p topol.top -o npt_init -n index.ndx -maxwarn 10
-  fi
-  if [[ ! -f npt_init.gro ]]; then
-    # 600m, not the 60m every shorter stage uses. This leg is 11 ns: at the
-    # ~260 ns/day one single-threaded slot reaches it needs just over an hour
-    # alone, and a few hours when eight slots share a GPU. It inherited 60m from
-    # when it was 1 ns and was killed at 98.6 % with no confout written, after
-    # which every step below ran against files that did not exist.
-    # -cpi so a kill costs the remaining steps rather than all of them.
-    CPI=""
-    [[ -f npt_init.cpt ]] && CPI="-cpi npt_init.cpt"
-    timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_init $CPI
-  fi
-  if [[ ! -f npt_init.gro ]]; then
-    echo "Stage 0 failed: npt_init equilibration did not finish (no npt_init.gro)."
-    echo "  Re-running this structure resumes from npt_init.cpt."
-    echo $STRUCT_ID "NPT_INIT_FAIL" >> ../results_0.gs
-    exit 0
-  fi
-  if [[ ! -f npt_init_whole.gro ]]; then
-    echo -e "0\n" | gmx trjconv -f npt_init.gro -s emin_solv.tpr -o npt_init_whole.gro -pbc whole
-  fi
-  if [[ ! -f npt_init_whole.gro ]]; then
-    echo "Stage 0 failed: trjconv -pbc whole produced no npt_init_whole.gro."
+  if [[ ! -f npt_probe_whole.gro ]]; then
+    echo "Stage 0 failed: trjconv -pbc whole produced no npt_probe_whole.gro."
     echo $STRUCT_ID "TRJCONV_FAIL" >> ../results_0.gs
     exit 0
   fi
-  if [[ ! -f npt_init_cluster.gro ]]; then
-    # Output full system (0) to preserve atom numbering for pull group indices
-    echo -e "Protein_Struct\n0\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.gro -pbc cluster -n index.ndx
+  if [[ ! -f npt_probe_cluster.gro ]]; then
+    echo -e "Protein_Struct\n0\n" | gmx trjconv -f npt_probe_whole.gro -s npt_probe.tpr -o npt_probe_cluster.gro -pbc cluster -n index_probe.ndx
   fi
-  if [[ ! -f npt_init_cluster.pdb ]]; then
-    echo -e "Protein_Struct\n!Water\n" | gmx trjconv -f npt_init_whole.gro -s emin_solv.tpr -o npt_init_cluster.pdb -pbc cluster -n index.ndx
+  if [[ ! -f npt_probe_cluster.pdb ]]; then
+    echo -e "Protein_Struct\n! \"Water\"\n" | gmx trjconv -f npt_probe_whole.gro -s npt_probe.tpr -o npt_probe_cluster.pdb -pbc cluster -n index_probe.ndx
   fi
-  # npt_init_cluster.gro is the reference every restraint below is built on, and
+  # npt_probe_cluster.gro is the reference every restraint below is built on, and
   # make_boresch.py now also takes its Boresch reference geometry from it.
-  if [[ ! -f npt_init_cluster.gro ]]; then
-    echo "Stage 0 failed: trjconv -pbc cluster produced no npt_init_cluster.gro."
+  if [[ ! -f npt_probe_cluster.gro ]]; then
+    echo "Stage 0 failed: trjconv -pbc cluster produced no npt_probe_cluster.gro."
     echo $STRUCT_ID "TRJCONV_FAIL" >> ../results_0.gs
     exit 0
   fi
@@ -922,9 +885,18 @@ with open('$CUTOUT_PDB', 'w') as f:
   # the trajectory, and both are insensitive to which box the trajectory was run
   # in. Solute atom numbering is identical between the two systems, only the
   # solvent count differs, so the atom-number mapping holds.
+  # The probe is the only equilibration, so there is no second trajectory to fall
+  # back to. make_boresch degrades to the burial heuristic on its own if the
+  # trajectory is missing or too short, and says so on stderr.
   BOR_TRAJ=npt_probe.xtc; BOR_TPR=npt_probe.tpr
-  if [[ ! -s $BOR_TRAJ ]]; then BOR_TRAJ=npt_init.xtc; BOR_TPR=npt_init.tpr; fi
-  python3 ../../utils/make_boresch.py -f npt_init_cluster.gro -m chain_map.gs -T $REF_T --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR --topol topol.top > numpertres.tmp
+  # --index takes BOTH indexes: the generated a_*/bor_* groups are solute atom
+  # numbers, valid in either system, and the legs run with index.ndx while the
+  # readback grompps in the probe system that -f actually came from.
+  python3 ../../utils/make_boresch.py -f npt_probe_cluster.gro -m chain_map.gs -T $REF_T \
+      --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR \
+      --index index.ndx index_probe.ndx \
+      --topol topol_probe.top --readback-index index_probe.ndx \
+      --box-from emin_solv.gro > numpertres.tmp
   MB_RC=$?
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
@@ -1140,7 +1112,18 @@ fi
         gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
       fi
       if [[ ! -f npt_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm npt_c${cycle}
+        # 600m and -cpi, not the 60m every short stage uses. npt_fe.mdp went
+        # 1 ns -> 10 ns, and 10 ns does not fit in an hour when several slots
+        # share a GPU. The failure mode is not a slow cycle, it is a STUCK one:
+        # a kill leaves npt_c.cpt but no .gro, the `! -f npt_c.tpr` guard then
+        # skips grompp, and mdrun without -cpi restarts from step 0 of the same
+        # tpr and is killed at the same place on every retry. require_gro catches
+        # it as CYCLE_FAILED so no wrong number is produced, but the cycle can
+        # never finish. This is the same trap npt_init hit at 11 ns, which is
+        # why that one already carried 600m and -cpi.
+        CPI=""
+        [[ -f npt_c${cycle}.cpt ]] && CPI="-cpi npt_c${cycle}.cpt"
+        timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_c${cycle} $CPI
       fi
     fi
 

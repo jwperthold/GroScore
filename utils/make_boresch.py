@@ -40,7 +40,7 @@
 #   integrator can sum the first (numinterdis + 1) force columns.
 #
 # Usage:
-#   python make_boresch.py -f npt_init_cluster.gro -m chain_map.gs > numpertres.gs
+#   python make_boresch.py -f npt_probe_cluster.gro -m chain_map.gs > numpertres.gs
 #
 
 import os, sys, re, argparse, math, itertools, subprocess, traceback, shutil
@@ -50,25 +50,50 @@ from scipy.spatial.distance import cdist
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Generate Boresch + interface + elastic-network pull config for the FE protocol.")
-parser.add_argument('-f', '--input', type=str, default="npt_init_cluster.gro", help="Input coordinate file (default: npt_init_cluster.gro)")
+parser.add_argument('-f', '--input', type=str, default="npt_probe_cluster.gro",
+                    help="Reference structure the restraints are measured from "
+                         "(default: npt_probe_cluster.gro, the probe equilibration "
+                         "clustered). --topol and --readback-index must match it.")
 parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B (ligand side).")
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
-parser.add_argument('--traj', type=str, default="npt_init.xtc",
+parser.add_argument('--traj', type=str, default="npt_probe.xtc",
                     help="Equilibration trajectory used to measure backbone "
-                         "rigidity for anchor selection (default: npt_init.xtc). "
+                         "rigidity for anchor selection (default: npt_probe.xtc). "
                          "If missing, the burial heuristic is used instead.")
-parser.add_argument('--tpr', type=str, default="npt_init.tpr",
-                    help="Run input matching --traj (default: npt_init.tpr).")
+parser.add_argument('--tpr', type=str, default="npt_probe.tpr",
+                    help="Run input matching --traj (default: npt_probe.tpr). Also "
+                         "the source of the atom masses the COMs are taken with.")
 parser.add_argument('--topol', type=str, default="topol.top",
                     help="Topology for the pull readback check (default: topol.top). "
                          "The check grompps the emitted forward pull block at "
                          "nsteps=0 and confirms GROMACS reproduces the six Boresch "
-                         "references it was given.")
+                         "references it was given, so it must match -f.")
+parser.add_argument('--index', type=str, nargs='+', default=["index.ndx"],
+                    help="Index file(s) the generated a_*/bor_* groups are written "
+                         "into (default: index.ndx). More than one because the "
+                         "reference structure and the production legs can live in "
+                         "different systems: the groups are SOLUTE atom numbers, "
+                         "which are identical in both, since solvate appends water "
+                         "after the solute and genion replaces waters.")
+parser.add_argument('--readback-index', dest='readback_index', type=str, default=None,
+                    help="Index for the readback grompp; must match -f and --topol "
+                         "(default: the first --index).")
+parser.add_argument('--box-from', dest='box_from', type=str, default=None,
+                    help="Coordinate file supplying the BOX the pull-limit gates "
+                         "are scaled against (default: -f). Pass the PRODUCTION "
+                         "box here whenever -f comes from a different system: the "
+                         "anchor arm cap, the cross-triad rejection and the "
+                         "BORESCH_R_TOO_LARGE abort all scale with 0.49*min|box|, "
+                         "so a smaller reference box silently selects different "
+                         "anchors and can abort on a constraint the real run does "
+                         "not have.")
 parser.add_argument('--no-readback', dest='readback', action='store_false',
                     help="Skip the GROMACS pull readback check.")
 args = parser.parse_args()
+if args.readback_index is None:
+  args.readback_index = args.index[0]
 
 #------------------------------------------------------
 # Physical constants and fixed force constants (OpenFE ABFE defaults)
@@ -255,7 +280,7 @@ with open(args.input, "r") as f:
       except (ValueError, IndexError, AttributeError):
         pass
 
-# Load before anything takes a COM. npt_init.tpr already exists when job_fe.run
+# Load before anything takes a COM. The probe tpr already exists when job_fe.run
 # calls this script, and it is the same system, already repartitioned.
 TPR_MASS = load_tpr_masses(args.tpr)
 if TPR_MASS:
@@ -288,12 +313,34 @@ def box_vector_norms(box_line):
   v = [(f[0], f[3], f[4]), (f[5], f[1], f[6]), (f[7], f[8], f[2])]
   return [math.sqrt(sum(c * c for c in u)) for u in v]
 
+# The BOX comes from --box-from, NOT from -f, because the reference structure and
+# the box the legs run in need not be the same system. -f supplies geometry; the
+# box supplies a limit that four separate gates scale with:
+#
+#   arm_max      = 0.35 * min(BOX_VEC)   candidate anchor arms
+#   cross-triad rejection above 0.9 * PULL_LIMIT
+#   relaxed_cap  = 0.6 * PULL_LIMIT
+#   BORESCH_R_TOO_LARGE abort when ref_r + pull_dist > 0.6 * PULL_LIMIT
+#
+# Taking those from the reference file was harmless while the reference came from
+# the production box. It stopped being harmless when the reference moved to the
+# probe run, whose box is ~19% smaller: on 2KTF the limit falls 4.045 -> 3.29 nm,
+# which tightens arm_max 2.89 -> 2.33, selects DIFFERENT anchors, and so silently
+# changes ref_r, the five angles and dG_release. The abort is worse than silent:
+# 2KTF's r0_release of 1.882 nm sits 22% under the production threshold and 4.7%
+# under the probe one, so a slightly longer complex would fail setup for a box
+# constraint the production run does not have.
+_box_src = args.box_from or args.input
 BOX_VEC = []
-_l = [x for x in open(args.input).read().split("\n") if x.strip()]
 try:
+  _l = [x for x in open(_box_src).read().split("\n") if x.strip()]
   BOX_VEC = box_vector_norms(_l[-1])
-except (ValueError, IndexError):
+except (ValueError, IndexError, OSError):
   BOX_VEC = []
+if not BOX_VEC:
+  sys.stderr.write("make_boresch: WARNING - no box read from %s; the pull-limit "
+                   "gates are disabled and anchor arms fall back to ARM_MAX\n"
+                   % _box_src)
 
 # The distance every pull coordinate is measured against. 4.045 nm on 2KTF.
 PULL_LIMIT = 0.49 * min(BOX_VEC) if BOX_VEC else None
@@ -1106,29 +1153,40 @@ with open("boresch_anchors.gs", "w") as f:
 # PART 5 - Index groups
 #======================================================
 
-def strip_generated_groups():
+def strip_generated_groups(path):
   """Drop a_* and bor_* groups left by an earlier run before appending again.
 
   job_fe.run regenerates index.ndx with make_ndx immediately before calling this
   script, so in the normal flow there is nothing to strip. A standalone re-run in
   an existing directory has no such luck, and appending a second copy leaves
   grompp resolving a pull group name to whichever duplicate it saw first."""
-  if not os.path.isfile("index.ndx"):
+  if not os.path.isfile(path):
     return
   out, skipping = [], False
-  for line in open("index.ndx"):
+  for line in open(path):
     m = re.match(r"\s*\[\s*(\S+)\s*\]", line)
     if m:
       skipping = m.group(1).startswith("a_") or m.group(1).startswith("bor_")
     if not skipping:
       out.append(line)
-  with open("index.ndx", "w") as f:
+  with open(path, "w") as f:
     f.writelines(out)
 
 
 def write_index_groups():
-  strip_generated_groups()
-  with open("index.ndx", "a") as index:
+  """Append the generated groups to every index file named by --index.
+
+  The groups are SOLUTE atom numbers, so the same definitions are valid in every
+  system built from the same solute: the production legs read index.ndx while the
+  readback grompps in whichever system the reference structure came from."""
+  for _p in args.index:
+    strip_generated_groups(_p)
+  for _p in args.index:
+    _write_index_groups_to(_p)
+
+
+def _write_index_groups_to(path):
+  with open(path, "a") as index:
     # Single-atom groups for interface + elastic network (matching make_disres_en)
     for i, j, _ in interdis:
       for anum in (prot1_data[i][3], prot2_data[j][3]):
@@ -1524,7 +1582,7 @@ def verify_pull_block(mdp):
               "continuation = yes\ngen_vel = no\nfree-energy = no\n")
     tpr = os.path.join(work, "probe.tpr")
     r = subprocess.run(["gmx", "grompp", "-f", probe, "-c", args.input,
-                        "-r", args.input, "-p", args.topol, "-n", "index.ndx",
+                        "-r", args.input, "-p", args.topol, "-n", args.readback_index,
                         "-o", tpr, "-maxwarn", "20"],
                        capture_output=True, text=True)
     if r.returncode != 0:
