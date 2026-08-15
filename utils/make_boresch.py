@@ -1339,69 +1339,88 @@ def write_pull_block(filename, pull_groups, coords):
       f.write("pull-coord%d-groups      = %s\n" % (ci, " ".join(str(g) for g in c["groups"])))
       f.write("pull-coord%d-start       = no\n" % ci)
       f.write("pull-coord%d-init        = %.8f\n" % (ci, c["init"]))
-      f.write("pull-coord%d-rate        = %.8f\n" % (ci, c["rate"]))
+      # %.10g, not %.8f: a stage rate is span/time and need not be representable
+      # in 8 decimals. 0.3 nm over 13000 ps is 2.3076923e-5, which %.8f rounds to
+      # 2.308e-5 and which then overshoots the stage's own end reference by
+      # 4e-5 nm. Small, but it puts a discontinuity at every stage boundary for
+      # no reason, and the same rounding would reach the work through the rate
+      # recorded in boresch_analytical.gs.
+      f.write("pull-coord%d-rate        = %.10g\n" % (ci, c["rate"]))
       f.write("pull-coord%d-k           = %.8f\n" % (ci, c["k"]))
       f.write("pull-coord%d-kB          = %.8f\n" % (ci, c["kB"]))
       f.write("\n")
 
-# Unbinding / rebinding leg, split at u = U_SPLIT.
+# Unbinding / rebinding ramp, in stages with an equilibrium hold at every internal
+# boundary. WHICH stages exist and how long they are is not decided here: it comes
+# from utils/fe_protocol.py, the single definition of the cycle. This loop only
+# knows how to turn one stage description into one pull block.
 #
-# The rupture carries 75% of the leg's dissipation in the first 30% of the
-# distance, so stage A is given most of the time and stage B the rest. Each stage
-# gets its own rate, derived from its own mdp's nsteps*dt so the two cannot drift
-# apart, and its own init offset, because pull-coordN-start = no makes init
-# absolute and stage B has to resume where stage A stopped.
+# Each stage gets its own rate, DERIVED from its own mdp's nsteps*dt rather than
+# passed in, so the mdp and the rate cannot drift apart, and its own init offset,
+# because pull-coordN-start = no makes init absolute and each stage has to resume
+# where the previous one stopped.
 #
-# The 1 ns holds at U_SPLIT carry rate 0 and delta-lambda 0, so they contribute no
-# work. They exist so the two stages can be estimated separately: adding their
-# per-cycle works would rebuild the unstaged distribution and gain nothing.
-# Unlike the unbound hold below, holdmid KEEPS its interface coordinates, because
-# at lambda = U_SPLIT their force constant is still (1 - U_SPLIT) of full and they
-# are doing real work holding the partly separated interface.
-U_SPLIT = 0.3
-STAGES = [
-    ("bindfwdA_fe.mdp",   0.0,      U_SPLIT),
-    ("holdmid_fe.mdp",    U_SPLIT,  U_SPLIT),
-    ("bindfwdB_fe.mdp",   U_SPLIT,  1.0),
-    ("bindrevB_fe.mdp",   1.0,      U_SPLIT),
-    ("holdmidrev_fe.mdp", U_SPLIT,  U_SPLIT),
-    ("bindrevA_fe.mdp",   U_SPLIT,  0.0),
-]
+# The holds carry rate 0 and delta-lambda 0, so they contribute no work and the
+# stage works still sum exactly to the work of the whole ramp. They exist so the
+# stages either side can be estimated separately: adding their per-cycle works
+# would rebuild the unstaged distribution and gain nothing. Unlike the unbound
+# hold below, the internal holds KEEP their interface coordinates, because at
+# lambda < 1 the force constant is still (1 - lambda) of full and they are doing
+# real work holding the partly separated interface.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fe_protocol as P
+
 stage_rates = {}
-# Where the six Boresch coordinates ended up inside bindfwdA's block, captured
-# from the coords themselves rather than assumed. The readback below used to take
-# the last six columns, which is only the right answer when the elastic network
-# is empty: build_coords emits interface coords, then the Boresch distance, then
-# the elastic network, then the five angles and dihedrals. A partner with three
-# or more terminal-anchor residues produces a non-empty network, and the readback
-# would then compare the Boresch r against an elastic-network pair distance and
-# abort a setup that is in fact correct.
+# Where the six Boresch coordinates ended up inside the FIRST stage's block,
+# captured from the coords themselves rather than assumed. The readback below used
+# to take the last six columns, which is only the right answer when the elastic
+# network is empty: build_coords emits interface coords, then the Boresch
+# distance, then the elastic network, then the five angles and dihedrals. A
+# partner with three or more terminal-anchor residues produces a non-empty
+# network, and the readback would then compare the Boresch r against an
+# elastic-network pair distance and abort a setup that is in fact correct.
 boresch_idx = []
-for _name, _u0, _u1 in STAGES:
+first_stage_mdp = None
+for _leg in P.legs():
+  if _leg["kind"] not in ("stage", "hold"):
+    continue
+  _name, _u0, _u1 = _leg["mdp"], _leg["u_from"], _leg["u_to"]
   _ps = leg_ps(_name)
   if _ps is None:
     abort("STAGE_MDP_MISSING",
           "cannot read nsteps/dt from %s, so its pull rate is undefined" % _name)
   _dir = "fwd" if _u1 >= _u0 else "rev"
   _pg, _co = build_coords("unbind", _dir, u_from=_u0, u_to=_u1, ps=_ps)
+  if _leg["kind"] == "hold" and _u0 >= args.pull_dist:
+    # The HOLD at the far end drops its interface coordinates; see the long note
+    # below. Every other hold keeps them. The kind test is load-bearing: the first
+    # reverse stage also starts at u = pull_dist, and stripping its interface
+    # coordinates would leave it pulling nothing at rate zero.
+    _co = [c for c in _co if c.get("boresch")]
+    for c in _co:
+      c["rate"] = 0.0
   write_pull_block(_name, _pg, _co)
-  if _name == "bindfwdA_fe.mdp":
+  if _leg["kind"] == "stage" and first_stage_mdp is None:
+    first_stage_mdp = _name
     boresch_idx = [i for i, c in enumerate(_co) if c.get("boresch")]
-  stage_rates[_name] = (0.0 if _u1 == _u0
-                        else (_u1 - _u0) * args.pull_dist / _ps)
+  stage_rates[_leg["name"]] = (0.0 if _u1 == _u0
+                               else (_u1 - _u0) * args.pull_dist / _ps)
 
 # Each stage's rate is recorded next to the geometry, for the same reason the
 # single rate always was: integrate.py turns the time integral of the pull force
 # into work by multiplying by the rate, so a stage integrated at another stage's
-# rate is silently rescaled. With one rate that could be a constant; with three it
-# cannot. Appended rather than written above because the rates are only known once
-# each stage's mdp has been read.
+# rate is silently rescaled. With one rate that could have been a constant; with
+# one per stage it cannot. Appended rather than written above because the rates
+# are only known once each stage's mdp has been read.
 with open("boresch_analytical.gs", "a") as f:
-  f.write("u_split               %.4f\n" % U_SPLIT)
-  for _name, _u0, _u1 in STAGES:
-    f.write("stage_rate_nm_ps  %-20s %.8f  # u %.2f -> %.2f over %g ps\n"
-            % (_name.replace("_fe.mdp", "").replace(".mdp", ""),
-               stage_rates[_name], _u0, _u1, leg_ps(_name) or 0.0))
+  f.write("u_boundaries          %s\n"
+          % " ".join("%.4f" % b for b in P.boundaries()))
+  for _leg in P.legs():
+    if _leg["kind"] not in ("stage", "hold"):
+      continue
+    f.write("stage_rate_nm_ps  %-20s %.10g  # u %.2f -> %.2f over %g ps\n"
+            % (_leg["name"], stage_rates[_leg["name"]],
+               _leg["u_from"], _leg["u_to"], leg_ps(_leg["mdp"]) or 0.0))
 
 # Hold leg at the unbound restrained state (lambda = 1): only the Boresch
 # coordinates, with zero rate. job_fe.run pins init-lambda = 1, delta-lambda = 0.
@@ -1434,14 +1453,12 @@ with open("boresch_analytical.gs", "a") as f:
 # what the box padding in job_fe.run has to cover.
 #
 # Do not "fix" this by tethering the dropped pairs during the hold. A flat-bottom
-# tether present only in nptrev is absent from the lambda = 1 Hamiltonian of
-# bind_fe and bindrev_fe, so it would bias the starting distribution handed to the
-# reverse leg, which is the equilibrium end state the Crooks analysis assumes.
-pg_hold, co_hold = build_coords("unbind", "rev")
-co_hold = [c for c in co_hold if c.get("boresch")]
-for c in co_hold:
-  c["rate"] = 0.0
-write_pull_block("nptrev_fe.mdp", pg_hold, co_hold)
+# tether present only in nptrev is absent from the lambda = 1 Hamiltonian of the
+# stages either side of it, so it would bias the starting distribution handed to
+# the reverse leg, which is the equilibrium end state the Crooks analysis assumes.
+#
+# The block itself is written by the loop above, which drops the interface
+# coordinates from whichever hold sits at u = pull_dist.
 
 # Bound-state restraint leg
 pg_b_fwd, co_b_fwd = build_coords("bound", "fwd")
@@ -1538,10 +1555,11 @@ def verify_pull_block(mdp):
     shutil.rmtree(work, ignore_errors=True)
 
 
-# bindfwdA is the block whose inits ARE the bound references (u_from = 0), so it
-# is the only stage the readback can compare against the reference structure. Any
-# later stage legitimately sits u_from*pull_dist away and would false-positive.
-_read = verify_pull_block("bindfwdA_fe.mdp")
+# The FIRST stage is the block whose inits ARE the bound references (u_from = 0),
+# so it is the only stage the readback can compare against the reference
+# structure. Any later stage legitimately sits u_from*pull_dist away and would
+# false-positive.
+_read = verify_pull_block(first_stage_mdp)
 if _read is False:
   abort("PULL_READBACK_FAILED",
         "could not read the emitted pull block back through GROMACS")
@@ -1552,8 +1570,8 @@ elif _read is not None:
   want = [ref_r, ref_thA, ref_thB, ref_phA, ref_phB, ref_phC]
   if len(boresch_idx) != 6:
     abort("PULL_READBACK_FAILED",
-          "expected 6 Boresch coordinates in bindfwdA_fe.mdp, found %d"
-          % len(boresch_idx))
+          "expected 6 Boresch coordinates in %s, found %d"
+          % (first_stage_mdp, len(boresch_idx)))
   got = [_read[i] for i in boresch_idx] if max(boresch_idx) < len(_read) else []
   bad = []
   for nm, w, g in zip(names, want, got):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression test for the two-stage unbinding ramp.
+"""Regression test for the staged unbinding ramp.
 
 The ramp runs as stage A (lambda 0 -> U_SPLIT) and stage B (U_SPLIT -> 1) with an
 equilibrium hold between them, so that each stage dissipates a fraction of the
@@ -32,8 +32,11 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "utils"))
+import fe_protocol as P
 RT = 0.00831446261815324 * 310.0
-U_SPLIT = 0.3
+# The first stage's span, i.e. the fraction of lambda a stage-A dhdl file covers.
+U_SPLIT = P.RAMP[0][2] / P.PULL_DIST
 
 failures = []
 
@@ -165,11 +168,8 @@ def mdp_span(name):
   return (vals["init-lambda"],
           vals["init-lambda"] + vals["delta-lambda"] * vals["nsteps"])
 
-EXPECT = [("boundfwd.mdp", 0.0, 1.0), ("bindfwdA_fe.mdp", 0.0, U_SPLIT),
-          ("holdmid_fe.mdp", U_SPLIT, U_SPLIT), ("bindfwdB_fe.mdp", U_SPLIT, 1.0),
-          ("nptrev_fe.mdp", 1.0, 1.0), ("bindrevB_fe.mdp", 1.0, U_SPLIT),
-          ("holdmidrev_fe.mdp", U_SPLIT, U_SPLIT), ("bindrevA_fe.mdp", U_SPLIT, 0.0),
-          ("boundrev.mdp", 1.0, 0.0)]
+EXPECT = [("npt_fe.mdp", None, None)]
+EXPECT = [(l["mdp"], l["lam_from"], l["lam_to"]) for l in P.legs()]
 for name, l0, l1 in EXPECT:
   got = mdp_span(name)
   check("   %-18s %.2f -> %.2f" % (name, l0, l1),
@@ -325,35 +325,39 @@ print("3. the cycle-completeness gate")
 
 job = open(os.path.join(REPO, "job_fe.run")).read()
 m = re.search(r"complete_row\(\)\s*\{(.*?)\n\s*\}", job, re.S)
-nf = re.search(r"^FE_RESULT_NF=(\d+)", job, re.M)
-check("complete_row() and FE_RESULT_NF are both defined", bool(m) and bool(nf))
+check("complete_row() is defined in job_fe.run", bool(m))
+check("the runner takes its width from fe_protocol, not from a literal",
+      "fe_protocol.py" in job and not re.search(r"^FE_RESULT_NF=\d", job, re.M))
 
-if m and nf:
-  awk_body = m.group(1)
-  awk_src = re.search(r"'(.*?)'", awk_body, re.S).group(1)
-  width = int(nf.group(1))
-  check("the declared width matches the writer",
-        width == 13, "FE_RESULT_NF=%d" % width)
+if m:
+  awk_src = re.search(r"'(.*?)'", m.group(1), re.S).group(1)
+  width = P.result_nf()
+  nworks = len(P.works())
+  check("the protocol's row width matches its own work list",
+        width == nworks + 3, "%d fields, %d works" % (width, nworks))
 
   def gate(row):
     p = os.path.join(work, "row.gs")
     open(p, "w").write(row + "\n")
     return subprocess.run(["awk", "-v", "want=%d" % width, awk_src, p]).returncode == 0
 
-  full = "X 1 " + " ".join("%g" % (i + 1) for i in range(10)) + " 1.5"
+  full = "X 1 " + " ".join("%g" % (i + 1) for i in range(nworks)) + " 1.5"
   check("a complete row is accepted", gate(full))
   check("a NaN RMSD alone is still accepted",
-        gate("X 1 " + " ".join("%g" % (i + 1) for i in range(10)) + " NaN"))
-  # Every work position, including the four the old window could not see.
-  for pos in range(3, 3 + 10):
+        gate("X 1 " + " ".join("%g" % (i + 1) for i in range(nworks)) + " NaN"))
+  # EVERY work position must be seen. The gate once checked only fields 3-8,
+  # which covered a 9-field row exactly and silently stopped covering the tail the
+  # moment the row grew. The range is derived now, so this loop grows with it.
+  for pos in range(3, 3 + nworks):
     f = full.split()
     f[pos - 1] = "NaN"
     check("NaN in field %-2d is rejected%s"
           % (pos, "  (outside the old 3-8 window)" if pos > 8 else ""),
           not gate(" ".join(f)))
-  check("a legacy 9-field row is recomputed", not gate("X 1 1 2 3 4 5 6 1.5"))
+  check("a narrower row from an earlier protocol is recomputed",
+        not gate("X 1 1 2 3 4 5 6 1.5"))
   check("a truncated row is recomputed",
-        not gate("X 1 1 2 3 4 5 6 7 8 9 10"))
+        not gate("X 1 " + " ".join("%g" % (i + 1) for i in range(nworks))))
 
 shutil.rmtree(work, ignore_errors=True)
 

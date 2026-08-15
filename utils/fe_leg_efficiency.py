@@ -43,22 +43,39 @@ SIGN_PULL_FWD = -1.0
 SIGN_PULL_REV = +1.0
 
 # Which mdp/prefix pair each leg is made of, and where its works sit in the
-# canonical row read_works() returns:
-#   (forward tag, reverse tag, mdp(s), forward pull index, reverse pull index)
-# The dhdl field always follows its pull field, so one index locates the pair.
+# canonical row read_works() returns. Built from utils/fe_protocol.py, which is
+# the single definition of the cycle, so --leg gains an entry whenever the ramp
+# gains a stage.
 #
-# The ramp runs in two stages either side of an equilibrium hold, so unbindA and
-# unbindB are the two real switching processes and are what the friction and cost
-# model below apply to. "unbind" is their sum: a valid Crooks process (the hold
-# does no work) and so a valid work distribution, but one with no trace files of
-# its own, and the trajectory diagnosis is skipped for it on staged data.
-LEGS = {
-    "unbindA": ("bindfwdA", "bindrevA", ("bindfwdA_fe.mdp",), 1, 7),
-    "unbindB": ("bindfwdB", "bindrevB", ("bindfwdB_fe.mdp",), 3, 5),
-    "unbind":  ("bindfwd",  "bindrev",  ("bindfwdA_fe.mdp", "bindfwdB_fe.mdp",
-                                         "bind_fe.mdp"), None, None),
-    "bound":   ("boundfwd", "boundrev", ("boundfwd.mdp",), None, None),
-}
+#   unbind<L>   one switching stage, the real Crooks process, and what the
+#               friction and cost model below apply to.
+#   unbind      all the stages summed: a valid work distribution (the holds do no
+#               work) but with no trace files of its own, so the trajectory
+#               diagnosis is skipped for it on a staged run.
+#   bound       the restraint switch, which has no pull channel at all.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fe_protocol as _P
+
+def _build_legs():
+    stages = [l for l in _P.legs() if l["kind"] == "stage"]
+    fwd = [l for l in stages if l["dirn"] == "fwd"]
+    legs, mdps = {}, []
+    for i, l in enumerate(fwd):
+        L = l["stage"]
+        rev = next(r for r in stages if r["dirn"] == "rev" and r["stage"] == L)
+        # Row layout: W_intro, then 2 fields per forward stage in order, then 2
+        # per reverse stage in the order they RUN, then W_remove.
+        legs["unbind" + L] = (l["name"], rev["name"], (l["mdp"],),
+                              1 + 2 * i, 1 + 2 * len(fwd) + 2 * (len(fwd) - 1 - i))
+        mdps.append(l["mdp"])
+    legs["unbind"] = ("bindfwd", "bindrev", tuple(mdps) + ("bind_fe.mdp",), None, None)
+    legs["bound"] = ("boundfwd", "boundrev", ("boundfwd.mdp",), None, None)
+    return legs
+
+LEGS = _build_legs()
+STAGE_LETTERS = [l["stage"] for l in _P.legs()
+                 if l["kind"] == "stage" and l["dirn"] == "fwd"]
 
 ap = argparse.ArgumentParser(
     description="Diagnose a GroScore-FE leg and cost out longer legs vs more cycles.")
@@ -71,9 +88,11 @@ ap.add_argument("--leg", default="unbind", choices=sorted(LEGS),
                 help="Which leg pair to analyse (default: unbind).")
 ap.add_argument("--temp", type=float, default=310.0,
                 help="Temperature in K (default: 310, must match the run).")
-ap.add_argument("--equil", type=float, default=1.1,
+ap.add_argument("--equil", type=float, default=_P.NPT_PS / 1000.0 + 0.1,
                 help="Per-cycle equilibration outside the switching legs, ns "
-                     "(default: 1.1 = nvt_1-5 + npt_fe).")
+                     "(default: the NVT ladder plus npt_fe, taken from "
+                     "fe_protocol.py, so it follows the protocol rather than "
+                     "being a constant that silently goes stale).")
 ap.add_argument("--max-friction-cycles", type=int, default=12, metavar="N",
                 help="Cycles used for the friction estimate (default: 12); it is "
                      "an ensemble average and converges quickly.")
@@ -84,6 +103,7 @@ args = ap.parse_args()
 RT = 0.00831446261815324 * args.temp
 SDIR = args.dir or args.struct
 FWD_TAG, REV_TAG, LEG_MDPS, IF, IR = LEGS[args.leg]
+NSTAGE_TOTAL = len(STAGE_LETTERS)
 
 
 # ---- small readers -----------------------------------------------------------
@@ -126,62 +146,66 @@ def two_cols(path):
 
 
 def read_works():
-    """{cycle: [W_intro, WuA_pull, WuA_dhdl, WuB_pull, WuB_dhdl,
-                WrB_pull, WrB_dhdl, WrA_pull, WrA_dhdl, W_remove]},
-    NaN rows dropped exactly as groscore_fe.read_works drops them, and legacy
-    9-field rows widened the same way it widens them: the single ramp goes in the
-    stage-A slots with zeros for stage B, so summing the stages still reproduces
-    the legacy work. STAGED collects which rows were genuinely staged."""
+    """{cycle: [W_intro, <4 works per stage>, W_remove]} with the stages in
+    forward order, i.e. the reverse pairs reordered out of the protocol's
+    run order. NaN rows dropped exactly as groscore_fe.read_works drops them.
+
+    The stage count comes from the row width, nstages = (NF - 5) / 4, so rows
+    from every earlier protocol still parse. NSTAGES records what each cycle
+    actually carried."""
     out = {}
     pat = os.path.join(args.resultsdir, "%s_c*.gs" % args.struct)
     # Legacy results_fe.gs FIRST, per-cycle files last, because the last writer of
     # a cycle wins. groscore_fe.read_works resolves the same collision the same
-    # way; read in the other order, a stale pre-split row left in results_fe.gs
-    # would override its own repaired per-cycle file and silently disable the
-    # staged analysis in this tool alone.
+    # way; read in the other order, a stale row left in results_fe.gs would
+    # override its own repaired per-cycle file.
     for path in ["results_fe.gs"] + sorted(glob.glob(pat)):
         if not os.path.isfile(path):
             continue
         for line in open(path):
             f = line.split()
-            staged = len(f) >= 12
-            nw = 10 if staged else 6
-            if len(f) < 2 + nw or f[0] != args.struct:
+            nf = len(f)
+            if nf < 9 or (nf - 5) % 4 != 0 or f[0] != args.struct:
                 continue
+            ns = (nf - 5) // 4
+            nw = 2 + 4 * ns
             try:
                 vals = [float(x) for x in f[2:2 + nw]]
             except ValueError:
                 continue
             if any(math.isnan(v) for v in vals):
                 continue
-            if not staged:
-                vals = [vals[0], vals[1], vals[2], 0.0, 0.0,
-                        0.0, 0.0, vals[3], vals[4], vals[5]]
             out[int(f[1])] = vals
-            STAGED[int(f[1])] = staged
+            NSTAGES[int(f[1])] = ns
     return out
 
 
-STAGED = {}
+NSTAGES = {}
 
 
 def leg_pair(works):
     """(forward, sign-aligned reverse) works of the selected leg, per cycle."""
     ks = sorted(works)
+    ns = NSTAGES[ks[0]]
     if args.leg == "bound":
         f = np.array([works[c][0] for c in ks])
-        r_raw = np.array([works[c][9] for c in ks])
+        r_raw = np.array([works[c][-1] for c in ks])
         return ks, f, r_raw, -r_raw
 
-    def stage(i, j, sign):
-        return np.array([sign * works[c][i] + works[c][j] for c in ks])
+    def stage(i, sign_p, sign_r):
+        """Stage i of the row, forward and reverse. The reverse pairs are stored
+        in the order they run, which is the reverse of the forward order."""
+        j = 1 + 2 * i
+        k = 1 + 2 * ns + 2 * (ns - 1 - i)
+        return (np.array([sign_p * works[c][j] + works[c][j + 1] for c in ks]),
+                np.array([sign_r * works[c][k] + works[c][k + 1] for c in ks]))
 
-    if args.leg == "unbind":     # the whole ramp: both stages summed
-        f = stage(1, 2, SIGN_PULL_FWD) + stage(3, 4, SIGN_PULL_FWD)
-        r_raw = stage(7, 8, SIGN_PULL_REV) + stage(5, 6, SIGN_PULL_REV)
+    if args.leg == "unbind":                     # every stage summed
+        f = sum(stage(i, SIGN_PULL_FWD, SIGN_PULL_REV)[0] for i in range(ns))
+        r_raw = sum(stage(i, SIGN_PULL_FWD, SIGN_PULL_REV)[1] for i in range(ns))
     else:
-        f = stage(IF, IF + 1, SIGN_PULL_FWD)
-        r_raw = stage(IR, IR + 1, SIGN_PULL_REV)
+        i = STAGE_LETTERS.index(args.leg[len("unbind"):])
+        f, r_raw = stage(i, SIGN_PULL_FWD, SIGN_PULL_REV)
     return ks, f, r_raw, -r_raw
 
 
@@ -232,9 +256,13 @@ if not works:
     sys.exit("No complete cycles for %s in %s/ (or results_fe.gs)."
              % (args.struct, args.resultsdir))
 
-if args.leg in ("unbindA", "unbindB") and not all(STAGED.values()):
-    sys.exit("%s has unstaged (9-field) results, which carry no per-stage works.\n"
-             "Use --leg unbind for the ramp as a whole." % args.struct)
+if args.leg.startswith("unbind") and args.leg != "unbind":
+    want = STAGE_LETTERS.index(args.leg[len("unbind"):]) + 1
+    have = set(NSTAGES.values())
+    if len(have) != 1 or next(iter(have)) < want:
+        sys.exit("%s has results with %s ramp stage(s); --leg %s needs at least %d.\n"
+                 "Use --leg unbind for the ramp as a whole."
+                 % (args.struct, sorted(have) or "no", args.leg, want))
 
 ks, Wf, Wr_raw, Wr = leg_pair(works)
 n = len(ks)
@@ -250,12 +278,11 @@ if not np.isfinite(L):
     L = 1.0
 # A stage covers its own fraction of the pull, and that fraction is what the
 # header should report: the stages exist precisely because they are not the whole.
-u_split = boresch_value("u_split")
-if np.isfinite(u_split):
-    if args.leg == "unbindA":
-        L *= u_split
-    elif args.leg == "unbindB":
-        L *= 1.0 - u_split
+if args.leg.startswith("unbind") and args.leg != "unbind":
+    _st = [l for l in _P.legs() if l["kind"] == "stage" and l["dirn"] == "fwd"
+           and l["stage"] == args.leg[len("unbind"):]]
+    if _st:
+        L *= abs(_st[0]["u_to"] - _st[0]["u_from"]) / _P.PULL_DIST
 
 print("")
 print("GroScore-FE leg efficiency -- %s, %s leg" % (args.struct, args.leg))
@@ -307,9 +334,10 @@ if not have_traces:
     if args.leg == "bound":
         print("   The bound legs switch restraints without pulling, so they have no")
         print("   pull channel and never write _DG.dat/_dGdt.dat. Expected.")
-    elif args.leg == "unbind" and any(STAGED.values()):
-        print("   The ramp runs as two stages, so it has no single trace to reduce.")
-        print("   Run --leg unbindA and --leg unbindB for the trajectory diagnosis.")
+    elif args.leg == "unbind" and max(NSTAGES.values(), default=1) > 1:
+        print("   The ramp runs in stages, so it has no single trace to reduce.")
+        print("   Run --leg unbind%s for the trajectory diagnosis."
+              % (" / --leg unbind".join(STAGE_LETTERS)))
     else:
         print("   An archived structure keeps them inside its tarball.")
 else:
@@ -440,16 +468,11 @@ def nz(x):
 # The cycle costs what it costs whichever leg is being analysed, so it is built
 # once from every leg the structure actually has. bind_fe.mdp is the pre-staging
 # single ramp and is absent on a staged run, as bindfwdA/B are on an unstaged one.
-per_cycle = (args.equil
-             + 2 * nz(mdp_time_ns("boundfwd.mdp"))
-             + nz(mdp_time_ns("nptrev_fe.mdp"))
-             + nz(mdp_time_ns("holdmid_fe.mdp"))
-             + nz(mdp_time_ns("holdmidrev_fe.mdp"))
-             + 2 * nz(mdp_time_ns("bindfwdA_fe.mdp"))
-             + 2 * nz(mdp_time_ns("bindfwdB_fe.mdp"))
-             + 2 * nz(mdp_time_ns("bind_fe.mdp")))
-# Switching time of THIS leg, per direction; everything else in the cycle is
-# fixed with respect to the lever being priced.
+per_cycle = args.equil
+for _l in _P.legs():
+    _t = nz(mdp_time_ns(_l["mdp"]))
+    per_cycle += _t
+per_cycle += 2 * nz(mdp_time_ns("bind_fe.mdp"))   # the pre-staging single ramp
 t_unb = nz(t_leg)
 fixed = per_cycle - 2 * t_unb
 

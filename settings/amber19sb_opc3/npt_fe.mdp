@@ -1,13 +1,13 @@
-; npt_fe.mdp - 1 ns NPT equilibration of the unrestrained bound state before
-; each FE cycle (extended from the 100 ps npt.mdp of the classic protocol).
-; C-rescale, so the configurations handed to boundfwd are drawn from the true
-; NPT ensemble the Crooks analysis assumes. Runs straight off the NVT ladder:
-; C-rescale is first order and needs no weak-coupling stage in front of it.
+; npt_fe.mdp - 10 ns NPT equilibration of the unrestrained bound state before
+; each FE cycle. Its output is the configuration boundfwd starts from, and the
+; Crooks analysis assumes those are drawn from the true NPT ensemble, so it uses
+; C-rescale and runs straight off the NVT ladder (C-rescale is first order and
+; needs no weak-coupling stage in front of it).
 ;
-; nsteps 250000 * dt 0.004 = 1000 ps.
+; nsteps 2500000 * dt 0.004 = 10000 ps.
 
 integrator               = md
-nsteps                   = 250000
+nsteps                   = 2500000
 dt                       = 0.004
 mass-repartition-factor  = 3
 

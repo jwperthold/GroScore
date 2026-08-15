@@ -71,16 +71,36 @@ export GMX_MAXBACKUP=-1
 # rate they were actually run at.
 PULL_DIST=1.0
 
-# Fields in one results_fe.d row:
-#   STRUCT_ID cycle
-#   W_intro  WuA_pull WuA_dhdl  WuB_pull WuB_dhdl  WrB_pull WrB_dhdl  WrA_pull WrA_dhdl  W_remove
-#   RMSD
-# i.e. 2 + 10 works + 1 = 13. Named because the completeness gate and the writer
-# must agree on it: a gate that checks fewer fields than the writer emits marks a
-# cycle done on works it never looked at, and that cycle is then dropped by
-# groscore_fe.py and lost when the structure archives. The writer asserts against
-# this constant, so the two cannot drift apart silently.
-FE_RESULT_NF=13
+# A results_fe.d row is  STRUCT_ID cycle <one field per work> RMSD, and which
+# works exist depends on how many stages the ramp has. FE_RESULT_NF is that width.
+# It is named because the completeness gate and the writer must agree on it: a
+# gate that checks fewer fields than the writer emits marks a cycle done on works
+# it never looked at, and that cycle is then dropped by groscore_fe.py and lost
+# when the structure archives. The writer asserts its own row against it, and both
+# now come from the same place, so they cannot drift apart at all.
+#
+# Sourced rather than written out: FE_RESULT_NF, FE_LEGS, FE_LEG_MDP,
+# FE_LEG_PULL, FE_LEG_DHDL, FE_LEG_MDPS, FE_WORKS and FE_WORK_FIELDS all come
+# from utils/fe_protocol.py, which is the single definition of the cycle. The
+# runner therefore cannot disagree with the mdps that were generated from it.
+FE_PROTO=$(python3 "$(dirname "$0")/utils/fe_protocol.py" --shell 2>/dev/null) \
+  || FE_PROTO=$(python3 ../../utils/fe_protocol.py --shell 2>/dev/null)
+if [[ -z "$FE_PROTO" ]]; then
+  echo "FATAL: could not read the FE protocol from utils/fe_protocol.py" >&2
+  exit 1
+fi
+eval "$FE_PROTO"
+
+# Every xvg the cycle's legs write, without the .xvg suffix. Used to gunzip them
+# back on a restart and to gzip them again afterwards; derived so that adding a
+# stage cannot leave its traces uncompressed or, worse, un-restorable.
+fe_xvgs() {
+  local i
+  for i in "${!FE_LEGS[@]}"; do
+    [[ "${FE_LEG_PULL[$i]}" == "1" ]] && echo "${FE_LEGS[$i]}_${cycle}_pullf"
+    [[ "${FE_LEG_DHDL[$i]}" == "1" ]] && echo "${FE_LEGS[$i]}_${cycle}_dhdl"
+  done
+}
 
 # Restart recovery: detect and clean up stale intermediate files from failed runs.
 # If conf.gro exists but emin_solv.gro doesn't, a previous setup attempt failed
@@ -188,18 +208,18 @@ MDP_DIR="${GROSCORE_ROOT}/settings/$FORCEFIELD"
 # had to agree with, which is the same shape as the two temperature traps already
 # found in the scoring scripts. Deriving it removes the constant instead of
 # checking it.
-REF_T=$(awk -F= '/^ *ref_t *=/{n=split($2,a," "); print a[1]; exit}' $MDP_DIR/bindfwdA_fe.mdp 2>/dev/null)
+REF_T=$(awk -F= '/^ *ref_t *=/{n=split($2,a," "); print a[1]; exit}' $MDP_DIR/${FE_LEG_MDPS[0]} 2>/dev/null)
 # Both tc-grps must be at the same temperature: a two-bath setup would make "the"
 # simulation temperature ambiguous and eq.32 wrong for at least one of them.
-REF_T_ALL=$(awk -F= '/^ *ref_t *=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' $MDP_DIR/bindfwdA_fe.mdp 2>/dev/null)
+REF_T_ALL=$(awk -F= '/^ *ref_t *=/{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' $MDP_DIR/${FE_LEG_MDPS[0]} 2>/dev/null)
 if [[ -n "$REF_T_ALL" ]] && [[ $(echo "$REF_T_ALL" | tr ' ' '\n' | grep -c . ) -gt 1 ]]; then
   if [[ $(echo "$REF_T_ALL" | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l) -ne 1 ]]; then
-    echo "WARNING: $MDP_DIR/bindfwdA_fe.mdp couples groups to different temperatures ($REF_T_ALL);"
+    echo "WARNING: $MDP_DIR/${FE_LEG_MDPS[0]} couples groups to different temperatures ($REF_T_ALL);"
     echo "  using $REF_T K for the analytical Boresch term, which is right for at most one of them."
   fi
 fi
 if ! [[ "$REF_T" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  echo "WARNING: could not read ref_t from $MDP_DIR/bindfwdA_fe.mdp; assuming 310 K for the"
+  echo "WARNING: could not read ref_t from $MDP_DIR/${FE_LEG_MDPS[0]}; assuming 310 K for the"
   echo "  analytical Boresch term. If the legs do not run at 310 K, dG_release is wrong."
   REF_T=310
 fi
@@ -597,7 +617,7 @@ with open('$CUTOUT_PDB', 'w') as f:
       # Its atom numbering is identical to the production system for atoms 1..N of
       # the solute, since only the solvent count differs, and make_boresch reads
       # geometry from -f and fluctuations from --traj as separate inputs.
-      PROBEPAD=$(awk -v r="$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bindfwdA_fe.mdp)" \
+      PROBEPAD=$(awk -v r="$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/${FE_LEG_MDPS[0]})" \
                      'BEGIN{ if (r+0 <= 0) r = 1.0; printf "%.2f", r/2 + 0.5 }')
       if [[ ! -f boxpad.gs ]]; then
         echo "Probe pass: equilibrating in a small box (-d $PROBEPAD) to measure the production box."
@@ -723,7 +743,7 @@ with open('$CUTOUT_PDB', 'w') as f:
         # before this change. It is the old 2KTF-derived constant and is a guess
         # for any other complex, which is the whole reason for the probe.
         BOXPAD_FALLBACK=1.8
-        RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/bindfwdA_fe.mdp)
+        RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/${FE_LEG_MDPS[0]})
         [[ -z "$RVDW" ]] && RVDW=1.0
         FLOOR=$(awk -v r="$RVDW" -v p="$PULL_DIST" 'BEGIN{printf "%.2f", r/2 + p/2}')
         BOXPAD=""
@@ -892,7 +912,7 @@ with open('$CUTOUT_PDB', 'w') as f:
   # from the equilibrated reference structure. make_boresch.py appends the full
   # pull block to each leg .mdp and emits the analytical Boresch term.
   echo "Generating FE restraints (interface + Boresch + elastic network)."
-  cp $MDP_DIR/bindfwdA_fe.mdp $MDP_DIR/holdmid_fe.mdp $MDP_DIR/bindfwdB_fe.mdp $MDP_DIR/nptrev_fe.mdp $MDP_DIR/bindrevB_fe.mdp $MDP_DIR/holdmidrev_fe.mdp $MDP_DIR/bindrevA_fe.mdp $MDP_DIR/boundfwd.mdp $MDP_DIR/boundrev.mdp ./
+  for m in "${FE_LEG_MDPS[@]}"; do cp "$MDP_DIR/$m" ./ ; done
   # Write to a temp name and promote on success. Redirecting straight into
   # numpertres.gs meant a crashed make_boresch.py still created the file the
   # checks below look for, 0 bytes and indistinguishable from a real result.
@@ -948,7 +968,7 @@ with open('$CUTOUT_PDB', 'w') as f:
   [[ -s numpertres.gs ]]         || SETUP_MISSING="$SETUP_MISSING numpertres.gs"
   [[ -s boresch_analytical.gs ]] || SETUP_MISSING="$SETUP_MISSING boresch_analytical.gs"
   [[ -s boresch_anchors.gs ]]    || SETUP_MISSING="$SETUP_MISSING boresch_anchors.gs"
-  for m in bindfwdA_fe.mdp holdmid_fe.mdp bindfwdB_fe.mdp nptrev_fe.mdp bindrevB_fe.mdp holdmidrev_fe.mdp bindrevA_fe.mdp boundfwd.mdp boundrev.mdp; do
+  for m in "${FE_LEG_MDPS[@]}"; do
     grep -q '^pull-ngroups' "$m" 2>/dev/null || SETUP_MISSING="$SETUP_MISSING $m:pull-block"
   done
   if [[ -n "$SETUP_MISSING" ]]; then
@@ -1126,66 +1146,37 @@ fi
 
     require_gro npt_c${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
 
-    # === Five FE legs, continued from the 1 ns bound equilibration ===
-    # Leg 1: bound-state restraint introduction (dhdl only, lambda 0 -> 1)
-    if [[ ! -f boundfwd_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f boundfwd.mdp -c npt_c${cycle}.tpr -t npt_c${cycle}.cpt -p topol.top -o boundfwd_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm boundfwd_${cycle} -dhdl boundfwd_${cycle}_dhdl.xvg
-    fi
-    require_gro boundfwd_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Legs 2a/2b: unbinding, SPLIT at u = 0.3 with an equilibrium hold between.
+    # === The FE legs, driven by utils/fe_protocol.py ===
     #
-    # 75% of this leg's dissipation happens in the first 0.3 nm, so stage A takes
-    # 15 ns over that 0.3 nm and stage B 5 ns over the remaining 0.7. The hold is
-    # what makes the split worth having: it lets the two stages be estimated
-    # separately, and adding their per-cycle works instead would reproduce the
-    # unstaged distribution exactly. It carries delta-lambda = 0 and pull rate 0,
-    # so it contributes no work. Each stage continues from the previous stage's
-    # checkpoint, so lambda and the pull references stay continuous across the
-    # whole leg.
-    if [[ ! -f bindfwdA_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f bindfwdA_fe.mdp -c boundfwd_${cycle}.tpr -t boundfwd_${cycle}.cpt -p topol.top -o bindfwdA_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm bindfwdA_${cycle} -pf bindfwdA_${cycle}_pullf.xvg -dhdl bindfwdA_${cycle}_dhdl.xvg
+    # The sequence is NOT written out here. It is emitted by fe_protocol.py, which
+    # is the single definition of the cycle, so the runner cannot fall out of step
+    # with the mdps make_fe_mdps.py generated from the same table. The ramp has
+    # been reshaped three times; each time it was four hardcoded lists.
+    #
+    # Every leg continues from the previous leg's checkpoint, so lambda and the
+    # pull references stay continuous around the whole cycle. Switching stages
+    # write a pull-force xvg and a dhdl xvg; holds write neither, because they
+    # carry rate 0 and delta-lambda 0 and so do no work at all.
+    LEG_FAILED=0
+    prev=npt_c${cycle}
+    for li in "${!FE_LEGS[@]}"; do
+      leg="${FE_LEGS[$li]}"
+      mdp="${FE_LEG_MDP[$li]}"
+      out="${leg}_${cycle}"
+      if [[ ! -f ${out}.gro ]]; then
+        gmx grompp -r emin_solv.gro -f "$mdp" -c ${prev}.tpr -t ${prev}.cpt \
+                   -p topol.top -o ${out} -n index.ndx -maxwarn 10
+        xtra=()
+        [[ "${FE_LEG_PULL[$li]}" == "1" ]] && xtra+=(-pf ${out}_pullf.xvg)
+        [[ "${FE_LEG_DHDL[$li]}" == "1" ]] && xtra+=(-dhdl ${out}_dhdl.xvg)
+        gmx mdrun -nt $nt $GPUOPT -deffnm ${out} "${xtra[@]}"
+      fi
+      if ! require_gro ${out}; then LEG_FAILED=1; break; fi
+      prev=${out}
+    done
+    if [[ $LEG_FAILED -eq 1 ]]; then
+      CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue
     fi
-    require_gro bindfwdA_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    if [[ ! -f holdmid_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f holdmid_fe.mdp -c bindfwdA_${cycle}.tpr -t bindfwdA_${cycle}.cpt -p topol.top -o holdmid_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm holdmid_${cycle}
-    fi
-    require_gro holdmid_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    if [[ ! -f bindfwdB_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f bindfwdB_fe.mdp -c holdmid_${cycle}.tpr -t holdmid_${cycle}.cpt -p topol.top -o bindfwdB_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm bindfwdB_${cycle} -pf bindfwdB_${cycle}_pullf.xvg -dhdl bindfwdB_${cycle}_dhdl.xvg
-    fi
-    require_gro bindfwdB_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Hold the unbound, Boresch-restrained state (3 ns)
-    if [[ ! -f nptrev_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f nptrev_fe.mdp -c bindfwdB_${cycle}.tpr -t bindfwdB_${cycle}.cpt -p topol.top -o nptrev_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm nptrev_${cycle}
-    fi
-    require_gro nptrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Legs 3b/3a: rebinding, the same split traversed in reverse.
-    if [[ ! -f bindrevB_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f bindrevB_fe.mdp -c nptrev_${cycle}.tpr -t nptrev_${cycle}.cpt -p topol.top -o bindrevB_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm bindrevB_${cycle} -pf bindrevB_${cycle}_pullf.xvg -dhdl bindrevB_${cycle}_dhdl.xvg
-    fi
-    require_gro bindrevB_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    if [[ ! -f holdmidrev_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f holdmidrev_fe.mdp -c bindrevB_${cycle}.tpr -t bindrevB_${cycle}.cpt -p topol.top -o holdmidrev_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm holdmidrev_${cycle}
-    fi
-    require_gro holdmidrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    if [[ ! -f bindrevA_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f bindrevA_fe.mdp -c holdmidrev_${cycle}.tpr -t holdmidrev_${cycle}.cpt -p topol.top -o bindrevA_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm bindrevA_${cycle} -pf bindrevA_${cycle}_pullf.xvg -dhdl bindrevA_${cycle}_dhdl.xvg
-    fi
-    require_gro bindrevA_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
-    # Leg 4: bound-state restraint removal (dhdl only, lambda 1 -> 0)
-    if [[ ! -f boundrev_${cycle}.gro ]]; then
-      gmx grompp -r emin_solv.gro -f boundrev.mdp -c bindrevA_${cycle}.tpr -t bindrevA_${cycle}.cpt -p topol.top -o boundrev_${cycle} -n index.ndx -maxwarn 10
-      gmx mdrun -nt $nt $GPUOPT -deffnm boundrev_${cycle} -dhdl boundrev_${cycle}_dhdl.xvg
-    fi
-    require_gro boundrev_${cycle} || { CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue; }
 
     # --- Work integration: one results_fe.gs line per completed cycle ---
     # Columns: STRUCT_ID cycle W_intro Wunbind_pull Wunbind_dhdl Wrebind_pull Wrebind_dhdl W_remove RMSD_A
@@ -1223,9 +1214,7 @@ fi
       NEEDS_RESULT=0
     fi
     if [[ $NEEDS_RESULT -eq 1 ]]; then
-      for w in boundfwd_${cycle}_dhdl boundrev_${cycle}_dhdl \
-               bindfwdA_${cycle}_pullf bindfwdA_${cycle}_dhdl bindfwdB_${cycle}_pullf bindfwdB_${cycle}_dhdl \
-               bindrevB_${cycle}_pullf bindrevB_${cycle}_dhdl bindrevA_${cycle}_pullf bindrevA_${cycle}_dhdl; do
+      for w in $(fe_xvgs); do
         [[ ! -f ${w}.xvg && -f ${w}.xvg.gz ]] && gunzip ${w}.xvg.gz
       done
       # Never let a failed integration (crash, missing module, empty output) turn
@@ -1250,37 +1239,14 @@ fi
         awk -v n="$1" '$1=="stage_rate_nm_ps" && $2==n {printf "%.10g", ($3<0?-$3:$3); exit}' \
             boresch_analytical.gs
       }
-      # Each of the FOUR pull legs is read separately rather than reusing the
-      # forward stage's rate for its reverse. They are equal today because the
-      # stages are the same length in both directions, and that is exactly the
-      # kind of thing that stops being true without anyone noticing.
-      RATE_fA=$(rate_of bindfwdA); RATE_fB=$(rate_of bindfwdB)
-      RATE_rB=$(rate_of bindrevB); RATE_rA=$(rate_of bindrevA)
-      # NO FALLBACK RATE. The old code could substitute $PULL_RATE because there
-      # was one rate for the whole leg; with a split leg that constant is right
-      # for neither stage (it would inflate A by 2.5x and shrink B by 2.9x). The
-      # rate multiplies the work, so a guessed one produces a wrong number that
-      # looks exactly like a right one. Missing rate -> the stage is not
-      # integrated at all, the field stays NaN, and the cycle is redone.
-      for _r in RATE_fA RATE_fB RATE_rB RATE_rA; do
-        if [[ -z "${!_r}" ]]; then
-          echo "ERROR: no stage_rate_nm_ps for $_r in boresch_analytical.gs; the pull" >&2
-          echo "       work of that stage in cycle $cycle stays NaN rather than being" >&2
-          echo "       integrated at a guessed rate." >&2
-        fi
-      done
-
-      # The same argument on the dhdl channel. integrate_dhdl.py rebuilds the
-      # lambda ramp from --direction alone, which assumes the leg spans the WHOLE
-      # of lambda: a stage that only crosses 0 -> 0.3 would be integrated over
-      # 1.0 and come out 3.3x too large, with nothing to show for it. So the
-      # actual span is read out of the mdp the stage ran with, which is where the
-      # split is defined in the first place.
-      # --leg-ps goes with it: mdrun writes dhdl on multiples of nstdhdl and does
-      # not force a final row at nsteps, so with the span alone a leg whose nsteps
-      # is not a multiple of nstdhdl has its whole ramp stretched onto the rows it
-      # did record. Every mdp here divides evenly today, so this changes no number
-      # now; it stops the next reshaping of the ramp from changing one silently.
+      # The lambda span of a leg, read from the mdp it actually ran with.
+      # integrate_dhdl.py rebuilds the ramp from --direction alone, which assumes
+      # the leg spans the WHOLE of lambda: a stage crossing only 0 -> 0.3 would be
+      # integrated over 1.0 and come out 3.3x too large with nothing to show for
+      # it. --leg-ps goes with it because mdrun writes dhdl on multiples of nstdhdl
+      # and does not force a final row at nsteps, so a leg whose nsteps is not a
+      # multiple would otherwise have its ramp stretched onto the rows it did
+      # record.
       lam_span() {
         awk -F= '
           /^ *init-lambda *=/  {gsub(/[ \t]/,"",$2); i=$2}
@@ -1291,33 +1257,48 @@ fi
                 printf "--lambda-start %.10g --lambda-end %.10g --leg-ps %.10g",
                        i, i + d*n, n*t }' "$1"
       }
-      LAM_fA=$(lam_span bindfwdA_fe.mdp); LAM_fB=$(lam_span bindfwdB_fe.mdp)
-      LAM_rB=$(lam_span bindrevB_fe.mdp); LAM_rA=$(lam_span bindrevA_fe.mdp)
-      LAM_bf=$(lam_span boundfwd.mdp);    LAM_br=$(lam_span boundrev.mdp)
-      # An empty span is the same trap as a guessed rate, and quieter: the
-      # variable expands to nothing, integrate_dhdl.py falls back to its 0 -> 1
-      # default, and a 0 -> 0.3 stage silently comes back 3.33x too large. So an
-      # unreadable span disables that integration rather than defaulting it.
-      for _l in LAM_fA LAM_fB LAM_rB LAM_rA LAM_bf LAM_br; do
-        if [[ -z "${!_l}" ]]; then
-          echo "ERROR: could not read the lambda span for $_l; the corresponding dhdl" >&2
-          echo "       work of cycle $cycle stays NaN rather than being integrated 0->1." >&2
+      # The mdp a leg ran with, looked up by leg name.
+      mdp_of() {
+        local i
+        for i in "${!FE_LEGS[@]}"; do
+          [[ "${FE_LEGS[$i]}" == "$1" ]] && { printf '%s' "${FE_LEG_MDP[$i]}"; return; }
+        done
+      }
+
+      # NOTHING IS GUESSED. Both the rate and the lambda span multiply the work, so
+      # a substituted value produces a wrong number that looks exactly like a right
+      # one: the old code could fall back to a single $PULL_RATE because there was
+      # one rate for the whole leg, and with stages that constant is right for none
+      # of them. A rate or span that cannot be read leaves its work at NaN, which
+      # the completeness gate then refuses, so the cycle is redone rather than
+      # silently believed.
+      declare -A W
+      for _rec in "${FE_WORKS[@]}"; do
+        IFS=: read -r _field _leg _chan _dir <<< "$_rec"
+        W[$_field]="NaN"
+        _f="${_leg}_${cycle}"
+        if [[ "$_chan" == "pull" ]]; then
+          _rate=$(rate_of "$_leg")
+          if [[ -z "$_rate" ]]; then
+            echo "ERROR: no stage_rate_nm_ps for $_leg in boresch_analytical.gs;" >&2
+            echo "       $_field of cycle $cycle stays NaN rather than being" >&2
+            echo "       integrated at a guessed rate." >&2
+          elif [[ -f ${_f}_pullf.xvg ]]; then
+            W[$_field]=$(integrate_or_nan python3 ../../utils/integrate.py \
+                         -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate)
+          fi
+        else
+          _span=$(lam_span "$(mdp_of "$_leg")")
+          if [[ -z "$_span" ]]; then
+            echo "ERROR: could not read the lambda span for $_leg; $_field of cycle" >&2
+            echo "       $cycle stays NaN rather than being integrated over 0 -> 1." >&2
+          elif [[ -f ${_f}_dhdl.xvg ]]; then
+            W[$_field]=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py \
+                         -f ${_f}_dhdl.xvg --direction $_dir $_span)
+          fi
         fi
       done
 
-      W_intro="NaN"; W_remove="NaN"
-      WuA_pull="NaN"; WuA_dhdl="NaN"; WuB_pull="NaN"; WuB_dhdl="NaN"
-      WrB_pull="NaN"; WrB_dhdl="NaN"; WrA_pull="NaN"; WrA_dhdl="NaN"
-      [[ -f boundfwd_${cycle}_dhdl.xvg && -n "$LAM_bf" ]]  && W_intro=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundfwd_${cycle}_dhdl.xvg --direction fwd $LAM_bf)
-      [[ -f bindfwdA_${cycle}_pullf.xvg && -n "$RATE_fA" ]] && WuA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_fA)
-      [[ -f bindfwdA_${cycle}_dhdl.xvg && -n "$LAM_fA" ]]  && WuA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdA_${cycle}_dhdl.xvg --direction fwd $LAM_fA)
-      [[ -f bindfwdB_${cycle}_pullf.xvg && -n "$RATE_fB" ]] && WuB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindfwdB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_fB)
-      [[ -f bindfwdB_${cycle}_dhdl.xvg && -n "$LAM_fB" ]]  && WuB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindfwdB_${cycle}_dhdl.xvg --direction fwd $LAM_fB)
-      [[ -f bindrevB_${cycle}_pullf.xvg && -n "$RATE_rB" ]] && WrB_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevB_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_rB)
-      [[ -f bindrevB_${cycle}_dhdl.xvg && -n "$LAM_rB" ]]  && WrB_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevB_${cycle}_dhdl.xvg --direction rev $LAM_rB)
-      [[ -f bindrevA_${cycle}_pullf.xvg && -n "$RATE_rA" ]] && WrA_pull=$(integrate_or_nan python3 ../../utils/integrate.py -f bindrevA_${cycle}_pullf.xvg -nr $NUMPERTRES -r $RATE_rA)
-      [[ -f bindrevA_${cycle}_dhdl.xvg && -n "$LAM_rA" ]]  && WrA_dhdl=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f bindrevA_${cycle}_dhdl.xvg --direction rev $LAM_rA)
-      [[ -f boundrev_${cycle}_dhdl.xvg && -n "$LAM_br" ]]  && W_remove=$(integrate_or_nan python3 ../../utils/integrate_dhdl.py -f boundrev_${cycle}_dhdl.xvg --direction rev $LAM_br)
       # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state
       # this cycle was equilibrated in (npt_c$cycle) and the end of the rebinding
       # leg (bindrev_$cycle). A large value means the partners did not return to
@@ -1325,9 +1306,13 @@ fi
       # it started from. Always computed, never fatal -- groscore_fe.py flags it
       # (see --rmsd-warn).
       RMSD="NaN"
-      if [[ -f npt_c${cycle}.gro && -f bindrevA_${cycle}.gro ]]; then
+      LAST_STAGE=""
+      for _i in "${!FE_LEGS[@]}"; do
+        [[ "${FE_LEG_PULL[$_i]}" == "1" ]] && LAST_STAGE="${FE_LEGS[$_i]}"
+      done
+      if [[ -f npt_c${cycle}.gro && -f ${LAST_STAGE}_${cycle}.gro ]]; then
         RMSD=$(integrate_or_nan python3 ../../utils/rebound_rmsd.py \
-                 --ref npt_c${cycle}.gro --query bindrevA_${cycle}.gro \
+                 --ref npt_c${cycle}.gro --query ${LAST_STAGE}_${cycle}.gro \
                  -s emin_solv.tpr -n index.ndx --tag c${cycle})
         echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
       fi
@@ -1340,8 +1325,9 @@ fi
       # summing them recovers the unstaged work exactly, so nothing is lost, but
       # separate storage also allows the staged estimate that the intermediate
       # holds exist to make possible. groscore_fe.py does both.
-      echo "$STRUCT_ID $cycle $W_intro $WuA_pull $WuA_dhdl $WuB_pull $WuB_dhdl $WrB_pull $WrB_dhdl $WrA_pull $WrA_dhdl $W_remove $RMSD" \
-        > $RESFILE
+      _row="$STRUCT_ID $cycle"
+      for _f in "${FE_WORK_FIELDS[@]}"; do _row="$_row ${W[$_f]}"; done
+      echo "$_row $RMSD" > $RESFILE
       # The gate below trusts FE_RESULT_NF to be the width this line has. Assert
       # it here rather than discovering the mismatch as silently-dropped cycles.
       _nf=$(awk 'NR==1{print NF}' $RESFILE)
@@ -1350,11 +1336,7 @@ fi
         echo "       Refusing to mark cycle $cycle done on a row the gate cannot check." >&2
         CYCLE_FAILED=1
       fi
-      gzip -f boundfwd_${cycle}_dhdl.xvg boundrev_${cycle}_dhdl.xvg \
-              bindfwdA_${cycle}_pullf.xvg bindfwdA_${cycle}_dhdl.xvg \
-              bindfwdB_${cycle}_pullf.xvg bindfwdB_${cycle}_dhdl.xvg \
-              bindrevB_${cycle}_pullf.xvg bindrevB_${cycle}_dhdl.xvg \
-              bindrevA_${cycle}_pullf.xvg bindrevA_${cycle}_dhdl.xvg 2>/dev/null
+      gzip -f $(fe_xvgs | sed 's/$/.xvg/') 2>/dev/null
       # Written last and ONLY for a complete cycle, so .done really does mean
       # "fully finished" -- the archive check below counts these, and a structure
       # that tarred itself up on the strength of half-finished cycles would be

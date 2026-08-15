@@ -1,5 +1,5 @@
 ; boundfwd.mdp - Bound-state restraint introduction (dhdl only, no pulling).
-; Interface restraints switched ON in the bound state (k=0 -> kB=full).
+; Interface restraints switched ON (k=0 -> kB=full) with the partners in place, lambda 0 -> 1.
 ;
 ; nsteps 500000 * dt 0.004 = 2000 ps.
 

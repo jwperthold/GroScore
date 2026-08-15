@@ -409,9 +409,9 @@ All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm3
 python3 utils/make_fe_mdps.py
 ```
 
-Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. **`dG_bind` and `pKD` are BAR**; the average and CGI values are retained beside them, so the file leads with `dGbind_bar` and then repeats the block for `_avg` and `_cgi`. Three estimators over the same works are the cheapest convergence check there is: where they agree the leg has converged, and where they disagree it has not, whichever number you would rather believe. `dG_unbind_*` is the [staged](#why-the-ramp-is-split) sum over the two ramp stages, and the three columns after it are its audit trail: `dG_unbA_bar`, `dG_unbB_bar` and `dG_unbind_1s_bar`, the last of these the same free energy taken from the whole ramp in one shot. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
+Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. **`dG_bind` and `pKD` are BAR**; the average and CGI values are retained beside them, so the file leads with `dGbind_bar` and then repeats the block for `_avg` and `_cgi`. Three estimators over the same works are the cheapest convergence check there is: where they agree the leg has converged, and where they disagree it has not, whichever number you would rather believe. `dG_unbind_*` is the [staged](#why-these-boundaries) sum over the ramp stages, and the columns after it are its audit trail: one `dG_unb<L>_bar` pair per stage, then `dG_unbind_1s_bar`, the same free energy taken from the whole ramp in one shot. The stage columns follow the protocol, so a three-stage ramp writes `dG_unbA_bar`, `dG_unbB_bar` and `dG_unbC_bar`. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
 
-Every scoring pass also writes **`fe_works.png`**, the work distributions of every leg with one row per structure: bound-state legs on the left, then one panel per ramp stage. No second command is needed; the figure appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run. The undivided ramp is not drawn, since its two stages already are, but it does appear in the consistency table below as the baseline the split is measured against.
+Every scoring pass also writes **`fe_works.png`**, the work distributions of every leg with one row per structure: bound-state legs on the left, then one panel per ramp stage. No second command is needed; the figure appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run. The undivided ramp is not drawn, since its stages already are, but it does appear in the consistency table below, as `unbind A+B+C`, the baseline the split is measured against. That row is arithmetic, not a leg: no simulation of that name runs.
 
 Every structure is plotted, in `sp.gs` order, **16 rows to a file**. Beyond that the figure is paginated into `fe_works_01.png`, `fe_works_02.png` and so on (a run needing only one page keeps the plain `fe_works.png`, and pages left over from an earlier, longer run are removed). Sixteen rows correspond to 1980 × 9792 px and roughly 2 MB. Matplotlib will write a considerably taller image, but GPU textures and most viewers cap a dimension near 16384 px and PIL rejects anything above 89 Mpx as a decompression bomb, hence a single 200-structure sheet would be unopenable as well as costing about 80 s and 1.8 GB to render.
 
@@ -480,53 +480,88 @@ This works for **archived** structures too: the setup job unpacks the tarball, t
 
 ### Compute cost
 
-Each cycle runs nine switching/hold legs plus one equilibration. The unbinding
-ramp is **split at u = 0.3** and runs as two stages either side of an equilibrium
-hold, in both directions:
+Each cycle runs fifteen switching/hold legs plus one equilibration. The unbinding
+ramp is **split at u = 0.3 and u = 0.5** and runs as three stages, with an
+equilibrium hold at every boundary in both directions:
 
-| Leg | Purpose | λ | Length |
+| Leg | Purpose | lambda | Length |
 |---|---|---|---|
-| equilibration | NVT 1–5 + 1 ns NPT | – | ~1.1 ns |
-| `boundfwd` | bound restraints on (dhdl) | 0 → 1 | 2 ns |
-| `bindfwdA` | unbind, first 0.3 nm | 0 → 0.3 | 15 ns |
-| `holdmid` | hold part-separated | 0.3 | 1 ns |
-| `bindfwdB` | unbind, remaining 0.7 nm | 0.3 → 1 | 5 ns |
-| `nptrev_fe` | hold unbound | 1 | 3 ns |
-| `bindrevB` | rebind, first 0.7 nm | 1 → 0.3 | 5 ns |
-| `holdmidrev` | hold part-separated | 0.3 | 1 ns |
-| `bindrevA` | rebind, last 0.3 nm | 0.3 → 0 | 15 ns |
-| `boundrev` | bound restraints off (dhdl) | 1 → 0 | 2 ns |
-| **per cycle** | | | **~50 ns** |
+| `npt_c` | equilibrate the bound state | - | 10 ns |
+| `boundfwd` | bound restraints on (dhdl) | 0 -> 1 | 2 ns |
+| `holdfwd0` | hold, bound | 0 | 1 ns |
+| `bindfwdA` | unbind, first 0.3 nm | 0 -> 0.3 | 13 ns |
+| `holdfwd1` | hold | 0.3 | 1 ns |
+| `bindfwdB` | unbind, 0.3 to 0.5 nm | 0.3 -> 0.5 | 3.5 ns |
+| `holdfwd2` | hold | 0.5 | 1 ns |
+| `bindfwdC` | unbind, last 0.5 nm | 0.5 -> 1 | 3.5 ns |
+| `nptrev_fe` | hold unbound | 1 | 4 ns |
+| `bindrevC` | rebind, first 0.5 nm | 1 -> 0.5 | 3.5 ns |
+| `holdrev2` | hold | 0.5 | 1 ns |
+| `bindrevB` | rebind, 0.5 to 0.3 nm | 0.5 -> 0.3 | 3.5 ns |
+| `holdrev1` | hold | 0.3 | 1 ns |
+| `bindrevA` | rebind, last 0.3 nm | 0.3 -> 0 | 13 ns |
+| `holdrev0` | hold, bound | 0 | 1 ns |
+| `boundrev` | bound restraints off (dhdl) | 1 -> 0 | 2 ns |
+| **per cycle** | | | **64 ns** |
 
-At the default 5 cycles this is **~251 ns/structure** (≈ 5 × 50 ns + one initial equilibration), roughly **4× the computational cost** for the same cycle count.
+At the default 5 cycles this is **~331 ns/structure**.
 
-#### Why the ramp is split
+#### The protocol is defined in one place
 
-The whole ramp had **zero forward/reverse overlap** at 20 ns per leg, so BAR was
-suppressed on every structure and only the model extrapolations survived. Two
-things follow from where that dissipation sits. It is concentrated in the first
-0.3 nm, where the interface is actually coming apart, so the switching time is
-spent there (15 ns over 0.3 nm, 5 ns over the remaining 0.7 nm) rather than spread
-evenly over a pull that is nearly free at the far end. And a process that
-dissipates too much to overlap can be cut into stages that individually do not:
-each stage is its own Crooks process, and ΔG_unbind is their sum.
+`utils/fe_protocol.py` holds the whole cycle as a table, and everything else
+derives from it: the mdps (`make_fe_mdps.py`), the pull blocks and per-stage
+rates (`make_boresch.py`), the leg sequence and work extraction (`job_fe.run`,
+via `--shell`), the result-row width and the staged estimator (`groscore_fe.py`),
+and the leg diagnostic. Moving a boundary or adding a hold is an edit to
+`fe_protocol.RAMP` followed by a re-run of `make_fe_mdps.py`; nothing else
+changes, and nothing else *can* disagree with it.
 
-That decomposition is only valid if the system is at equilibrium where the stages
-meet, hence the 1 ns hold at u = 0.3 in both directions. It can be short because
-the interface is still heavily restrained there. **The two estimates are both
-reported**: `dG_unbind_bar` is the staged sum, and `dG_unbind_1s_bar` is the same
-free energy taken from the whole ramp in one shot. The hold does no work, so the
-stage works sum to the work of the whole protocol exactly, and the one-shot value
-assumes nothing about the hold. It is expected to keep reading `nan` for want of
-overlap; where it does resolve, the gap between the two is the measurement of how
-far the hold is from equilibrium.
+```bash
+python3 utils/fe_protocol.py        # the cycle, leg by leg
+```
 
-The consequence for the pull rate is that there is no longer one. Each stage runs
-at its own rate and `make_boresch.py` records all of them in
-`boresch_analytical.gs` under `stage_rate_nm_ps`, because `integrate.py` turns the
-time integral of the pull force into work by multiplying by the rate, and a stage
-integrated at another stage's rate is silently rescaled. The λ spans are read back
-from the mdps for the same reason on the dhdl side.
+#### Why these boundaries
+
+As one 20 ns process the ramp had **zero forward/reverse overlap**, so BAR was
+refused on every structure. Splitting it at u = 0.3 resolved the first stage,
+which is the first BAR value the unbinding channel has ever produced. Measuring
+that run against the unstaged one then gave a three-zone picture of how the
+dissipation responds to rate, read as a local logarithmic slope `p` in
+`diss ~ t^-p`:
+
+| zone | dissipation | p | reading |
+|---|---|---|---|
+| u 0.00-0.30 | 40.1 kJ/mol in 15 ns | 0.69 | slowing helps, sub-1/*t* |
+| u 0.30-0.50 | 19.4 kJ/mol in 1.4 ns | **1.05** | near-perfect 1/*t* |
+| u 0.50-1.00 | 19.2 kJ/mol in 3.6 ns | 0.07 | rate-independent floor |
+
+The middle zone is the only part of the pull where time converts to reduced
+dissipation at the full near-equilibrium rate, and the two-stage split had put it
+in the *fast* stage. The boundary at u = 0.5 separates it from the outer half,
+which barely responds to rate at all: running that half 2.8x faster cost
+1.3 kJ/mol across five windows. Minimising `sum(c_i t_i^-p_i)` at a fixed 20 ns,
+with the tail capped at the fastest rate ever actually run, gives
+**13 / 3.5 / 3.5 ns** and predicts about 7.7 kJ/mol less dissipation for free.
+The saving requires taking time from stage A: hold A at 15 ns and the remaining
+5 ns cannot beat what stage B already had.
+
+Those exponents are two-point estimates across runs that differ on six axes, so
+treat the allocation as the best available guess rather than an optimum.
+
+#### The holds, and what they are for
+
+There is now an equilibrium hold at every boundary the ramp crosses, including
+the two where the ramp meets the bound legs, plus the unbound hold. All carry
+`delta-lambda = 0` and pull rate 0, so they do **no work**: the stage works still
+sum exactly to the work of the whole ramp, and `dG_unbind_1s` remains an
+assumption-free cross-check on the staged sum.
+
+They exist because the staged estimate is only unbiased if the system is at
+equilibrium where the stages meet. On the two-stage run the arrival mismatch at
+u = 0.3 decayed with a time constant of about 1.19 ns, so a 1 ns hold was
+0.84 tau and two thirds of the cycles were still drifting when it ended. The
+per-cycle bound equilibration also went 1 ns -> 10 ns for the same reason: it is
+what the Crooks analysis assumes the cycle starts from.
 
 ### Setup: the box is measured, not assumed
 
@@ -549,11 +584,11 @@ emin_vac.gro
 
 All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and Bussi 2020) at `tau_p` 2.0 ps, with V-rescale for temperature. Berendsen generates no strictly correct ensemble, which matters most for the per-cycle `npt_fe`: its output is the bound-state configuration `boundfwd` starts from, and Crooks assumes those initial states are drawn from the true equilibrium distribution.
 
-The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges, i.e. its forward and reverse work distributions overlap, whereas the unbinding/rebinding legs dominate the error and are given 20 ns per direction, 15 of them in the first 0.3 nm. **Each stage's pull rate is tied to its own length**: `rate × stage_time = stage_span`, hence 0.00002 nm/ps for stage A and 0.00014 nm/ps for stage B. The stage lengths live in `utils/make_fe_mdps.py` and the rates are derived from them by `make_boresch.py`, which reads each stage's mdp rather than being told a rate, so reshaping the ramp is an edit in one place. The holds and the bound legs carry no such coupling.
+The effort is deliberately concentrated where the uncertainty is. The bound-restraint switch converges, i.e. its forward and reverse work distributions overlap, whereas the unbinding/rebinding legs dominate the error and are given 20 ns per direction, 13 of them in the first 0.3 nm. **Each stage's pull rate is tied to its own length**: `rate x stage_time = stage_span`, hence 2.31e-5, 5.71e-5 and 1.43e-4 nm/ps for stages A, B and C. Nothing sets a rate by hand: `make_boresch.py` reads each stage's own mdp and derives it, then records all of them in `boresch_analytical.gs` as `stage_rate_nm_ps`, because `integrate.py` turns the time integral of the pull force into work by multiplying by the rate and a stage integrated at another stage's rate is silently rescaled. The lambda spans are read back from the mdps for the same reason on the dhdl side.
 
-The **3 ns unbound hold** (1 ns before 2026-08-11, then 5 ns, now 3) exists because the rebinding leg is the one which starts from the Boresch-restrained separated state, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks requires, which neither longer switching legs nor additional cycles can repair. Over 40 cycles of 2KTF the rebinding works were 2.4× wider than the unbinding works (σ 51.5 vs 21.6). Raising the hold to 5 ns did not fix that: the next run came back with `sf/sr` 0.32 against 0.42, i.e. moved the wrong way. That run also carried the dihedral sign fix, so the two changes are confounded and the hold is not convicted on it, but nothing supports 5 ns either, and the time is worth more in the ramp where the dissipation demonstrably is. Whether a hold is long enough can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
+The **4 ns unbound hold** (1 ns before 2026-08-11, then 5, then 3) exists because the rebinding leg is the one which starts from the Boresch-restrained separated state, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks requires, which neither longer switching legs nor additional cycles can repair. Over 40 cycles of 2KTF the rebinding works were 2.4× wider than the unbinding works (σ 51.5 vs 21.6). Raising the hold to 5 ns did not fix that: the next run came back with `sf/sr` 0.32 against 0.42, i.e. moved the wrong way. That run also carried the dihedral sign fix, so the two changes are confounded and the hold is not convicted on it, but nothing supported 5 ns either. It is now 4 ns, and the measurement that matters is a different one: on the two-stage run it was fully plateaued after 800 ps, where the earlier 5 ns hold never settled at all. Whether a hold is long enough can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
 
-`fe_leg_efficiency.py` takes `--leg unbindA` / `unbindB` for the two stages and `--leg unbind` for the ramp as a whole. The stages are the real switching processes and are what the friction and cost model apply to; the whole ramp has no trace files of its own, so for it the tool reports the work distributions only.
+`fe_leg_efficiency.py` takes `--leg unbind<L>` for each stage and `--leg unbind` for the ramp as a whole; the choices are generated from `fe_protocol.py`, so they follow the ramp. The stages are the real switching processes and are what the friction and cost model apply to; the whole ramp has no trace files of its own, so for it the tool reports the work distributions only.
 
 ### Why BAR is the FE headline and not the classic one
 
@@ -584,8 +619,8 @@ The selection is then **validated**: the relative rotation of the two frames is 
 ### Caveats
 
 - **All free-energy results predating 2026-08-14 are void.** `dihedral_deg` returned the negated dihedral, so all three φ references were written to every leg mdp as mirror images. On 2KTF this put 3145 kJ/mol into `dH/dλ` at t=0 and drove θ_B toward the pull-frame singularity, where the `1/sin(θ_B)` lever tore anchor residues apart. `make_boresch.py` now reads its own pull block back through a zero-step grompp and aborts if GROMACS does not reproduce the references it was given.
-- **Convergence of the unbinding leg is unresolved.** The forward and reverse work distributions of the whole ramp had zero overlap at 20 ns both before and after the dihedral sign fix, so the mirror-orientation strain was not the explanation. The ramp is now split at u = 0.3 so that each stage overlaps even where their sum does not, and the staged and one-shot values are reported side by side. **Whether the staged decomposition converges has not yet been measured on a real run.** The thing to watch is `dG_unbind_bar` against `dG_unbind_1s_bar` where the latter resolves at all, and the two stage panels of `fe_works.png`.
-- **The 1 ns hold at u = 0.3 is an assumption, not a measurement.** The staged sum is only unbiased if the system is at equilibrium where the stages meet. The argument for 1 ns being enough is that the interface is still heavily restrained there; it has not been tested by lengthening the hold and watching the answer stand still.
+- **Convergence of the unbinding leg is unresolved.** The forward and reverse work distributions of the whole ramp had zero overlap at 20 ns both before and after the dihedral sign fix, so the mirror-orientation strain was not the explanation. Splitting the ramp at u = 0.3 resolved the first stage on a real run (`dG_A` = 76.17 +- 3.89 kJ/mol, the first BAR value this channel has produced) but left the second blocked by 2.14 RT, so `dG_unbind` is still refused. The ramp is now split again at u = 0.5, where the measurement says the time is worth most. **Whether three stages resolve has not been measured.** The thing to watch is every `dG_unb<L>_bar` column, `dG_unbind_bar` against `dG_unbind_1s_bar` where the latter resolves at all, and the stage panels of `fe_works.png`.
+- **The holds are an assumption, not a measurement.** The staged sum is only unbiased if the system is at equilibrium where the stages meet. On the two-stage run the arrival mismatch decayed with a time constant of about 1.19 ns, so a 1 ns hold was 0.84 tau and two thirds of the cycles were still drifting when it ended; two routes then sized the resulting bias anywhere between 0.9 and 24 kJ/mol. The holds are still 1 ns. Lengthening them and watching the answer stand still is the outstanding test.
 - **The classic and FE protocols changed barostat on 2026-08-14.** Results from before are not strictly comparable with results from after.
 
 ## Heteroatom Support
