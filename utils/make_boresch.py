@@ -318,9 +318,8 @@ def box_vector_norms(box_line):
 # box supplies a limit that four separate gates scale with:
 #
 #   arm_max      = 0.35 * min(BOX_VEC)   candidate anchor arms
-#   cross-triad rejection above 0.9 * PULL_LIMIT
-#   relaxed_cap  = 0.6 * PULL_LIMIT
-#   BORESCH_R_TOO_LARGE abort when ref_r + pull_dist > 0.6 * PULL_LIMIT
+#   cross-triad rejection, relaxed_cap and the BORESCH_R_TOO_LARGE abort, all
+#   at R_LIMIT_FRAC * PULL_LIMIT
 #
 # Taking those from the reference file was harmless while the reference came from
 # the production box. It stopped being harmless when the reference moved to the
@@ -344,6 +343,15 @@ if not BOX_VEC:
 
 # The distance every pull coordinate is measured against. 4.045 nm on 2KTF.
 PULL_LIMIT = 0.49 * min(BOX_VEC) if BOX_VEC else None
+
+# Fraction of that limit the Boresch distance is allowed to reach at full
+# extension. Named once because THREE places need the same number and two of them
+# used to disagree: the cross-triad search filtered at 0.9 while the final guard
+# aborted at 0.6, so a triad in between passed selection and then killed the run.
+# 0.6 leaves room for the interface pairs, which travel further than the Boresch
+# r does -- test4 measured a largest checked pair of 2.995 nm against a 4.101 nm
+# limit, 73%, while its own r0_release sat at 54%.
+R_LIMIT_FRAC = 0.6
 
 # The file can be present and still yield nothing, e.g. an empty chain_map.gs
 # leaves max_structural_resnum at 0 and filters every atom out. That produced
@@ -533,8 +541,22 @@ N_MIN_ATOMS = 18        # backbone-only, so 18 atoms is 6 residues
 # set is the right one, and each later entry is a concession to a structure that
 # cannot supply groups that quiet. The burial heuristic is only reached when every
 # entry fails, since burial carries no fluctuation information at all.
-# Replaces a single EPS_MAX = 0.045.
-EPS_LADDER = (0.045, 0.060, 0.080)
+#
+# Was (0.045, 0.060, 0.080). Two reasons for the finer, longer ladder:
+#
+#   GRANULARITY. Because the first success wins, the step size IS the precision
+#   with which the accepted rigidity is chosen. On 2KTF's protein B the old
+#   ladder jumped 0.060 -> 0.080 and took the loosest rung available; anything
+#   that would have worked at 0.065 or 0.075 was never tried, and the anchors
+#   accepted were floppier than the structure required.
+#
+#   HEADROOM. The rung after the last one is the burial heuristic, which carries
+#   no fluctuation information at all and historically produced 22-52 degrees of
+#   relative frame rotation against the 8 degree limit. Three more rungs before
+#   that cliff is cheap: a round takes seconds, and ROT_MAX_DEG still decides
+#   acceptance, so a loose ceiling that passes the rotation check has earned it
+#   while one that does not is rejected regardless of which rung found it.
+EPS_LADDER = (0.045, 0.055, 0.065, 0.075, 0.085, 0.095, 0.110)
 ARM_MIN = 0.60          # nm, shortest useful lever arm
 MIN_SIN = 0.35          # sin of the angle between a triad's two edges
 ROT_MAX_DEG = 8.0       # acceptance: relative frame rotation over the trajectory
@@ -864,7 +886,16 @@ def try_measured_anchors():
         # closest approach of two rigidity-selected triads happened to be. Over
         # 2KTF's own residues the worst valid combination gives
         # r + pull_dist = 4.408 nm against a 4.045 nm limit.
-        if PULL_LIMIT and r_cross + args.pull_dist > 0.9 * PULL_LIMIT:
+        #
+        # R_LIMIT_FRAC, the SAME budget the final guard aborts on. It used to be
+        # 0.9 here against 0.6 there, which left a dead band: a triad landing
+        # between the two passed selection and then killed the whole setup with
+        # BORESCH_R_TOO_LARGE. test5 selected r_cross + pull_dist = 2.526 nm
+        # against a 2.432 threshold, 4% over, and aborted after the search had
+        # already reported success. Searching under the budget the guard enforces
+        # means the search either returns a usable triad or reports honestly that
+        # this rigidity ceiling has none.
+        if PULL_LIMIT and r_cross + args.pull_dist > R_LIMIT_FRAC * PULL_LIMIT:
           continue
         rest_p = [k for k in Pt if k != P3]
         rest_l = [k for k in Lt if k != L1]
@@ -1023,7 +1054,7 @@ def select_boresch_anchors():
     # non-collinear residue available. That left P1-P2 (phi_A) and L2-L3 (phi_C)
     # unbounded. Keep the retry, since removing it turns these cases into hard
     # aborts, but bound the relaxed pass by the box instead of by nothing.
-    relaxed_cap = 0.6 * PULL_LIMIT if PULL_LIMIT else ARM_MAX
+    relaxed_cap = R_LIMIT_FRAC * PULL_LIMIT if PULL_LIMIT else ARM_MAX
     for cap in (ARM_MAX, relaxed_cap):
       best, best_area = None, -1.0
       for rn in pool:
@@ -1108,7 +1139,7 @@ r0_release = ref_r + args.pull_dist
 # without this the failure surfaced as a dead cycle rather than a failed setup.
 # 60% leaves room for the fluctuation on top of the switched reference: 2KTF sits
 # at 1.882 against a 2.427 threshold.
-if PULL_LIMIT and r0_release > 0.6 * PULL_LIMIT:
+if PULL_LIMIT and r0_release > R_LIMIT_FRAC * PULL_LIMIT:
   abort("BORESCH_R_TOO_LARGE",
         "ref_r %.3f + pull_dist %.3f = %.3f nm exceeds 60%% of the GROMACS pull "
         "limit %.3f nm (0.49 * shortest box vector); increase the editconf "
