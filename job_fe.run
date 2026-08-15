@@ -1298,6 +1298,26 @@ fi
                  --ref npt_c${cycle}.gro --query ${LAST_STAGE}_${cycle}.gro \
                  -s emin_solv.tpr -n index.ndx --tag c${cycle})
         echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+
+        # The backbone RMSD says the partners are in roughly the right place. It
+        # says nothing about whether the CONTACTS re-formed or the interface side
+        # chains re-packed, which is what the interface restraints exist to hold
+        # and therefore what capping the restraint list per contact could damage.
+        # Measured so that a reduction can be tested rather than argued.
+        #
+        # Written to its own file, NOT appended to the result row: the row width
+        # carries the nstages = (NF - 5)/4 invariant that read_works decodes the
+        # stage count from, and two extra fields would make that arithmetic
+        # non-integral and silently reject every row.
+        if [[ -f interface_contacts.gs ]]; then
+          mkdir -p ../results_qc.d
+          IQC=$(python3 ../../utils/interface_qc.py -c interface_contacts.gs \
+                  --ref npt_c${cycle}.gro --query ${LAST_STAGE}_${cycle}.gro 2>/dev/null)
+          if [[ -n "$IQC" ]]; then
+            echo "$STRUCT_ID $cycle $IQC" > ../results_qc.d/${STRUCT_ID}_c${cycle}.gs
+            echo "Cycle $cycle interface: $IQC"
+          fi
+        fi
       fi
       # One file per cycle rather than appending to a shared results_fe.gs: with
       # cycles running as parallel array tasks, many writers would race on the

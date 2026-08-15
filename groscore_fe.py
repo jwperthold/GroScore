@@ -885,6 +885,43 @@ def read_works(filepath, workdir="results_fe.d"):
       pass
   return works
 
+def read_interface_qc(workdir="results_qc.d"):
+  """-> {struct_id: [(cycle, {metric: value}), ...]} from utils/interface_qc.py.
+
+  A SIDECAR, deliberately not part of the result row. The row width encodes the
+  ramp stage count as (NF - 5)/4, so appending QC fields would make that
+  arithmetic non-integral and read_works would silently reject every row. It is
+  also diagnostic: a cycle with a wrecked interface is still a valid work
+  measurement and must keep contributing to the free energy.
+
+  Lines are `STRUCT cycle key value key value ...`. Absent directory, absent
+  file, or a run predating the check all give {} rather than an error."""
+  out = {}
+  if not os.path.isdir(workdir):
+    return out
+  for path in sorted(glob.glob(os.path.join(workdir, "*.gs"))):
+    try:
+      for line in open(path):
+        f = line.split()
+        if len(f) < 4 or line.startswith("#"):
+          continue
+        try:
+          cyc = int(f[1])
+        except ValueError:
+          continue
+        rec = {}
+        for k, v in zip(f[2::2], f[3::2]):
+          try:
+            rec[k] = float(v)
+          except ValueError:
+            pass
+        if rec:
+          out.setdefault(f[0], []).append((cyc, rec))
+    except OSError:
+      pass
+  return out
+
+
 #------------------------------------------------------
 #
 # Work-distribution diagnostic.
@@ -1462,6 +1499,7 @@ def score(structids):
   status = read_status("results_0.gs", structids)
   analytical = read_analytical("results_analytical.gs")
   works = read_works("results_fe.gs")
+  iqc = read_interface_qc()
 
   rows = []  # (sid, result_dict_or_None, dG_release_or_None, ncyc, note)
   bad_cycles = {}   # sid -> [(cycle, rmsd), …] that failed the rebinding check
@@ -1676,9 +1714,40 @@ def score(structids):
         if len(bad) > MAX_CYCLES_SHOWN:
           detail += ", +%d more" % (len(bad) - MAX_CYCLES_SHOWN)
         print("    %-20s %s" % (sid, detail))
+
       if len(worst) > MAX_FLAGGED_SHOWN:
         print("    ... and %d more (grep HIGH_RMSD scores_fe.gs for the full list)"
               % (len(worst) - MAX_FLAGGED_SHOWN))
+  print("")
+  # ── interface recovery ──────────────────────────────────────────────────────
+  # The RMSD above says the partners came back to roughly the right place. This
+  # says whether the CONTACTS re-formed and the side chains re-packed, which is
+  # what the interface restraints hold and what capping the restraint list per
+  # residue-residue contact puts at risk. Diagnostic only; nothing is flagged and
+  # no free energy changes.
+  if iqc:
+    rows_q = [(sid, c, r) for sid, lst in iqc.items() for c, r in lst]
+    print("")
+    print("Interface recovery at the end of rebinding (%d cycles):" % len(rows_q))
+    def _col(key):
+      v = [r[key] for _s, _c, r in rows_q if key in r and np.isfinite(r[key])]
+      return np.asarray(v, float) if v else None
+    for key, label, unit in (
+        ("recovered", "contacts back within tolerance", ""),
+        ("formed",    "contacts still inside the cutoff", ""),
+        ("rms_dev",   "rms distance deviation per pair", " nm"),
+        ("sc_rmsd",   "interface side-chain RMSD", " A")):
+      v = _col(key)
+      if v is None:
+        continue
+      print("  %-34s mean %6.3f%s   median %6.3f   worst %6.3f"
+            % (label, float(v.mean()), unit, float(np.median(v)),
+               float(v.min() if key in ("recovered", "formed") else v.max())))
+    n_p = _col("npairs")
+    if n_p is not None:
+      print("  restrained pairs checked           %d" % int(np.median(n_p)))
+    print("  A reduction in the restraint count is safe only if these hold up;")
+    print("  they exist so that can be measured rather than argued.")
   print("")
 
   # ── work distributions and their Crooks/Gaussian consistency ────────────────

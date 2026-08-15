@@ -381,7 +381,116 @@ if len(prot1_valid) > 0 and len(prot2_valid) > 0:
     for j_idx, j in enumerate(prot2_valid):
       if d[i_idx, j_idx] <= interfacecutoff:
         interdis.append((i, j, d[i_idx, j_idx]))
+
+#------------------------------------------------------
+# Cap the restraints per residue-residue contact.
+#
+# The 0.6 nm rule restrains every cross-partner heavy-atom pair, which on 2KTF is
+# 461 springs describing only 47 residue-residue contacts among 34 residues:
+# 9.8 per contact on average and up to 31 on one, with LEU9 alone carrying 103.
+# That is the measured redundancy behind "574 restraints behave like ~9 effective
+# independent modes".
+#
+# It is not free. At lambda = 1 the interface force constant is zero, so the
+# restraints hold nothing but themselves, equipartition gives <S> = N*RT/k, and
+# substituting into dH/dlambda = -0.5*k*S the FORCE CONSTANT CANCELS:
+#
+#     dH/dlambda(lambda = 1) = -N*RT/2
+#
+# Every restrained degree of freedom costs RT/2 no matter how stiff it is.
+# Predicted -594.1 kJ/mol at N = 461; test4 measured -602 +- 238. That term
+# largely cancels between dG_intro and dG_unbind, but its FLUCTUATION does not,
+# so redundant springs buy noise and nothing else.
+#
+# Capping per CONTACT rather than thinning globally is what keeps the interface
+# intact: every contact and every residue survives any cap >= 1, so the total
+# restoring force (fixed at 25000 kJ/mol/nm^2 by k = 25000/N, whatever N is) stays
+# spread over the same footprint. A global distance cutoff or a random subset
+# would instead delete whole contacts.
+#
+# Within a contact the kept springs are chosen to SPAN it rather than cluster:
+# the shortest pair first, then greedily the candidate furthest (by midpoint)
+# from everything already kept, with a bonus for involving a side chain. Both
+# matter. Several springs on one contact attached at different atoms restrain the
+# relative ORIENTATION of the two residues, not just their separation, which is
+# why the cap is 4 and not 1. And 84.6% of the uncapped restraints involve a side
+# chain, so a rule that quietly kept backbone pairs would discard exactly the
+# packing information the restraints exist to hold.
+MAX_PER_CONTACT = 4
+BB_ATOMS = {"N", "CA", "C", "O", "OT", "OT1", "OT2", "OXT"}
+
+def _cap_per_contact(cands, cap):
+  """Keep at most `cap` restraints per residue-residue contact, spanning it."""
+  by_contact = {}
+  for rec in cands:
+    i, j, dist = rec
+    key = (prot1_data[i][1], prot2_data[j][1])       # (resnum_A, resnum_B)
+    by_contact.setdefault(key, []).append(rec)
+
+  def midpoint(rec):
+    i, j, _ = rec
+    a = np.array(prot1_data[i][4:7], float)
+    b = np.array(prot2_data[j][4:7], float)
+    return 0.5 * (a + b)
+
+  def has_sidechain(rec):
+    i, j, _ = rec
+    return (prot1_data[i][2] not in BB_ATOMS) or (prot2_data[j][2] not in BB_ATOMS)
+
+  kept = []
+  for key in sorted(by_contact):
+    group = sorted(by_contact[key], key=lambda r: r[2])   # shortest first
+    if len(group) <= cap:
+      kept.extend(group)
+      continue
+    chosen = [group[0]]
+    mids = [midpoint(group[0])]
+    while len(chosen) < cap:
+      best, best_score = None, None
+      for rec in group:
+        if rec in chosen:
+          continue
+        m = midpoint(rec)
+        spread = min(float(np.linalg.norm(m - c)) for c in mids)
+        # The bonus is a spatial length, so it competes with spread on its own
+        # scale: 0.05 nm is enough to break a tie between a backbone pair and a
+        # side-chain pair, and never enough to override a genuinely better spread.
+        score = spread + (0.05 if has_sidechain(rec) else 0.0)
+        if best_score is None or score > best_score:
+          best, best_score = rec, score
+      chosen.append(best)
+      mids.append(midpoint(best))
+    kept.extend(chosen)
+  return kept
+
+_n_uncapped = len(interdis)
+_n_contacts = len({(prot1_data[i][1], prot2_data[j][1]) for i, j, _ in interdis})
+if MAX_PER_CONTACT and _n_uncapped:
+  interdis = _cap_per_contact(interdis, MAX_PER_CONTACT)
+  _sc = sum(1 for i, j, _ in interdis
+            if prot1_data[i][2] not in BB_ATOMS or prot2_data[j][2] not in BB_ATOMS)
+  sys.stderr.write("make_boresch: interface restraints %d -> %d, cap %d per "
+                   "residue-residue contact (%d contacts, all kept); %.1f%% still "
+                   "involve a side chain; k rises %.1f -> %.1f kJ/mol/nm^2 so the "
+                   "total stays 25000\n"
+                   % (_n_uncapped, len(interdis), MAX_PER_CONTACT, _n_contacts,
+                      100.0 * _sc / max(len(interdis), 1),
+                      25000.0 / max(_n_uncapped, 1), 25000.0 / max(len(interdis), 1)))
+
 numinterdis = len(interdis)
+
+# The contact list the rebinding QC checks recovery against. Written here because
+# this is the only place that knows which pairs were restrained and what their
+# reference distances were; utils/interface_qc.py reads it rather than reparsing
+# the pull block.
+with open("interface_contacts.gs", "w") as _f:
+  _f.write("# atomA atomB ref_nm resA resnumA nameA resB resnumB nameB\n")
+  _f.write("# uncapped %d, kept %d, cap %d per residue-residue contact\n"
+           % (_n_uncapped, numinterdis, MAX_PER_CONTACT))
+  for i, j, dist in interdis:
+    a, b = prot1_data[i], prot2_data[j]
+    _f.write("%d %d %.6f %s %d %s %s %d %s\n"
+             % (a[3], b[3], dist, a[0], a[1], a[2], b[0], b[1], b[2]))
 
 #======================================================
 # PART 2 - Elastic network (identical to make_disres_en.build_elastic_network)
