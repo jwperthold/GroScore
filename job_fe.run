@@ -1230,15 +1230,34 @@ fi
       # and does not force a final row at nsteps, so a leg whose nsteps is not a
       # multiple would otherwise have its ramp stretched onto the rows it did
       # record.
+      # The values are attached with '=', and a lambda within 1e-9 of zero is
+      # snapped to it. Both guard the same failure, which cost test5 all 47 of
+      # its cycles.
+      #
+      # delta-lambda is written to the mdp with %.8e, so a stage that should land
+      # exactly on lambda = 0 lands on the rounding residue instead: bindrevA
+      # came out at -2.500000207e-11. Passed as a separate argv entry, argparse
+      # only accepts a leading-dash token as a NEGATIVE NUMBER if it matches
+      # ^-\d+$ or ^-\d*\.\d+$ -- an exponent does not match -- so it read
+      # "-2.500000207e-11" as an option name and died with "expected one
+      # argument". integrate_or_nan then wrote NaN, every row carried one, and
+      # read_works dropped all 47 cycles. The leg that ends at zero is the only
+      # one exposed, which is why it survived three previous runs.
       lam_span() {
+        # The +0 on every assignment is load-bearing. gsub() turns a field into a
+        # plain STRING, losing the "numeric-looking input" status awk uses to
+        # decide comparison type, so z("1") would compare "1" against "1e-09"
+        # LEXICALLY, find it smaller, and snap init-lambda = 1 to 0. Forcing
+        # numeric at assignment keeps every later comparison arithmetic.
         awk -F= '
-          /^ *init-lambda *=/  {gsub(/[ \t]/,"",$2); i=$2}
-          /^ *delta-lambda *=/ {gsub(/[ \t]/,"",$2); d=$2}
-          /^ *nsteps *=/       {gsub(/[ \t]/,"",$2); n=$2}
-          /^ *dt *=/           {gsub(/[ \t]/,"",$2); t=$2}
-          END { if (i=="" || d=="" || n=="" || t=="") exit 1
-                printf "--lambda-start %.10g --lambda-end %.10g --leg-ps %.10g",
-                       i, i + d*n, n*t }' "$1"
+          function z(x) { return (x < 1e-9 && x > -1e-9) ? 0 : x }
+          /^ *init-lambda *=/  {gsub(/[ \t]/,"",$2); i=$2+0; have_i=1}
+          /^ *delta-lambda *=/ {gsub(/[ \t]/,"",$2); d=$2+0; have_d=1}
+          /^ *nsteps *=/       {gsub(/[ \t]/,"",$2); n=$2+0; have_n=1}
+          /^ *dt *=/           {gsub(/[ \t]/,"",$2); t=$2+0; have_t=1}
+          END { if (!have_i || !have_d || !have_n || !have_t) exit 1
+                printf "--lambda-start=%.10g --lambda-end=%.10g --leg-ps=%.10g",
+                       z(i), z(i + d*n), n*t }' "$1"
       }
       # The mdp a leg ran with, looked up by leg name.
       mdp_of() {

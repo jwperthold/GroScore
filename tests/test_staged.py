@@ -359,6 +359,84 @@ if m:
   check("a truncated row is recomputed",
         not gate("X 1 " + " ".join("%g" % (i + 1) for i in range(nworks))))
 
+#------------------------------------------------------
+# 4. the lambda span job_fe.run hands to integrate_dhdl
+#------------------------------------------------------
+#
+# This cost test5 all 47 of its cycles. delta-lambda is written with %.8e, so the
+# one stage that should land exactly on lambda = 0 lands on the rounding residue,
+# -2.5e-11. As a separate argv token argparse accepts a leading-dash string as a
+# negative NUMBER only if it matches ^-\d+$ or ^-\d*\.\d+$; an exponent does not,
+# so it was read as an option name, integrate_dhdl died, integrate_or_nan wrote
+# NaN, and read_works dropped every row. The helper is extracted from job_fe.run
+# rather than restated, so this cannot pass against a copy.
+
+print("")
+print("4. the lambda span handed to integrate_dhdl")
+
+m = re.search(r"lam_span\(\)\s*\{(.*?)\n\s*\}", job, re.S)
+check("lam_span() is defined in job_fe.run", bool(m))
+
+if m:
+  awk_src = re.search(r"'(.*?)'", m.group(1), re.S).group(1)
+
+  def span(mdp_text):
+    p = os.path.join(work, "leg.mdp")
+    open(p, "w").write(mdp_text)
+    r = subprocess.run(["awk", "-F=", awk_src, p], capture_output=True, text=True)
+    return r.stdout.strip()
+
+  def mdp(init, delta, nsteps, dt=0.004):
+    return ("init-lambda              = %s\n"
+            "delta-lambda             = %s\n"
+            "nsteps                   = %d\n"
+            "dt                       = %g\n" % (init, delta, nsteps, dt))
+
+  # The exact case that failed: 0.3 -> 0 over 17 ns, delta at %.8e precision.
+  s_bad = span(mdp("0.3", "%.8e" % (-0.3 / 4250000), 4250000))
+  check("a stage ending at zero does not emit a negative exponent",
+        "-" not in s_bad.split("--lambda-end=")[1].split()[0], s_bad)
+  # What matters is that no VALUE is ever a standalone argv token: with
+  # --opt=value argparse never has to decide whether a leading dash starts an
+  # option or a number, whatever the value turns out to be.
+  check("every value is attached to its option with '='",
+        all(t.startswith("--") and "=" in t for t in s_bad.split()), s_bad)
+
+  # The trap my first fix walked into: gsub() strips the numeric type, so a
+  # string compare put "1" below "1e-09" and snapped init-lambda = 1 to zero.
+  s_rev = span(mdp("1", "%.8e" % (-1.0 / 1250000), 1250000))
+  check("init-lambda = 1 is NOT snapped to zero",
+        s_rev.split("--lambda-start=")[1].split()[0] == "1", s_rev)
+
+  # And the span has to survive the round trip into integrate_dhdl.
+  lam = np.linspace(0.3, 0.0, 501)
+  p_x = os.path.join(work, "revA.xvg")
+  with open(p_x, "w") as f:
+    f.write('@ s0 legend "dH/dl fep-lambda = 0.0000"\n')
+    for i, l in enumerate(lam):
+      f.write("%.4f  %.6f\n" % (i * 34.0, dvdl(l)))
+  r = subprocess.run([sys.executable, INTEGRATE, "-f", p_x, "--direction", "rev"]
+                     + s_bad.split(), capture_output=True, text=True)
+  check("integrate_dhdl accepts it", r.returncode == 0,
+        (r.stderr.strip().splitlines() or [""])[-1][:60])
+
+  # Every shipped leg must agree with the protocol it was generated from.
+  bad = []
+  for leg in P.legs():
+    f = os.path.join(MDP_DIR, leg["mdp"])
+    if not os.path.isfile(f):
+      continue
+    s_leg = span(open(f).read())
+    if not s_leg:
+      bad.append("%s: no span" % leg["name"]); continue
+    got0 = float(s_leg.split("--lambda-start=")[1].split()[0])
+    got1 = float(s_leg.split("--lambda-end=")[1].split()[0])
+    if abs(got0 - leg["lam_from"]) > 1e-6 or abs(got1 - leg["lam_to"]) > 1e-6:
+      bad.append("%s: %g->%g want %g->%g"
+                 % (leg["name"], got0, got1, leg["lam_from"], leg["lam_to"]))
+  check("every shipped leg's span matches fe_protocol", not bad,
+        "; ".join(bad[:3]))
+
 shutil.rmtree(work, ignore_errors=True)
 
 print("")
