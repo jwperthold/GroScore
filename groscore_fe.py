@@ -77,6 +77,18 @@ parser.add_argument('-n', '--numruns', type=int, default=None,
                          "the remembered value, or 5 for a fresh directory). Re-run with "
                          "a larger value plus --restart to add cycles: only the cycles "
                          "without a complete result are submitted.")
+parser.add_argument('--sum-k', dest='sum_k', type=float, default=None,
+                    help="Total interface restraint stiffness in kJ/mol/nm^2, split "
+                         "evenly over however many springs the interface has. "
+                         "Remembered in run_config.gs the same way as --numruns, so "
+                         "two run directories can differ in this and nothing else "
+                         "without either of them editing tracked code. It scales the "
+                         "work of switching the interface restraints on, which is the "
+                         "largest term in the bound leg and carries most of the "
+                         "dG_bind variance; it also sets how hard those springs pull "
+                         "before the Boresch takes over, so lowering it trades "
+                         "restraint noise for pulling authority (default: the "
+                         "remembered value, or make_boresch.py's 25000).")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
 parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
                     choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
@@ -178,6 +190,27 @@ if args.numruns is None:
     args.numruns = DEFAULT_NUMRUNS
 elif _cfg.get("numruns") != str(args.numruns):
   write_run_config(numruns=args.numruns)
+
+# sum_k travels the same way, and for a stronger reason: it is a property of the
+# restraint set, so every cycle in a directory must be built with the same value or
+# their works are not comparable. Remembering it means the second invocation cannot
+# quietly build the rest of the cycles at a different stiffness. job_fe.run reads
+# this file and passes the value to make_boresch.py.
+SUM_K_REMEMBERED = False
+if args.sum_k is None:
+  try:
+    args.sum_k = float(_cfg["sum_k"])
+    SUM_K_REMEMBERED = True
+  except (KeyError, ValueError):
+    args.sum_k = None                       # let make_boresch.py apply its default
+elif _cfg.get("sum_k") != ("%g" % args.sum_k):
+  if "sum_k" in _cfg:
+    print("WARNING: this directory was set up with sum_k = %s and you asked for %g."
+          % (_cfg["sum_k"], args.sum_k))
+    print("  Cycles already built keep the old value; only structures whose setup")
+    print("  re-runs will pick up the new one, and works from the two are not")
+    print("  comparable. Use a fresh directory unless that is what you meant.")
+  write_run_config(sum_k="%g" % args.sum_k)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
 from local_runner import launch_local, print_local_status

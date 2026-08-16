@@ -58,6 +58,7 @@ parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
+parser.add_argument('--sum-k', dest='sum_k', type=float, default=25000.0, help="Total interface restraint stiffness in kJ/mol/nm^2, split evenly over however many springs there are (k = sum_k/N). It sets the work of switching the interface restraints on, which is 0.5*sum_k*<(d-r0)^2> and is the largest single term in the bound leg; it also sets how hard the springs pull before the Boresch takes over, so it cannot go arbitrarily low. Default 25000.")
 parser.add_argument('--traj', type=str, default="npt_probe.xtc",
                     help="Equilibration trajectory used to measure backbone "
                          "rigidity for anchor selection (default: npt_probe.xtc). "
@@ -494,10 +495,11 @@ if MAX_PER_CONTACT and _n_uncapped:
   sys.stderr.write("make_boresch: interface restraints %d -> %d, cap %d per "
                    "residue-residue contact (%d contacts, all kept); %.1f%% still "
                    "involve a side chain; k rises %.1f -> %.1f kJ/mol/nm^2 so the "
-                   "total stays 25000\n"
+                   "total stays %.0f\n"
                    % (_n_uncapped, len(interdis), MAX_PER_CONTACT, _n_contacts,
                       100.0 * _sc / max(len(interdis), 1),
-                      25000.0 / max(_n_uncapped, 1), 25000.0 / max(len(interdis), 1)))
+                      args.sum_k / max(_n_uncapped, 1),
+                      args.sum_k / max(len(interdis), 1), args.sum_k))
 
 numinterdis = len(interdis)
 
@@ -848,7 +850,7 @@ def reference_on_ensemble(pairs):
       % (len(X), args.traj, 10.0 * shift.mean(),
          10.0 * float(np.sqrt((shift ** 2).mean())), 10.0 * float(np.abs(shift).max()),
          10.0 * float(sd.mean()),
-         0.5 * (25000.0 / len(pairs)) * float((shift ** 2).sum())))
+         0.5 * (args.sum_k / len(pairs)) * float((shift ** 2).sum())))
   return ([(i, j, float(m)) for (i, j, _), m in zip(pairs, mean)],
           "mean over %d frames" % len(X))
 
@@ -1392,6 +1394,11 @@ with open("boresch_analytical.gs", "w") as f:
   # actually run with: integrate.py multiplies the time integral of the pull
   # force by the rate, so a mismatch silently rescales every pull work.
   f.write("pull_rate_nm_ps       %.8f\n" % args.pull_rate)
+  # Recorded next to the geometry because it scales every work in the bound leg:
+  # a cycle re-integrated later, or two runs compared, must be readable without
+  # having to remember which sum-k the directory was set up with.
+  f.write("sum_k_kJ_mol_nm2      %.4f\n" % args.sum_k)
+  f.write("n_interface_springs   %d\n" % numinterdis)
   f.write("ref_thetaA_deg        %.4f\n" % ref_thA)
   f.write("ref_thetaB_deg        %.4f\n" % ref_thB)
   f.write("ref_phiA_deg          %.4f\n" % ref_phA)
@@ -1550,7 +1557,28 @@ def pair_displacement(u):
   return np.linalg.norm(_pair_vec + (u * args.pull_dist) * PULL_AXIS, axis=1) - d0
 
 
-k_inter = 25000.0 / numinterdis if numinterdis > 0 else 0.0
+# Sum-k is a budget split over however many springs there are, so N and k never
+# move independently and the collective stiffness is whatever --sum-k says.
+#
+# WHAT IT BUYS AND WHAT IT COSTS. The bound leg's work is 0.5*sum_k*<(d-r0)^2>, so
+# both the work and its cycle-to-cycle spread are proportional to it, and that leg
+# carries 80% of the dG_bind variance. Against that, the springs are the only thing
+# pulling at the start of the ramp -- the Boresch distance coordinate has k = 0 at
+# lambda = 0 and only reaches full strength at the far end -- and a given pulling
+# force needs a lag of F/sum_k, so a softer set has to stretch further to do the
+# same job. Measured on test5 at the stage-A friction peak, the genuine lag is
+# 0.67 A at 25000 and scales inversely:
+#
+#     sum_k    25000   18000   12500    8000    5000
+#     lag       0.67    0.93    1.34    2.10    3.36  A
+#
+# For scale, test5 ran with 2.5 A of imposed reference error on top of that lag and
+# still rebound (2.31 A RMSD, 43/47 cycles under 3 A). The pull-path correction
+# above removes that error, so spending part of the recovered headroom on a softer
+# spring is a trade the same interface has already shown it can absorb -- but it is
+# a trade, and it is why this is a knob with a recorded value rather than a new
+# default.
+k_inter = args.sum_k / numinterdis if numinterdis > 0 else 0.0
 
 def boresch_group_ndx(role):
   return "bor_%s" % role

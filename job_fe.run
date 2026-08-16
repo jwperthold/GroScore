@@ -892,11 +892,22 @@ with open('$CUTOUT_PDB', 'w') as f:
   # --index takes BOTH indexes: the generated a_*/bor_* groups are solute atom
   # numbers, valid in either system, and the legs run with index.ndx while the
   # readback grompps in the probe system that -f actually came from.
+  # Total interface stiffness, if this run directory pinned one. groscore_fe.py
+  # remembers it in run_config.gs exactly as it remembers numruns, so two runs can
+  # differ in it without either editing tracked code, and every structure in one
+  # directory is built at the same value. Absent, make_boresch.py applies its own
+  # default and records whatever it used in boresch_analytical.gs either way.
+  SUM_K=$(awk '$1=="sum_k"{print $2; exit}' ../run_config.gs 2>/dev/null)
+  SUM_K_OPT=""
+  if [[ -n "$SUM_K" ]]; then
+    SUM_K_OPT="--sum-k $SUM_K"
+    echo "Interface restraint budget pinned by run_config.gs: sum_k = $SUM_K kJ/mol/nm^2"
+  fi
   python3 ../../utils/make_boresch.py -f npt_probe_cluster.gro -m chain_map.gs -T $REF_T \
       --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR \
       --index index.ndx index_probe.ndx \
       --topol topol_probe.top --readback-index index_probe.ndx \
-      --box-from emin_solv.gro > numpertres.tmp
+      --box-from emin_solv.gro $SUM_K_OPT > numpertres.tmp
   MB_RC=$?
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
