@@ -486,28 +486,18 @@ def _cap_per_contact(cands, cap):
     kept.extend(chosen)
   return kept
 
-_n_uncapped = len(interdis)
-_n_contacts = len({(prot1_data[i][1], prot2_data[j][1]) for i, j, _ in interdis})
-if MAX_PER_CONTACT and _n_uncapped:
-  interdis = _cap_per_contact(interdis, MAX_PER_CONTACT)
-  _sc = sum(1 for i, j, _ in interdis
-            if prot1_data[i][2] not in BB_ATOMS or prot2_data[j][2] not in BB_ATOMS)
-  sys.stderr.write("make_boresch: interface restraints %d -> %d, cap %d per "
-                   "residue-residue contact (%d contacts, all kept); %.1f%% still "
-                   "involve a side chain; k rises %.1f -> %.1f kJ/mol/nm^2 so the "
-                   "total stays %.0f\n"
-                   % (_n_uncapped, len(interdis), MAX_PER_CONTACT, _n_contacts,
-                      100.0 * _sc / max(len(interdis), 1),
-                      args.sum_k / max(_n_uncapped, 1),
-                      args.sum_k / max(len(interdis), 1), args.sum_k))
+_n_snapshot = len(interdis)
+# The frame distance each candidate was picked on, kept so interface_contacts.gs
+# can record both ends of the shift after the references move.
+_snap_of = {(i, j): dist for i, j, dist in interdis}
 
-numinterdis = len(interdis)
-
-# WHICH pairs are restrained is settled here; WHERE each spring sits is not. The
-# reference distances above come from one frame, and reference_on_ensemble()
-# further down replaces them with the mean over the probe trajectory before any
-# pull block is built. interface_contacts.gs is written there too, so the file the
-# QC reads records the references actually used rather than the snapshot ones.
+# NOTHING IS SETTLED YET. What the loop above produced is a CANDIDATE list, chosen
+# by one frame's distances, and both the reference each spring gets and the final
+# membership of the list are decided later, in finalise_interface(), once the
+# probe trajectory has been read. Deciding them here would mean selecting on one
+# basis and referencing on another, which is what test7 did and cost 40% of its
+# springs to pairs that are not contacts on average. numinterdis, the cap and
+# interface_contacts.gs all belong to that step and are set there.
 
 #======================================================
 # PART 2 - Elastic network (identical to make_disres_en.build_elastic_network)
@@ -1380,6 +1370,105 @@ numerator = 8.0 * math.pi**2 * V0 * math.sqrt(prodK)
 denominator = (r0_release**2) * math.sin(thA0) * math.sin(thB0) * (2.0 * math.pi * RT)**3
 dG_release = -RT * math.log(numerator / denominator)   # kJ/mol
 
+#======================================================
+# PART 4b - Settle the interface restraint set
+#
+# Selection and referencing are ONE decision and are made together here, after the
+# anchor search (so an aborted setup does not pay for a trajectory pass) and before
+# anything reads numinterdis.
+#
+# test7 split them and it showed. Candidates were picked by a single frame at
+# 0.6 nm, then referenced to the trajectory mean, and the mean is a different
+# number: it moved +0.86 A on average and up to +5.4 A. 253 of 637 springs -- 40%
+# -- ended up referenced BEYOND the 0.6 nm contact cutoff, one of them at 1.11 nm.
+# Those are not contacts. They were pairs that happened to be close in the frame
+# that was looked at, they carried the largest reference shifts, and every one of
+# them diluted the stiffness budget: k was 39.25 where the 384 real contacts alone
+# would have given 65.10 kJ/mol/nm^2.
+#
+# It also silently broke the QC. interface_qc.py reports `formed` as the fraction
+# of restrained pairs inside 0.6 nm, so a set that is 40% beyond that cutoff by
+# construction has a ceiling of 60.3%. test7 read 0.581 and looked like poor
+# rebinding; against its real ceiling it had recovered 96% of what was reachable.
+#
+# So the cutoff is now applied to the same distance the spring is referenced to.
+# Note what this does NOT do: the candidate pass still uses one frame, so a pair
+# sitting at 0.62 nm in that frame whose mean is 0.55 nm is a genuine contact that
+# never gets considered. Widening the candidate pass would fix that and is cheap,
+# but it is a separate question from making the two ends agree, and only one of
+# them has been measured to cost anything.
+def finalise_interface(cands):
+  """-> (pairs, note). Re-reference on the ensemble, then re-apply the cutoff to
+  the reference that resulted, then cap. In that order, because each step should
+  see what the one before it decided."""
+  pairs, note = reference_on_ensemble(cands)
+  if not note.startswith("mean over"):
+    # No trajectory: the references are still the frame distances the cutoff
+    # already accepted, so there is nothing to re-apply and nothing to drop.
+    sys.stderr.write("make_boresch: interface references NOT re-measured (%s); "
+                     "the selection cutoff therefore still applies to the frame "
+                     "distances, which is self-consistent but is the test7 "
+                     "geometry\n" % note)
+    return pairs, "single reference frame"
+
+  keep = [p for p in pairs if p[2] <= interfacecutoff]
+  dropped = len(pairs) - len(keep)
+  if dropped:
+    far = sorted((p[2] for p in pairs if p[2] > interfacecutoff), reverse=True)
+    sys.stderr.write(
+        "make_boresch: %d of %d candidates have a MEAN distance beyond the %.2f nm "
+        "contact cutoff and are not restrained (worst %.3f nm); they were within "
+        "it only in the frame the candidates were picked from. %d springs remain, "
+        "so k is %.2f rather than %.2f kJ/mol/nm^2 for the same %.0f total.\n"
+        % (dropped, len(pairs), interfacecutoff, far[0], len(keep),
+           args.sum_k / max(len(keep), 1), args.sum_k / max(len(pairs), 1),
+           args.sum_k))
+  if not keep:
+    abort("NO_INTERFACE_CONTACTS",
+          "all %d candidate pairs have a mean distance beyond %.2f nm, so the "
+          "interface has no restrainable contact at all" % (len(pairs), interfacecutoff))
+  return keep, note
+
+
+interdis, _ref_note = finalise_interface(interdis)
+
+# The cap, if it is ever switched back on, applies to the settled set: capping
+# candidates would spend the budget on pairs the step above then discards.
+_n_uncapped = len(interdis)
+_n_contacts = len({(prot1_data[i][1], prot2_data[j][1]) for i, j, _ in interdis})
+if MAX_PER_CONTACT and _n_uncapped:
+  interdis = _cap_per_contact(interdis, MAX_PER_CONTACT)
+  _sc = sum(1 for i, j, _ in interdis
+            if prot1_data[i][2] not in BB_ATOMS or prot2_data[j][2] not in BB_ATOMS)
+  sys.stderr.write("make_boresch: interface restraints %d -> %d, cap %d per "
+                   "residue-residue contact (%d contacts, all kept); %.1f%% still "
+                   "involve a side chain; k rises %.1f -> %.1f kJ/mol/nm^2 so the "
+                   "total stays %.0f\n"
+                   % (_n_uncapped, len(interdis), MAX_PER_CONTACT, _n_contacts,
+                      100.0 * _sc / max(len(interdis), 1),
+                      args.sum_k / max(_n_uncapped, 1),
+                      args.sum_k / max(len(interdis), 1), args.sum_k))
+
+numinterdis = len(interdis)
+sys.stderr.write("make_boresch: %d interface springs at k = %.2f kJ/mol/nm^2 "
+                 "(%d candidates from the reference frame)\n"
+                 % (numinterdis, args.sum_k / max(numinterdis, 1), _n_snapshot))
+
+# The contact list the rebinding QC checks recovery against, written now that the
+# set and its references are both final. utils/interface_qc.py reads it rather than
+# reparsing the pull block and takes ref_nm from column 3; the frame distance the
+# candidate was picked on is kept as a tenth column so the shift stays auditable.
+with open("interface_contacts.gs", "w") as _f:
+  _f.write("# atomA atomB ref_nm resA resnumA nameA resB resnumB nameB frame_nm\n")
+  _f.write("# candidates %d, restrained %d, cap %s per residue-residue contact; "
+           "ref_nm is the %s, and the %.2f nm cutoff is applied to IT\n"
+           % (_n_snapshot, numinterdis, MAX_PER_CONTACT, _ref_note, interfacecutoff))
+  for i, j, dist in interdis:
+    a, b = prot1_data[i], prot2_data[j]
+    _f.write("%d %d %.6f %s %d %s %s %d %s %.6f\n"
+             % (a[3], b[3], dist, a[0], a[1], a[2], b[0], b[1], b[2],
+                _snap_of.get((i, j), float("nan"))))
+
 with open("boresch_analytical.gs", "w") as f:
   f.write("# Boresch standard-state analytical term (eq. 32)\n")
   f.write("# dG_release: free energy of removing the Boresch restraint to the\n")
@@ -1496,28 +1585,9 @@ compute_pbcatoms()
 # k (state A), kB (state B). Groups are declared once and referenced by index.
 #======================================================
 
-# Both geometry corrections are applied here, before any block is built, so every
-# leg that follows sees the same references.
-_snapdis = [p[2] for p in interdis]
-interdis, _ref_note = reference_on_ensemble(interdis)
-if not _ref_note.startswith("mean over"):
-  sys.stderr.write("make_boresch: interface references NOT re-measured (%s)\n"
-                   % _ref_note)
-
-# The contact list the rebinding QC checks recovery against, written now that the
-# references are final. utils/interface_qc.py reads it rather than reparsing the
-# pull block, and takes ref_nm from column 3; the snapshot distance is kept as a
-# tenth column so the shift stays auditable after the fact.
-with open("interface_contacts.gs", "w") as _f:
-  _f.write("# atomA atomB ref_nm resA resnumA nameA resB resnumB nameB snap_nm\n")
-  _f.write("# uncapped %d, kept %d, cap %s per residue-residue contact; "
-           "ref_nm is the %s\n"
-           % (_n_uncapped, numinterdis, MAX_PER_CONTACT, _ref_note))
-  for (i, j, dist), _snap in zip(interdis, _snapdis):
-    a, b = prot1_data[i], prot2_data[j]
-    _f.write("%d %d %.6f %s %d %s %s %d %s %.6f\n"
-             % (a[3], b[3], dist, a[0], a[1], a[2], b[0], b[1], b[2], _snap))
-
+# interdis is already final here: PART 4b settled both which pairs are restrained
+# and where each one sits, so every leg below sees the same set and the same
+# references. All that is left is the path they travel.
 #------------------------------------------------------
 # The path each interface reference travels during the pull.
 #
