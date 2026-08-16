@@ -28,11 +28,14 @@ def check(name, ok, detail=""):
         failures.append("%s %s" % (name, detail))
 
 
-def run_fe(cwd, *extra):
+def run_fe(cwd, *extra, numruns="3"):
     """Only the config handling is under test; it happens before any work, so the
     exit status is irrelevant and simulations never start."""
-    return subprocess.run([sys.executable, FE, "-n", "3", "--sequential"] + list(extra),
-                          capture_output=True, text=True, cwd=cwd, timeout=120)
+    argv = [sys.executable, FE, "--sequential"]
+    if numruns is not None:
+        argv += ["-n", numruns]
+    return subprocess.run(argv + list(extra), capture_output=True, text=True,
+                          cwd=cwd, timeout=120)
 
 
 def cfg(cwd):
@@ -79,16 +82,31 @@ check("a later invocation without the flag keeps it",
 check("numruns still works alongside it", cfg(tmp).get("numruns") == "3",
       "cfg=%r" % cfg(tmp))
 
+print("\n[0b] numruns defaults to a count BAR can actually score from")
+m3 = re.search(r"^DEFAULT_NUMRUNS\s*=\s*(\d+)", fe, re.M)
+check("groscore_fe.py names DEFAULT_NUMRUNS", m3 is not None)
+if m3:
+    check("and it is at least 20, the floor for fitting two work distributions",
+          int(m3.group(1)) >= 20, m3.group(1))
+cl = open(os.path.join(ROOT, "groscore.py")).read()
+m4 = re.search(r"'--numruns'.*?default=(\d+)", cl, re.S)
+check("the classic engine keeps its own smaller default", m4 is not None
+      and int(m4.group(1)) < int(m3.group(1)), "classic=%s fe=%s"
+      % (m4.group(1) if m4 else None, m3.group(1) if m3 else None))
+
 print("\n[1b] a fresh directory records the default rather than leaving it implicit")
 fresh = tempfile.mkdtemp(prefix="sumk_fresh_")
 shutil.copy(os.path.join(tmp, "sp.gs"), fresh)
-run_fe(fresh)
+run_fe(fresh, numruns=None)
 check("run_config.gs states the default stiffness with no flag given",
       cfg(fresh).get("sum_k") == "25000", "cfg=%r" % cfg(fresh))
-run_fe(fresh)
+check("and the default cycle count too, so neither can be reached by fallback",
+      cfg(fresh).get("numruns") == (m3.group(1) if m3 else "50"),
+      "cfg=%r" % cfg(fresh))
+run_fe(fresh, numruns=None)
 check("and a second invocation neither changes nor warns about it",
       cfg(fresh).get("sum_k") == "25000", "cfg=%r" % cfg(fresh))
-r = run_fe(fresh)
+r = run_fe(fresh, numruns=None)
 check("no spurious warning on the unchanged default",
       "WARNING" not in (r.stdout + r.stderr), (r.stdout + r.stderr)[-300:])
 shutil.rmtree(fresh, ignore_errors=True)

@@ -74,9 +74,11 @@ parser.add_argument('-n', '--numruns', type=int, default=None,
                     help="TOTAL bidirectional cycles wanted per structure. Remembered "
                          "in run_config.gs, so later invocations in the same directory "
                          "inherit it and only the first run needs to say it (default: "
-                         "the remembered value, or 5 for a fresh directory). Re-run with "
-                         "a larger value plus --restart to add cycles: only the cycles "
-                         "without a complete result are submitted.")
+                         "the remembered value, or DEFAULT_NUMRUNS = 50 for a fresh "
+                         "directory, because BAR needs work overlap and no shorter "
+                         "prefix of a real run has produced one). Re-run with a larger "
+                         "value plus --restart to add cycles: only the cycles without "
+                         "a complete result are submitted.")
 parser.add_argument('--sum-k', dest='sum_k', type=float, default=None,
                     help="Total interface restraint stiffness in kJ/mol/nm^2, split "
                          "evenly over however many springs the interface has. "
@@ -147,12 +149,20 @@ if args.ngpus and not args.run_local:
 # Everything downstream keys off it: which cycles count as missing, and
 # GROSCORE_NUMCYCLES, which job.run compares against the .done markers to decide
 # a structure is finished and can be tarred up. Falling back to the built-in
-# default on a later run would therefore both stop the run growing past 5 and
-# tell a cycle job that 5 was the target -- enough, with 5 markers present, to
-# archive a structure mid-run. So it is remembered here rather than defaulted.
-
+# default on a later run would therefore both stop the run growing past that
+# number and tell a cycle job it was the target -- enough, with that many markers
+# present, to archive a structure mid-run. So it is remembered here rather than
+# defaulted, and a fresh directory records it immediately.
+#
+# 50, NOT the classic engine's 5. This engine's answer is a BAR estimate, and BAR
+# returns nothing at all without forward/reverse work overlap. On test5 no prefix
+# of the run produced a number: five, ten, twenty, forty cycles all came back
+# BAR_NO_OVERLAP and only the full 47 scored. A five-cycle FE run is not a coarse
+# answer, it is no answer, so defaulting to 5 here would only ever mean a wasted
+# 400 ns. groscore.py keeps 5 because its score is a calibrated pull work that a
+# handful of cycles genuinely does estimate.
 RUN_CONFIG = "run_config.gs"
-DEFAULT_NUMRUNS = 5
+DEFAULT_NUMRUNS = 50
 
 # Total interface restraint stiffness, kJ/mol/nm^2, split evenly over however many
 # springs the interface has. THE VALUE LIVES HERE, and every run directory records
@@ -201,7 +211,9 @@ if args.numruns is None:
     NUMRUNS_REMEMBERED = True
   except (KeyError, ValueError):
     args.numruns = DEFAULT_NUMRUNS
-elif _cfg.get("numruns") != str(args.numruns):
+# Recorded even when it is the default, so the fallback the paragraph above warns
+# about can never be reached: a directory always states its own target.
+if _cfg.get("numruns") != str(args.numruns):
   write_run_config(numruns=args.numruns)
 
 # sum_k travels the same way, and for a stronger reason: it is a property of the

@@ -504,7 +504,10 @@ equilibrium hold at every boundary in both directions:
 | `boundrev` | bound restraints off (dhdl) | 1 -> 0 | 5 ns |
 | **per cycle** | | | **80 ns** |
 
-At the default 5 cycles this is **~411 ns/structure**.
+At the default 50 cycles this is **~4.0 µs/structure**. The default is 50 rather
+than the classic engine's 5 because BAR returns nothing without forward/reverse
+work overlap, and on a real run no shorter prefix has ever produced it: five, ten,
+twenty and forty cycles all came back `BAR_NO_OVERLAP` where the full 47 scored.
 
 #### The protocol is defined in one place
 
