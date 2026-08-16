@@ -416,7 +416,29 @@ if len(prot1_valid) > 0 and len(prot2_valid) > 0:
 # why the cap is 4 and not 1. And 84.6% of the uncapped restraints involve a side
 # chain, so a rule that quietly kept backbone pairs would discard exactly the
 # packing information the restraints exist to hold.
-MAX_PER_CONTACT = 4
+#
+# OFF SINCE test6 MEASURED IT. The reasoning above is sound about redundancy and
+# wrong about what redundancy costs. test5 and test6 differ in this setting and
+# almost nothing else, and the bound-state leg reads the difference cleanly since
+# no Boresch coordinate appears in it:
+#
+#     restraints          664 (k = 37.7)      188 (k = 133.0)
+#     round-trip diss     129.6 +- 11.2       190.9 +- 10.4     4.0 sigma WORSE
+#     work overlap        47 of 94            0                 BAR returns nothing
+#     rebinding RMSD      2.31 A              2.81 A
+#     cycles over 3 A     4 of 47             21 of 49
+#
+# The N*RT/2 argument holds only when each spring's reference is where its pair
+# actually sits. It is not: there is a standing 2.7 A mismatch between the probe
+# snapshot and each production replica (see the trajectory-mean references below),
+# and a spring 3.5x stiffer turns the same mismatch into 3.5x the work and 3.5x
+# the spread. Cutting N at fixed sum-k therefore buys noise, which is the opposite
+# of what this comment predicted.
+#
+# The selection code is kept, tested and one assignment away from returning, since
+# a cap may well be right once the references are in the right place. It is not
+# right today.
+MAX_PER_CONTACT = None
 BB_ATOMS = {"N", "CA", "C", "O", "OT", "OT1", "OT2", "OXT"}
 
 def _cap_per_contact(cands, cap):
@@ -479,18 +501,11 @@ if MAX_PER_CONTACT and _n_uncapped:
 
 numinterdis = len(interdis)
 
-# The contact list the rebinding QC checks recovery against. Written here because
-# this is the only place that knows which pairs were restrained and what their
-# reference distances were; utils/interface_qc.py reads it rather than reparsing
-# the pull block.
-with open("interface_contacts.gs", "w") as _f:
-  _f.write("# atomA atomB ref_nm resA resnumA nameA resB resnumB nameB\n")
-  _f.write("# uncapped %d, kept %d, cap %d per residue-residue contact\n"
-           % (_n_uncapped, numinterdis, MAX_PER_CONTACT))
-  for i, j, dist in interdis:
-    a, b = prot1_data[i], prot2_data[j]
-    _f.write("%d %d %.6f %s %d %s %s %d %s\n"
-             % (a[3], b[3], dist, a[0], a[1], a[2], b[0], b[1], b[2]))
+# WHICH pairs are restrained is settled here; WHERE each spring sits is not. The
+# reference distances above come from one frame, and reference_on_ensemble()
+# further down replaces them with the mean over the probe trajectory before any
+# pull block is built. interface_contacts.gs is written there too, so the file the
+# QC reads records the references actually used rather than the snapshot ones.
 
 #======================================================
 # PART 2 - Elastic network (identical to make_disres_en.build_elastic_network)
@@ -683,24 +698,53 @@ def kabsch(P, Q):
   return R, qc - R @ pc
 
 
-def read_multi_gro(path, natoms):
-  """(nframes, natoms, 3) from a multi-frame .gro, or None."""
+def read_multi_gro(path, natoms, with_box=False):
+  """(nframes, natoms, 3) from a multi-frame .gro, or None.
+
+  with_box also returns (nframes, 3, 3) box matrices, rows being the box vectors.
+  Cross-protein distances need them: the trajectory is only -pbc whole, so the two
+  partners can sit in different periodic images and a raw subtraction is then
+  wrong by a box vector. Intra-protein callers do not, hence the default."""
   if natoms <= 0:
-    return None
+    return (None, None) if with_box else None
   L = open(path).read().split("\n")
-  out, i = [], 0
+  out, box, i = [], [], 0
   while i < len(L) - 1 and L[i].strip():
     n = int(L[i + 1])
     if n != natoms:
-      return None
+      return (None, None) if with_box else None
     if i + 2 + n > len(L):     # truncated write: keep the frames we have
       break
     out.append([[float(L[i + 2 + k][20:28]), float(L[i + 2 + k][28:36]),
                  float(L[i + 2 + k][36:44])] for k in range(n)])
+    b = [float(v) for v in L[i + 2 + n].split()] + [0.0] * 9
+    #                 v1              v2              v3
+    box.append([[b[0], b[3], b[4]], [b[5], b[1], b[6]], [b[7], b[8], b[2]]])
     i += n + 3
   if not out:
-    return None
-  return np.asarray(out, dtype=float).reshape(len(out), natoms, 3)
+    return (None, None) if with_box else None
+  arr = np.asarray(out, dtype=float).reshape(len(out), natoms, 3)
+  if not with_box:
+    return arr
+  return arr, np.asarray(box, dtype=float)
+
+
+# The 27 translations of a triclinic cell, built once. Brute force over them is
+# exact for any box shape and costs nothing at these sizes; the alternative,
+# rounding by the inverse box, is only correct for cells that are nearly
+# rectangular and fails quietly on the dodecahedra this pipeline usually builds.
+_IMG = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1)
+                 for k in (-1, 0, 1)], dtype=float)
+
+
+def min_image_dist(dv, M):
+  """Shortest distance equivalent to displacement dv under box M.
+
+  dv is (..., 3) and M is (3, 3) or (..., 3, 3), so a whole trajectory of pair
+  vectors goes through in one call."""
+  shifts = np.einsum("ij,...jk->...ik", _IMG, M)        # (..., 27, 3)
+  cand = dv[..., None, :] + shifts
+  return np.sqrt((cand ** 2).sum(-1)).min(-1)
 
 
 def load_backbone_trajectory(atom_numbers):
@@ -735,6 +779,78 @@ def load_backbone_trajectory(atom_numbers):
     for f in (ndx, gro):
       if os.path.isfile(f):
         os.remove(f)
+
+
+def reference_on_ensemble(pairs):
+  """Re-reference each interface spring to its MEAN distance over the probe run.
+
+  A harmonic restraint costs <(d - r0)^2>, which is minimised at r0 = <d> and by
+  nothing else, so the ensemble mean is not a heuristic here: it is the choice
+  that makes the switch cheapest, for any spring constant.
+
+  What it was before is one frame. npt_probe.gro is the last step of the 10 ns
+  probe, and every production replica then equilibrates 10 ns from emin_vac under
+  its own seed and is measured against that single snapshot. Reading dH/dlambda at
+  the first frame of boundfwd gives 0.5*k*sum(d - r0)^2 exactly, and on test5 it
+  came to 1082 +- 954 kJ/mol: a 2.72 +- 1.13 A mismatch per pair, ranging 1.16 to
+  6.02 A across cycles, explaining 51% of the W_intro variance on a leg that
+  carries 80% of the total. Splitting the residual strain three ways puts 40% in a
+  systematic offset shared by every replica, and that is the part this removes.
+
+  Distances are minimum-imaged. trjconv is asked for -pbc whole, which makes each
+  molecule whole but leaves the two partners free to sit in different images;
+  clustering a cross-protein subset is what the backbone reader above had to avoid,
+  and at a 0.6 nm contact against a box of several nm the minimum image is not an
+  approximation, it is the same number.
+
+  Returns (pairs, note) with the distances replaced, or the input untouched and a
+  note saying why, since a missing trajectory must degrade to the old behaviour
+  rather than abort a setup."""
+  if not pairs:
+    return pairs, "no interface pairs"
+  anums = sorted({prot1_data[i][3] for i, _, _ in pairs} |
+                 {prot2_data[j][3] for _, j, _ in pairs})
+  if not (os.path.isfile(args.traj) and os.path.isfile(args.tpr)):
+    return pairs, "no %s/%s; keeping the snapshot references" % (args.traj, args.tpr)
+  ndx, gro = ".if_sel.ndx", ".if_traj.gro"
+  try:
+    with open(ndx, "w") as f:
+      f.write("[ ifsel ]\n" + " ".join(str(a) for a in anums) + "\n")
+    r = subprocess.run(["gmx", "trjconv", "-s", args.tpr, "-f", args.traj,
+                        "-n", ndx, "-o", gro, "-b", "%g" % TRAJ_SKIP_PS,
+                        "-pbc", "whole"],
+                       input="ifsel\n", capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.isfile(gro):
+      return pairs, "trjconv failed; keeping the snapshot references"
+    X, M = read_multi_gro(gro, len(anums), with_box=True)
+  except (OSError, ValueError, IndexError) as e:
+    return pairs, "%s; keeping the snapshot references" % e
+  finally:
+    for f in (ndx, gro):
+      if os.path.isfile(f):
+        os.remove(f)
+  if X is None or len(X) < MIN_FRAMES:
+    return pairs, ("only %s frames, need %d; keeping the snapshot references"
+                   % (0 if X is None else len(X), MIN_FRAMES))
+  row = {a: k for k, a in enumerate(anums)}
+  ia = np.array([row[prot1_data[i][3]] for i, _, _ in pairs])
+  ib = np.array([row[prot2_data[j][3]] for _, j, _ in pairs])
+  d = min_image_dist(X[:, ia, :] - X[:, ib, :], M[:, None, :, :])   # (frames, pairs)
+  mean, sd = d.mean(0), d.std(0)
+  snap = np.array([p[2] for p in pairs])
+  shift = mean - snap
+  sys.stderr.write(
+      "make_boresch: interface references re-measured on %d frames of %s -- moved "
+      "%+.3f A on average, rms %.3f A, worst %.3f A. Residual spread about the new "
+      "reference is %.3f A rms, which is the part no choice of reference can "
+      "remove. Removing the offset takes %.0f kJ/mol of systematic strain out of "
+      "the bound leg.\n"
+      % (len(X), args.traj, 10.0 * shift.mean(),
+         10.0 * float(np.sqrt((shift ** 2).mean())), 10.0 * float(np.abs(shift).max()),
+         10.0 * float(sd.mean()),
+         0.5 * (25000.0 / len(pairs)) * float((shift ** 2).sum())))
+  return ([(i, j, float(m)) for (i, j, _), m in zip(pairs, mean)],
+          "mean over %d frames" % len(X))
 
 
 def measure_rigidity(prot_data, traj, row_of):
@@ -1373,6 +1489,67 @@ compute_pbcatoms()
 # k (state A), kB (state B). Groups are declared once and referenced by index.
 #======================================================
 
+# Both geometry corrections are applied here, before any block is built, so every
+# leg that follows sees the same references.
+_snapdis = [p[2] for p in interdis]
+interdis, _ref_note = reference_on_ensemble(interdis)
+if not _ref_note.startswith("mean over"):
+  sys.stderr.write("make_boresch: interface references NOT re-measured (%s)\n"
+                   % _ref_note)
+
+# The contact list the rebinding QC checks recovery against, written now that the
+# references are final. utils/interface_qc.py reads it rather than reparsing the
+# pull block, and takes ref_nm from column 3; the snapshot distance is kept as a
+# tenth column so the shift stays auditable after the fact.
+with open("interface_contacts.gs", "w") as _f:
+  _f.write("# atomA atomB ref_nm resA resnumA nameA resB resnumB nameB snap_nm\n")
+  _f.write("# uncapped %d, kept %d, cap %s per residue-residue contact; "
+           "ref_nm is the %s\n"
+           % (_n_uncapped, numinterdis, MAX_PER_CONTACT, _ref_note))
+  for (i, j, dist), _snap in zip(interdis, _snapdis):
+    a, b = prot1_data[i], prot2_data[j]
+    _f.write("%d %d %.6f %s %d %s %s %d %s %.6f\n"
+             % (a[3], b[3], dist, a[0], a[1], a[2], b[0], b[1], b[2], _snap))
+
+#------------------------------------------------------
+# The path each interface reference travels during the pull.
+#
+# Every interface coordinate used to be written with the SAME rate, so every
+# reference grew by u while the partner actually underwent a rigid translation of u
+# along the pull axis. Those agree only for pairs parallel to the axis. On 2KTF's
+# real geometry the disagreement reaches 2.51 A rms and 7.25 A on the worst pair,
+# and it is a strain of 786 kJ/mol at u = 1 that no physics asked for: the springs
+# spend the whole ramp demanding a configuration no rigid motion can reach. Stage C
+# pays 42.8 kJ/mol of dhdl hysteresis for it (measured by decomposing dH/dlambda
+# per coordinate, where the Boresch coordinates account for 0.20), and stage A's
+# pull friction peaks exactly where this term is already worth tens of kJ/mol.
+#
+# So each reference now follows |r_i + u*n| instead of |r_i| + u, with n the pull
+# axis. A GROMACS pull rate is constant within a leg, so what is written is the
+# chord of that curve across the leg -- and because the ramp is already staged,
+# that is one chord per stage, which brings the worst mismatch anywhere on the path
+# from 2.51 A down to 0.12 A.
+#
+# This does NOT remove the pulling. The springs still have to lag behind their
+# references to drag the partner out, and that lag is the friction the method is
+# measuring. What goes away is the separate demand that the interface deform.
+PULL_AXIS = (L1c - P3c) / np.linalg.norm(L1c - P3c)
+
+_pair_vec = np.array([np.array(prot2_data[j][4:7], dtype=float)
+                      - np.array(prot1_data[i][4:7], dtype=float)
+                      for i, j, _ in interdis]) if interdis else np.empty((0, 3))
+
+
+def pair_displacement(u):
+  """How far each interface reference should have moved once the partner has
+  translated u*pull_dist along the pull axis. Zero at u = 0 by construction, so it
+  composes with the ensemble-mean reference rather than replacing it."""
+  if not len(_pair_vec):
+    return np.empty(0)
+  d0 = np.linalg.norm(_pair_vec, axis=1)
+  return np.linalg.norm(_pair_vec + (u * args.pull_dist) * PULL_AXIS, axis=1) - d0
+
+
 k_inter = 25000.0 / numinterdis if numinterdis > 0 else 0.0
 
 def boresch_group_ndx(role):
@@ -1440,17 +1617,35 @@ def build_coords(family, direction, u_from=None, u_to=None, ps=None):
 
   if family == "unbind":
     # 1) Interface restraints FIRST (moving) so pull integrator sums them first.
-    rate = stage_rate
-    for i, j, dist in interdis:
+    #
+    # Each one follows its own chord of |r_i + u*n| across this stage rather than
+    # the common scalar rate; see the note at PULL_AXIS. weight is that chord as a
+    # fraction of the stage's nominal displacement, and it is what integrate.py
+    # needs to turn the summed pull force back into work -- with one rate per
+    # coordinate, rate_common * integral(sum F) is no longer the work, and
+    # sum(rate_i * integral(F_i)) is.
+    _leg_ps = ps if ps else (args.pull_dist / abs(args.pull_rate)
+                             if args.pull_rate else 0.0)
+    _d_from, _d_to = pair_displacement(u_from), pair_displacement(u_to)
+    _nominal = (u_to - u_from) * args.pull_dist
+    for n, (i, j, dist) in enumerate(interdis):
       g1 = gidx("a_%d" % prot1_data[i][3])
       g2 = gidx("a_%d" % prot2_data[j][3])
+      _move = float(_d_to[n] - _d_from[n])
       coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
-                         init=dist + off, rate=rate, k=k_inter, kB=0.0))
+                         init=dist + float(_d_from[n]),
+                         rate=(_move / _leg_ps if _leg_ps else 0.0),
+                         k=k_inter, kB=0.0,
+                         weight=(_move / _nominal if _nominal else 1.0)))
     # 2) Boresch distance r (moving) - the coord that takes over the pulling.
+    # This one IS the pull axis, so its reference does grow by the full nominal
+    # amount and its weight is exactly 1: the correction above is about the
+    # interface coordinates, which point every other way.
     gP3 = gidx(boresch_group_ndx("P3"))
     gL1 = gidx(boresch_group_ndx("L1"))
     coords.append(dict(geometry="distance", dim="Y Y Y", groups=[gP3, gL1],
-                       init=ref_r + off, rate=rate, k=0.0, kB=K_R, boresch=True))
+                       init=ref_r + off, rate=stage_rate, k=0.0, kB=K_R,
+                       boresch=True, weight=1.0))
     # 3) Elastic network (fixed, no lambda dependence).
     for i, j, dist in en1dis:
       g1 = gidx("a_%d" % prot1_data[protkeep1[i]][3])
@@ -1505,6 +1700,28 @@ def build_coords(family, direction, u_from=None, u_to=None, ps=None):
                          init=dist, rate=0.0, k=enk, kB=enk))
 
   return pull_groups, coords
+
+def write_pull_weights(legname, coords):
+  """One weight per force column integrate.py sums, for this leg.
+
+  The pull work is sum_i rate_i * integral(F_i dt). While every rate was the same
+  that factored into rate * integral(sum F), which is what integrate.py computes
+  from a single -r. Per-coordinate rates break the factorisation, so the sum has to
+  be weighted: w_i = rate_i / rate_nominal, and rate_nominal * sum(w_i F_i) is the
+  work again. The weights are ratios of displacements, so they do not depend on
+  direction -- a reverse leg retraces the same chords -- and job_fe.run keeps
+  passing the rate magnitude exactly as before.
+
+  Uniform weights reproduce the old arithmetic exactly; tests/test_pull_weights.py
+  asserts that on real data rather than by inspection."""
+  n = numinterdis + 1                       # what job_fe.run passes as -nr
+  w = [float(c.get("weight", 1.0)) for c in coords[:n]]
+  with open("pull_weights_%s.gs" % legname, "w") as f:
+    f.write("# per-coordinate pull-work weight w = rate_i / rate_nominal, one per\n"
+            "# summed force column, in column order. integrate.py -R reads this.\n")
+    for x in w:
+      f.write("%.10g\n" % x)
+
 
 def write_pull_block(filename, pull_groups, coords):
   # Truncate any block a previous run left behind. This appends, and job_fe.run
@@ -1598,6 +1815,14 @@ for _leg in P.legs():
     for c in _co:
       c["rate"] = 0.0
   write_pull_block(_name, _pg, _co)
+  # The per-coordinate weights integrate.py needs for this leg, one line per
+  # summed force column, in the order the columns appear. Written per stage
+  # because the chords differ per stage, and only for stages: a hold does no work,
+  # writes no pull-force file and is never integrated, and the far-end hold has
+  # dropped its interface coordinates entirely, so a weights file for it would
+  # carry a length that disagrees with -nr and abort the day something did read it.
+  if _leg["kind"] == "stage":
+    write_pull_weights(_leg["name"], _co)
   if _leg["kind"] == "stage" and first_stage_mdp is None:
     first_stage_mdp = _name
     boresch_idx = [i for i, c in enumerate(_co) if c.get("boresch")]

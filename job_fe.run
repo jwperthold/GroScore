@@ -1303,8 +1303,19 @@ fi
             echo "       $_field of cycle $cycle stays NaN rather than being" >&2
             echo "       integrated at a guessed rate." >&2
           elif [[ -f ${_f}_pullf.xvg ]]; then
-            W[$_field]=$(integrate_or_nan python3 ../../utils/integrate.py \
-                         -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate)
+            # Each interface reference follows its own chord of the pull path, so
+            # the coordinates no longer share one rate and the summed force has to
+            # be weighted before it becomes work. make_boresch.py writes one
+            # weights file per leg. A structure set up before that change has no
+            # such file and integrates unweighted, which is exactly what it ran.
+            _wf=pull_weights_${_leg}.gs
+            if [[ -f $_wf ]]; then
+              W[$_field]=$(integrate_or_nan python3 ../../utils/integrate.py \
+                           -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate -R $_wf)
+            else
+              W[$_field]=$(integrate_or_nan python3 ../../utils/integrate.py \
+                           -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate)
+            fi
           fi
         else
           _span=$(lam_span "$(mdp_of "$_leg")")
