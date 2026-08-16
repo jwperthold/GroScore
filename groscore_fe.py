@@ -88,7 +88,8 @@ parser.add_argument('--sum-k', dest='sum_k', type=float, default=None,
                          "dG_bind variance; it also sets how hard those springs pull "
                          "before the Boresch takes over, so lowering it trades "
                          "restraint noise for pulling authority (default: the "
-                         "remembered value, or make_boresch.py's 25000).")
+                         "remembered value, or DEFAULT_SUM_K = 25000 for a fresh "
+                         "directory).")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
 parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
                     choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
@@ -153,6 +154,18 @@ if args.ngpus and not args.run_local:
 RUN_CONFIG = "run_config.gs"
 DEFAULT_NUMRUNS = 5
 
+# Total interface restraint stiffness, kJ/mol/nm^2, split evenly over however many
+# springs the interface has. THE VALUE LIVES HERE, and every run directory records
+# the one it used, so nobody has to go looking for it: groscore_fe.py always passes
+# an explicit --sum-k down to make_boresch.py, whose own default is a fallback for
+# running that script by hand and is pinned equal to this one by tests/test_sum_k.py.
+#
+# Not written as argparse's default= for the same reason DEFAULT_NUMRUNS is not:
+# the parser has to be able to tell "the user asked for 25000" from "the user asked
+# for nothing", or a directory set up at 12500 would be silently reset to 25000 by
+# the next invocation that omitted the flag.
+DEFAULT_SUM_K = 25000.0
+
 
 def read_run_config():
   cfg = {}
@@ -202,14 +215,16 @@ if args.sum_k is None:
     args.sum_k = float(_cfg["sum_k"])
     SUM_K_REMEMBERED = True
   except (KeyError, ValueError):
-    args.sum_k = None                       # let make_boresch.py apply its default
-elif _cfg.get("sum_k") != ("%g" % args.sum_k):
-  if "sum_k" in _cfg:
-    print("WARNING: this directory was set up with sum_k = %s and you asked for %g."
-          % (_cfg["sum_k"], args.sum_k))
-    print("  Cycles already built keep the old value; only structures whose setup")
-    print("  re-runs will pick up the new one, and works from the two are not")
-    print("  comparable. Use a fresh directory unless that is what you meant.")
+    args.sum_k = DEFAULT_SUM_K
+elif "sum_k" in _cfg and _cfg["sum_k"] != ("%g" % args.sum_k):
+  print("WARNING: this directory was set up with sum_k = %s and you asked for %g."
+        % (_cfg["sum_k"], args.sum_k))
+  print("  Cycles already built keep the old value; only structures whose setup")
+  print("  re-runs will pick up the new one, and works from the two are not")
+  print("  comparable. Use a fresh directory unless that is what you meant.")
+# Recorded even when it is the default, so a directory always states its own
+# stiffness and job_fe.run always has an explicit value to pass on.
+if _cfg.get("sum_k") != ("%g" % args.sum_k):
   write_run_config(sum_k="%g" % args.sum_k)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))

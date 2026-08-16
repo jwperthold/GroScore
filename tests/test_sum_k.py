@@ -53,6 +53,22 @@ tmp = tempfile.mkdtemp(prefix="sumk_")
 with open(os.path.join(tmp, "sp.gs"), "w") as f:
     f.write("# Structure_ID  Chains_for_Protein_B\n2KTF\tB---\n")
 
+print("\n[0] the default is one number, stated where you would look for it")
+fe = open(FE).read()
+m = re.search(r"^DEFAULT_SUM_K\s*=\s*([0-9.]+)", fe, re.M)
+check("groscore_fe.py names DEFAULT_SUM_K at module level", m is not None)
+mb_src = open(os.path.join(ROOT, "utils", "make_boresch.py")).read()
+m2 = re.search(r"'--sum-k'.*?default=([0-9.]+)", mb_src, re.S)
+check("make_boresch.py states its own default in its parser", m2 is not None)
+if m and m2:
+    check("and the two agree, so neither can drift",
+          float(m.group(1)) == float(m2.group(1)),
+          "%s vs %s" % (m.group(1), m2.group(1)))
+check("--sum-k is not given an argparse default that would mask 'unset'",
+      re.search(r"'--sum-k'[^)]*?default=None", fe, re.S) is not None,
+      "a literal default= here makes an omitted flag indistinguishable from a "
+      "typed one, and would reset a remembered directory")
+
 print("\n[1] run_config.gs remembers sum_k the way it remembers numruns")
 r = run_fe(tmp, "--sum-k", "12500")
 check("first invocation records it", cfg(tmp).get("sum_k") == "12500",
@@ -62,6 +78,31 @@ check("a later invocation without the flag keeps it",
       cfg(tmp).get("sum_k") == "12500", "cfg=%r" % cfg(tmp))
 check("numruns still works alongside it", cfg(tmp).get("numruns") == "3",
       "cfg=%r" % cfg(tmp))
+
+print("\n[1b] a fresh directory records the default rather than leaving it implicit")
+fresh = tempfile.mkdtemp(prefix="sumk_fresh_")
+shutil.copy(os.path.join(tmp, "sp.gs"), fresh)
+run_fe(fresh)
+check("run_config.gs states the default stiffness with no flag given",
+      cfg(fresh).get("sum_k") == "25000", "cfg=%r" % cfg(fresh))
+run_fe(fresh)
+check("and a second invocation neither changes nor warns about it",
+      cfg(fresh).get("sum_k") == "25000", "cfg=%r" % cfg(fresh))
+r = run_fe(fresh)
+check("no spurious warning on the unchanged default",
+      "WARNING" not in (r.stdout + r.stderr), (r.stdout + r.stderr)[-300:])
+shutil.rmtree(fresh, ignore_errors=True)
+
+print("\n[1c] omitting the flag must NOT reset a directory set up at another value")
+keep = tempfile.mkdtemp(prefix="sumk_keep_")
+shutil.copy(os.path.join(tmp, "sp.gs"), keep)
+run_fe(keep, "--sum-k", "12500")
+r = run_fe(keep)                                  # no flag: must inherit, not reset
+check("12500 survives an invocation with no --sum-k",
+      cfg(keep).get("sum_k") == "12500", "cfg=%r" % cfg(keep))
+check("and that invocation does not warn", "WARNING" not in (r.stdout + r.stderr),
+      (r.stdout + r.stderr)[-300:])
+shutil.rmtree(keep, ignore_errors=True)
 
 print("\n[2] changing it in an existing directory warns rather than doing it quietly")
 r = run_fe(tmp, "--sum-k", "8000")
