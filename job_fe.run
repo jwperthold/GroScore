@@ -1028,23 +1028,40 @@ fi
   claim_cycle() {
     local lock=results_fe_c$1.lock
     if mkdir "$lock" 2>/dev/null; then
-      echo "$(hostname):$$" > "$lock/owner"
+      echo "$(hostname):$$:${SLURM_JOB_ID:--}" > "$lock/owner"
       CYCLE_LOCK="$lock"
       return 0
     fi
-    local owner host pid
+    local owner host pid job
     owner=$(cat "$lock/owner" 2>/dev/null)
-    host=${owner%%:*}; pid=${owner##*:}
+    IFS=: read -r host pid job <<< "$owner"
+
+    # Same host: the pid means something, so ask the kernel.
     if [[ "$host" == "$(hostname)" && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
       echo "Cycle $1: reclaiming stale lock from dead pid $pid"
       rm -rf "$lock"
-      if mkdir "$lock" 2>/dev/null; then
-        echo "$(hostname):$$" > "$lock/owner"
-        CYCLE_LOCK="$lock"
-        return 0
+    # DIFFERENT host: the pid is meaningless, but a SLURM job id is not. A lock
+    # is only released by the EXIT trap, and SIGKILL does not run traps --
+    # `timeout -s 9` and SLURM's own walltime kill both SIGKILL -- so a job that
+    # is hard-killed on another node leaves its lock behind forever. Without a
+    # cross-host liveness test that cycle can never be claimed again by anyone:
+    # every later run prints "already running elsewhere" and skips it, and
+    # --restart quietly does nothing for it. squeue answers the question
+    # exactly: if the owning job is not in the queue, it cannot be running.
+    elif [[ -n "$job" && "$job" != "-" ]] && command -v squeue >/dev/null 2>&1; then
+      if ! squeue -h -j "$job" >/dev/null 2>&1 || [[ -z "$(squeue -h -j "$job" 2>/dev/null)" ]]; then
+        echo "Cycle $1: reclaiming lock from SLURM job $job, no longer queued"
+        rm -rf "$lock"
       fi
     fi
+
+    if [[ ! -d "$lock" ]] && mkdir "$lock" 2>/dev/null; then
+      echo "$(hostname):$$:${SLURM_JOB_ID:--}" > "$lock/owner"
+      CYCLE_LOCK="$lock"
+      return 0
+    fi
     echo "Cycle $1: already running elsewhere (owner ${owner:-unknown}) - skipping."
+    echo "  If that job is gone and squeue cannot say so, remove $lock by hand."
     return 1
   }
 
