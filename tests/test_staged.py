@@ -479,6 +479,29 @@ check("dense below CONV_DENSE, thinned above",
 check("the cheap bootstrap is only cheaper, never larger than the published one",
       _G.CONV_NBOOT_BAR <= 5000 and _G.CONV_NBOOT <= 50000)
 
+# Both figures size themselves from their contents, so a narrow one has to shrink
+# its title rather than let matplotlib draw it clipped at both ends -- which is
+# exactly what a single-structure convergence page did, losing the G and the I.
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as _plt
+
+LONG = "GroScore-FE convergence — staged sum over legs, shaded 95% CI"
+over = []
+for w in (4.0, 5.5, 6.4, 11.0, 22.0):
+  fig = _plt.figure(figsize=(w, 3.0), dpi=180)
+  t = _G._fit_suptitle(fig, LONG, fontweight="bold")
+  fig.canvas.draw()
+  bb = t.get_window_extent(fig.canvas.get_renderer())
+  if bb.width > w * fig.dpi:
+    over.append("%.1f in: title %.0f px of %.0f" % (w, bb.width, w * fig.dpi))
+  if w >= 22.0 and t.get_fontsize() < 13:
+    over.append("%.1f in: shrunk to %.1f when it already fitted"
+                % (w, t.get_fontsize()))
+  _plt.close(fig)
+check("a long title fits every canvas width, and wide ones are left alone",
+      not over, "; ".join(over))
+
 print("")
 if failures:
   print("FAILED: " + ", ".join(failures))

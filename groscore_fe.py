@@ -1357,6 +1357,29 @@ def _clear_stale_pages(keep):
       except OSError:
         pass
 
+def _fit_suptitle(fig, text, size=13, **kw):
+  """Add a figure title, shrunk if it would not fit the canvas.
+
+  Both figures size themselves from their contents -- columns per channel, columns
+  per structure -- so the canvas can end up narrower than a fixed-size title needs,
+  and matplotlib does not wrap or scale it: it draws it clipped at both ends. A
+  single-structure convergence page is 6.4 in wide and lost the G and the I off its
+  title that way.
+
+  Measured against the renderer rather than estimated from the character count,
+  because the width depends on the face and the weight and this must hold for any
+  title anyone later writes. Only ever shrinks."""
+  t = fig.suptitle(text, fontsize=size, **kw)
+  avail = fig.get_size_inches()[0] * fig.dpi * 0.96
+  try:
+    w = t.get_window_extent(fig.canvas.get_renderer()).width
+  except (AttributeError, RuntimeError):
+    return t                                   # no renderer yet: leave it alone
+  if w > avail:
+    t.set_fontsize(max(7.0, size * avail / w))
+  return t
+
+
 def _conv_grid(n):
   """Cycle counts to re-score at, ending exactly on n."""
   if n < CONV_MIN:
@@ -1484,8 +1507,9 @@ def plot_convergence(conv, n_boot_bar):
       ax.tick_params(colors=SECONDARY, labelsize=8)
       ax.legend(fontsize=8, frameon=False, labelcolor=SECONDARY, ncol=3,
                 loc="upper right", borderaxespad=0.3)
-    fig.suptitle("GroScore-FE convergence — staged sum over legs, shaded 95% CI",
-                 fontsize=13, fontweight="bold", color=INK, y=0.998)
+    _fit_suptitle(fig, "GroScore-FE convergence — staged sum over legs, "
+                       "shaded 95% CI",
+                  fontweight="bold", color=INK, y=0.998)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
     fig.savefig(path, dpi=180, facecolor=SURFACE)
     plt.close(fig)
@@ -1542,7 +1566,7 @@ def plot_works(legs, stats):
     title = "GroScore-FE leg work distributions — forward vs sign-aligned reverse"
     if len(pages) > 1:
       title += "   (page %d of %d)" % (pageno, len(pages))
-    fig.suptitle(title, fontsize=13, fontweight="bold", color=INK, y=0.997)
+    _fit_suptitle(fig, title, fontweight="bold", color=INK, y=0.997)
     fig.tight_layout(rect=[0, 0, 1, 0.985])
     fig.savefig(path, dpi=180, facecolor=SURFACE)
     plt.close(fig)
