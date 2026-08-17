@@ -439,6 +439,46 @@ if m:
 
 shutil.rmtree(work, ignore_errors=True)
 
+# ---------------------------------------------------------------------------
+# 5. the convergence figure's cycle grid
+#
+# The right-hand end of that figure is quoted against scores_fe.gs, so the grid
+# MUST land exactly on n; a grid that stops one short would put a near-miss of the
+# published number on a plot and invite someone to explain the difference.
+# ---------------------------------------------------------------------------
+print("")
+print("[5] convergence grid")
+sys.argv = [sys.argv[0]]
+sys.path.insert(0, REPO)
+import groscore_fe as _G
+
+check("below the minimum there is no grid at all", _G._conv_grid(4) == [])
+check("a single point is not a curve and is dropped by the caller",
+      len(_G._conv_grid(_G.CONV_MIN)) == 1)
+bad = []
+for n in list(range(_G.CONV_MIN, 60)) + [80, 120, 500, 2431]:
+  g = _G._conv_grid(n)
+  if not g:
+    bad.append("n=%d empty" % n); continue
+  if g[-1] != n:
+    bad.append("n=%d ends at %d" % (n, g[-1]))
+  if g[0] != _G.CONV_MIN:
+    bad.append("n=%d starts at %d" % (n, g[0]))
+  if any(b <= a for a, b in zip(g, g[1:])):
+    bad.append("n=%d not increasing" % n)
+  if max(g) > n:
+    bad.append("n=%d overshoots" % n)
+  if len(g) > _G.CONV_POINTS + 2:
+    bad.append("n=%d has %d points" % (n, len(g)))
+check("every n from 5 to 2431 gives a sane grid ending exactly on n", not bad,
+      "; ".join(bad[:4]))
+check("dense below CONV_DENSE, thinned above",
+      _G._conv_grid(20) == list(range(5, 21))
+      and len(_G._conv_grid(500)) <= _G.CONV_POINTS + 2,
+      "%s / %d" % (_G._conv_grid(20)[:3], len(_G._conv_grid(500))))
+check("the cheap bootstrap is only cheaper, never larger than the published one",
+      _G.CONV_NBOOT_BAR <= 5000 and _G.CONV_NBOOT <= 50000)
+
 print("")
 if failures:
   print("FAILED: " + ", ".join(failures))

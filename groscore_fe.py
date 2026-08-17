@@ -998,6 +998,43 @@ INK, SECONDARY, MUTED = "#0b0b0b", "#52514e", "#898781"
 GRID, AXIS, SURFACE = "#e1e0d9", "#c3c2b7", "#fcfcfb"
 
 WORKS_PLOT = "fe_works.png"
+CONV_PLOT = "fe_convergence.png"
+
+# Cycle counts at which the convergence figure re-scores. Every count from
+# CONV_MIN is drawn while there are few of them and the estimate is still moving;
+# past CONV_DENSE the grid thins to CONV_POINTS in total, because a full re-score
+# is not free and the curve is flat by then. The LAST point is always the full set,
+# so the right-hand end of the figure is the number in scores_fe.gs and not a
+# nearby approximation to it.
+CONV_MIN = 5            # below this a bootstrap CI is not evidence either way
+CONV_DENSE = 25
+CONV_POINTS = 32
+
+# Intermediate points use a cheaper bootstrap than the table does. The relative
+# error on a bootstrap standard deviation is 1/sqrt(2B), so 2.2% at B = 1000,
+# which is a band width no eye resolves.
+#
+# IT IS THE BAR BOOTSTRAP THAT COSTS, not the avg/CGI one, and by an order of
+# magnitude: measured per score_structure call on a 49-cycle three-stage run,
+#
+#   n_boot 50000, n_boot_bar 5000   2023 ms
+#   n_boot  5000, n_boot_bar 5000   1884 ms      thinning n_boot buys ~7%
+#   n_boot  5000, n_boot_bar 1000    427 ms      thinning n_boot_bar buys 4.4x
+#
+# because avg and CGI are closed-form over a resampled array while BAR solves its
+# implicit equation by bisection on every row. So the knob that matters here is
+# the second one. The LAST point is always re-run at the table's own settings, so
+# the published number and the right-hand end of the curve are the same
+# computation rather than merely close.
+CONV_NBOOT = 5000
+CONV_NBOOT_BAR = 1000
+
+# The figure is a development diagnostic: it answers "has this protocol settled",
+# which is a question about a handful of structures, not about a whole benchmark.
+# One page of them is drawn and the rest are counted out loud rather than silently
+# skipped, because a bounded cost that lies about its coverage is worse than a
+# slow one.
+CONV_MAX_STRUCTS = 16          # one page, matching ROWS_PER_PAGE below
 
 # One figure row per structure, so a single image would grow without bound with
 # the run. Agg itself does not stop this -- it will happily write 122400 px of
@@ -1320,6 +1357,141 @@ def _clear_stale_pages(keep):
       except OSError:
         pass
 
+def _conv_grid(n):
+  """Cycle counts to re-score at, ending exactly on n."""
+  if n < CONV_MIN:
+    return []
+  grid = list(range(CONV_MIN, min(n, CONV_DENSE) + 1))
+  if n > CONV_DENSE:
+    # linspace rather than a computed stride: a stride has to be floored at 1, and
+    # then a span shorter than the point budget silently produces MORE points than
+    # the budget rather than fewer. Spacing by count instead bounds it by
+    # construction, which is what CONV_POINTS is supposed to mean.
+    rest = max(0, CONV_POINTS - len(grid))
+    if rest:
+      grid += [int(round(x)) for x in np.linspace(CONV_DENSE + 1, n, rest)]
+    grid.append(n)
+  return sorted(set(g for g in grid if CONV_MIN <= g <= n))
+
+
+def plot_convergence(conv, n_boot_bar):
+  """dG_bind against the number of cycles it was computed from, per estimator.
+
+  The three estimators are drawn SEPARATELY rather than as one headline with a
+  band, because their disagreement is the diagnostic. BAR makes no distributional
+  assumption, CGI assumes both work histograms are Gaussian, avg assumes the
+  dissipation is symmetric; where a leg has converged they land together, and
+  where it has not they fan out. A curve that is still sloping at the right-hand
+  edge has not converged whatever its interval says, and a run whose three curves
+  are still separated there has a leg that is not sampling, not a small n.
+
+  Every point is the SUM OVER LEGS -- dG_intro plus the staged ramp plus the
+  analytical release -- and never the one-shot ramp, which is a different estimate
+  of the same thing and belongs in the table rather than on top of these.
+
+  Each point re-runs the full joint bootstrap on the first m cycles, so the band
+  is the same quantity as the CI in scores_fe.gs and the last point is that number
+  exactly. Structures are drawn one per panel in sp.gs order, paginated like the
+  work figure."""
+  import matplotlib
+  matplotlib.use("Agg")
+  import matplotlib.pyplot as plt
+
+  series = (("BAR", "bind_bar", "bind_bar_ci", FWD, "-",  2.0),
+            ("avg", "bind_avg", "bind_avg_ci", REV, "--", 1.6),
+            ("CGI", "bind_cgi", "bind_cgi_ci", SECONDARY, ":", 1.6))
+
+  drawn = []
+  for sid, Wi, Wr, Wtf, Wtr, stage_w, rel, staged in conv[:CONV_MAX_STRUCTS]:
+    grid = _conv_grid(len(Wi))
+    if len(grid) < 2:
+      continue
+    curves = {k: ([], [], []) for _, k, _, _, _, _ in series}
+    for m in grid:
+      sw = [(L, f[:m], v[:m]) for L, f, v in stage_w] if staged else None
+      try:
+        # the endpoint is the published number, so it gets the published bootstrap
+        cheap = {} if m == grid[-1] else {"n_boot": CONV_NBOOT,
+                                          "n_boot_bar": CONV_NBOOT_BAR}
+        r = score_structure(Wi[:m], Wr[:m], Wtf[:m], Wtr[:m], rel, stages=sw,
+                            **({"n_boot_bar": n_boot_bar} if not cheap else cheap))
+      except (ValueError, FloatingPointError):
+        continue
+      for _lab, key, cik, _c, _ls, _lw in series:
+        curves[key][0].append(m)
+        curves[key][1].append(r.get(key, float('nan')))
+        curves[key][2].append(r.get(cik, float('nan')))
+    if any(np.isfinite(curves[k][1]).any() for _, k, _, _, _, _ in series):
+      drawn.append((sid, curves))
+  if not drawn:
+    return None
+
+  pages = [drawn[i:i + ROWS_PER_PAGE] for i in range(0, len(drawn), ROWS_PER_PAGE)]
+  paths = ([CONV_PLOT] if len(pages) == 1 else
+           ["%s_p%d%s" % (os.path.splitext(CONV_PLOT)[0], i + 1,
+                          os.path.splitext(CONV_PLOT)[1]) for i in range(len(pages))])
+  for path, page in zip(paths, pages):
+    ncol = min(2, len(page))
+    nrow = (len(page) + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(6.4 * ncol, 3.6 * nrow),
+                             squeeze=False, facecolor=SURFACE)
+    flat = [a for row in axes for a in row]
+    for ax in flat:
+      ax.set_visible(False)
+    for ax, (sid, curves) in zip(flat, page):
+      ax.set_visible(True)
+      ax.set_facecolor(SURFACE)
+      lo, hi, late = [], [], []
+      for lab, key, cik, colour, ls, lw in series:
+        m, v, c = (np.asarray(x, float) for x in curves[key])
+        ok = np.isfinite(v)
+        if not ok.any():
+          continue
+        # A marker as well as a line: BAR is often only defined for the last few
+        # cycle counts, and a two-point line segment is easy to miss when what it
+        # is telling you is that the leg had no overlap until then.
+        ax.plot(m[ok], v[ok], ls, color=colour, lw=lw, label=lab, zorder=3,
+                marker="o" if ok.sum() <= 6 else None, ms=3.2)
+        band = np.isfinite(c) & ok
+        if band.any():
+          ax.fill_between(m[band], (v - c)[band], (v + c)[band],
+                          color=colour, alpha=0.13, lw=0, zorder=1)
+        # the settled value, so the eye has the endpoint to judge the slope against
+        ax.axhline(v[ok][-1], color=colour, lw=0.6, alpha=0.35, zorder=0)
+        # y-limits from the SECOND HALF only. The first few cycle counts carry
+        # enormous intervals that are not information, and letting them set the
+        # scale flattens the part of the curve anyone is reading.
+        half = m[ok] >= (m[ok][0] + m[ok][-1]) / 2.0
+        if half.any():
+          vv, cc = v[ok][half], np.nan_to_num(c[ok][half], nan=0.0)
+          late.append((np.nanmin(vv - cc), np.nanmax(vv + cc)))
+        if key == "bind_bar" and not ok.all():
+          first = int(m[ok][0])
+          ax.annotate("BAR first resolves at %d cycles" % first,
+                      xy=(0.02, 0.06), xycoords="axes fraction",
+                      fontsize=7.5, color=colour, alpha=0.9)
+      if late:
+        lo = min(x for x, _ in late); hi = max(y for _, y in late)
+        pad = 0.18 * max(hi - lo, 1.0)
+        ax.set_ylim(lo - pad, hi + pad)
+      ax.set_title("%s — dG_bind against cycles used" % sid,
+                   fontsize=10, color=INK, loc="left")
+      ax.set_xlabel("cycles", fontsize=9, color=SECONDARY)
+      ax.set_ylabel("dG_bind  (kJ/mol)", fontsize=9, color=SECONDARY)
+      ax.grid(True, color=GRID, lw=0.6, zorder=0)
+      for s in ax.spines.values():
+        s.set_color(AXIS)
+      ax.tick_params(colors=SECONDARY, labelsize=8)
+      ax.legend(fontsize=8, frameon=False, labelcolor=SECONDARY, ncol=3,
+                loc="upper right", borderaxespad=0.3)
+    fig.suptitle("GroScore-FE convergence — staged sum over legs, shaded 95% CI",
+                 fontsize=13, fontweight="bold", color=INK, y=0.998)
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.savefig(path, dpi=180, facecolor=SURFACE)
+    plt.close(fig)
+  return paths
+
+
 def plot_works(legs, stats):
   """Plot every structure's work distributions; return the page paths written.
 
@@ -1565,6 +1737,7 @@ def score(structids):
   bad_cycles = {}   # sid -> [(cycle, rmsd), …] that failed the rebinding check
   all_rmsds = []    # every measured cycle, for the summary statistics
   legs = []         # (sid, [(name, fwd, rev, plot), ...]) for the diagnostic
+  conv = []         # (sid, Wi, Wr, Wtf, Wtr, stage_w, dG_release, staged)
   for sid in structids:
     if sid in status:
       rows.append((sid, None, None, 0, status[sid]))
@@ -1630,6 +1803,10 @@ def score(structids):
     r = score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
                         stages=stage_w if staged else None,
                         n_boot_bar=args.n_boot_bar)
+    # Everything the convergence figure needs to re-score prefixes of this
+    # structure. Collected here rather than recomputed there so the two can only
+    # ever be looking at the same cycles in the same order.
+    conv.append((sid, W_intro, W_remove, Wtot_f, Wtot_r, stage_w, dG_release, staged))
 
     # Rebinding sanity check: the thermodynamic cycle only closes if the
     # rebinding leg put the partners back into the pose the bound leg started
@@ -1818,6 +1995,17 @@ def score(structids):
     print("")
     return
   stats = check_legs(legs)
+  cpaths = plot_convergence(conv, args.n_boot_bar) if conv else None
+  if cpaths:
+    print("Wrote %s — dG_bind against cycles used, BAR / avg / CGI separately,"
+          % (cpaths[0] if len(cpaths) == 1 else "%s .. %s" % (cpaths[0], cpaths[-1])))
+    print("  each with its own 95%% CI. Three curves that have not come together")
+    print("  by the right-hand edge mean a leg is not sampling, not that n is small.")
+    if len(conv) > CONV_MAX_STRUCTS:
+      print("  Drawn for the first %d of %d scored structures in sp.gs order: this"
+            % (CONV_MAX_STRUCTS, len(conv)))
+      print("  figure is a protocol diagnostic and re-scores every prefix, so it is")
+      print("  bounded rather than run over a whole benchmark.")
   paths = plot_works(legs, stats)
   if len(paths) == 1:
     print("Wrote %s (%d structure%s: %s)."
