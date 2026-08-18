@@ -99,13 +99,13 @@ fresh = tempfile.mkdtemp(prefix="sumk_fresh_")
 shutil.copy(os.path.join(tmp, "sp.gs"), fresh)
 run_fe(fresh, numruns=None)
 check("run_config.gs states the default stiffness with no flag given",
-      cfg(fresh).get("sum_k") == "25000", "cfg=%r" % cfg(fresh))
+      cfg(fresh).get("sum_k") == "12500", "cfg=%r" % cfg(fresh))
 check("and the default cycle count too, so neither can be reached by fallback",
       cfg(fresh).get("numruns") == (m3.group(1) if m3 else "50"),
       "cfg=%r" % cfg(fresh))
 run_fe(fresh, numruns=None)
 check("and a second invocation neither changes nor warns about it",
-      cfg(fresh).get("sum_k") == "25000", "cfg=%r" % cfg(fresh))
+      cfg(fresh).get("sum_k") == "12500", "cfg=%r" % cfg(fresh))
 r = run_fe(fresh, numruns=None)
 check("no spurious warning on the unchanged default",
       "WARNING" not in (r.stdout + r.stderr), (r.stdout + r.stderr)[-300:])
@@ -154,12 +154,12 @@ print("\n[4] the budget is divided, not applied per spring")
 mb = open(os.path.join(ROOT, "utils", "make_boresch.py")).read()
 check("k_inter is sum_k/N and nothing else",
       re.search(r"k_inter\s*=\s*args\.sum_k\s*/\s*numinterdis", mb) is not None)
-check("no bare 25000 survives outside the default and its prose",
+check("no bare default survives outside the parser and its prose",
       len([l for l in mb.splitlines()
-           if "25000" in l and not l.lstrip().startswith("#")
-           and "default=25000.0" not in l.replace(" ", "")]) == 0,
+           if "12500" in l and not l.lstrip().startswith("#")
+           and "default=12500.0" not in l.replace(" ", "")]) == 0,
       [l.strip() for l in mb.splitlines()
-       if "25000" in l and not l.lstrip().startswith("#")])
+       if "12500" in l and not l.lstrip().startswith("#")])
 for total, n in ((25000.0, 656), (12500.0, 656), (12500.0, 188), (8000.0, 461)):
     k = total / n
     check("N=%d at sum_k=%g gives k=%.4f and N*k back" % (n, total, k),

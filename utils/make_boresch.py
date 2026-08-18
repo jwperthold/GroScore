@@ -58,7 +58,7 @@ parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
-parser.add_argument('--sum-k', dest='sum_k', type=float, default=25000.0, help="Total interface restraint stiffness in kJ/mol/nm^2, split evenly over however many springs there are (k = sum_k/N). It sets the work of switching the interface restraints on, which is 0.5*sum_k*<(d-r0)^2> and is the largest single term in the bound leg; it also sets how hard the springs pull before the Boresch takes over, so it cannot go arbitrarily low. Default 25000.")
+parser.add_argument('--sum-k', dest='sum_k', type=float, default=12500.0, help="Total interface restraint stiffness in kJ/mol/nm^2, split evenly over however many springs there are (k = sum_k/N). It sets the work of switching the interface restraints on, which is 0.5*sum_k*<(d-r0)^2> and is the largest single term in the bound leg; it also sets how hard the springs pull before the Boresch takes over, so it cannot go arbitrarily low. The ramp boundaries in fe_protocol.py were measured at this value and do not transfer to another one unchanged. Default 12500.")
 parser.add_argument('--traj', type=str, nargs='+', default=["npt_probe.xtc"],
                     help="Equilibration trajectory used to measure backbone "
                          "rigidity for anchor selection (default: npt_probe.xtc). "
@@ -419,7 +419,7 @@ if len(prot1_valid) > 0 and len(prot2_valid) > 0:
 #
 # Capping per CONTACT rather than thinning globally is what keeps the interface
 # intact: every contact and every residue survives any cap >= 1, so the total
-# restoring force (fixed at 25000 kJ/mol/nm^2 by k = 25000/N, whatever N is) stays
+# restoring force (fixed at sum_k by k = sum_k/N, whatever N is) stays
 # spread over the same footprint. A global distance cutoff or a random subset
 # would instead delete whole contacts.
 #

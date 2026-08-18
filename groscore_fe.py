@@ -90,7 +90,7 @@ parser.add_argument('--sum-k', dest='sum_k', type=float, default=None,
                          "dG_bind variance; it also sets how hard those springs pull "
                          "before the Boresch takes over, so lowering it trades "
                          "restraint noise for pulling authority (default: the "
-                         "remembered value, or DEFAULT_SUM_K = 25000 for a fresh "
+                         "remembered value, or DEFAULT_SUM_K = 12500 for a fresh "
                          "directory).")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
 parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
@@ -170,11 +170,25 @@ DEFAULT_NUMRUNS = 50
 # an explicit --sum-k down to make_boresch.py, whose own default is a fallback for
 # running that script by hand and is pinned equal to this one by tests/test_sum_k.py.
 #
+# 12500 rather than the 25000 this started at. Two reasons, and the second is the
+# one that makes it more than a preference:
+#
+#   * it is what test8 and test10 measured. Halving the budget took stage A's work
+#     overlap from 3 of 100 to 54 and brought the staged sum and the one-shot ramp
+#     into agreement to 0.61 kJ/mol, because both ends of the bound leg scale with
+#     it and so does the gap between them.
+#   * THE RAMP BOUNDARIES ASSUME IT. Every stage boundary and every leg time in
+#     fe_protocol comes from a friction profile measured on test12, which ran at
+#     12500. Friction depends on stiffness -- stiffer springs drag harder -- so
+#     running those boundaries at 25000 would apply a calibration taken under
+#     conditions that no longer hold. The two constants are coupled whether or not
+#     anyone remembers it, which is why this one says so.
+#
 # Not written as argparse's default= for the same reason DEFAULT_NUMRUNS is not:
-# the parser has to be able to tell "the user asked for 25000" from "the user asked
-# for nothing", or a directory set up at 12500 would be silently reset to 25000 by
-# the next invocation that omitted the flag.
-DEFAULT_SUM_K = 25000.0
+# the parser has to be able to tell "the user asked for 12500" from "the user asked
+# for nothing", or a directory set up at some other value would be silently reset
+# by the next invocation that omitted the flag.
+DEFAULT_SUM_K = 12500.0
 
 
 def read_run_config():
