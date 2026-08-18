@@ -100,6 +100,25 @@ for nm, series in (("phA", "phA_t"), ("phB", "phB_t"), ("phC", "phC_t")):
     check("%s has the same argument order in both definitions" % nm,
           _strip(sn) == _strip(en), "%s vs %s" % (sn, en))
 
+print("\n[2b] the pull readback checks the CONVENTION, not the reference value")
+# The readback grompps args.input and asks GROMACS for the six coordinates. Once
+# the references became ensemble means they no longer equal any single frame, so a
+# readback that compares GROMACS against the EMITTED values fires on every setup.
+# It did: test13's six "mismatches" were the ensemble shift to four decimals, and
+# the whole run died at BORESCH_FAIL with 50 cycle tasks already queued. The check
+# must compare against the snapshot geometry of the same structure.
+check("the snapshot geometry is kept under its own name",
+      "SNAP_REF = dict(" in src)
+_rb = src[src.index("_read = verify_pull_block("):]
+check("the readback compares against SNAP_REF",
+      "want = [SNAP_REF[" in _rb, _rb[:0])
+check("and NOT against the emitted references",
+      "want = [ref_r, ref_thA" not in _rb)
+check("the emitted value is still printed, for context",
+      "emitted = [ref_r, ref_thA" in _rb and "(emitted %10.4f)" in _rb)
+check("verify_pull_block still measures the reference structure itself",
+      '"-c", args.input' in src)
+
 print("\n[3] probe replicas are pooled, and the discard is derived")
 import fe_protocol as P
 check("N_PROBES is more than one", P.N_PROBES > 1, str(P.N_PROBES))

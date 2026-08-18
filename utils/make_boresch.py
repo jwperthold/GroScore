@@ -1511,11 +1511,16 @@ ref_phB = dihedral_deg(P2c, P3c, L1c, L2c)          # deg  phi_B
 ref_phC = dihedral_deg(P3c, L1c, L2c, L3c)          # deg  phi_C
 REF_SOURCE = "single reference frame"
 
+# The single-frame geometry of args.input, kept whatever the references become.
+# It is what GROMACS can be asked to reproduce, so it is what the readback below
+# compares against; see the note there.
+SNAP_REF = dict(r=ref_r, thA=ref_thA, thB=ref_thB,
+                phA=ref_phA, phB=ref_phB, phC=ref_phC)
+
 _ens, _esd, _enf = ensemble_boresch_geometry(
     {role: _grp(role) for role in ("P1", "P2", "P3", "L1", "L2", "L3")})
 if _ens:
-  _snap = dict(r=ref_r, thA=ref_thA, thB=ref_thB,
-               phA=ref_phA, phB=ref_phB, phC=ref_phC)
+  _snap = dict(SNAP_REF)
   ref_r, ref_thA, ref_thB = _ens["r"], _ens["thA"], _ens["thB"]
   ref_phA, ref_phB, ref_phC = _ens["phA"], _ens["phB"], _ens["phC"]
   REF_SOURCE = "mean over %d frames from %d replica(s)" % (_enf, len(TRAJ_PAIRS))
@@ -2291,6 +2296,22 @@ def verify_pull_block(mdp):
 # so it is the only stage the readback can compare against the reference
 # structure. Any later stage legitimately sits u_from*pull_dist away and would
 # false-positive.
+#
+# WHAT THIS CHECK IS FOR, and what it is NOT for. It exists to catch a sign or
+# ordering convention in this file disagreeing with the pull code -- the shape of
+# the dihedral_deg bug that voided every work integral before b4c267f. That is a
+# question about how a coordinate is COMPUTED, so it is asked of one structure:
+# does GROMACS get the same six numbers from args.input that the functions above
+# get from args.input?
+#
+# It is NOT a check that the emitted reference equals args.input. Since the
+# references became ensemble means they legitimately do not, and comparing the two
+# made the guard fire on every setup: on test13 the six "mismatches" were exactly
+# the ensemble shift, to four decimals. So the comparison is against SNAP_REF, the
+# single-frame geometry, and the emitted value is printed beside it for context.
+# The ensemble means are covered instead by tests/test_ensemble_refs.py, which
+# pins them to the SAME argument order as the snapshot definitions, so a
+# convention verified here is a convention verified for both.
 _read = verify_pull_block(first_stage_mdp)
 if _read is False:
   abort("PULL_READBACK_FAILED",
@@ -2299,23 +2320,25 @@ elif _read is not None:
   # The six Boresch coordinates, in emission order, located by the marker
   # build_coords set on them rather than by counting back from the end.
   names = ["r", "theta_A", "theta_B", "phi_A", "phi_B", "phi_C"]
-  want = [ref_r, ref_thA, ref_thB, ref_phA, ref_phB, ref_phC]
+  want = [SNAP_REF["r"], SNAP_REF["thA"], SNAP_REF["thB"],
+          SNAP_REF["phA"], SNAP_REF["phB"], SNAP_REF["phC"]]
+  emitted = [ref_r, ref_thA, ref_thB, ref_phA, ref_phB, ref_phC]
   if len(boresch_idx) != 6:
     abort("PULL_READBACK_FAILED",
           "expected 6 Boresch coordinates in %s, found %d"
           % (first_stage_mdp, len(boresch_idx)))
   got = [_read[i] for i in boresch_idx] if max(boresch_idx) < len(_read) else []
   bad = []
-  for nm, w, g in zip(names, want, got):
+  for nm, w, g, e in zip(names, want, got, emitted):
     if nm == "r":
       d = abs(g - w)
       ok = d <= CHECK_TOL_NM
     else:
       d = abs(wrap180(g - w))
       ok = d <= CHECK_TOL_DEG
-    sys.stderr.write("make_boresch: readback %-8s emitted %10.4f  gromacs "
-                     "%10.4f  diff %8.4f%s\n"
-                     % (nm, w, g, d, "" if ok else "   MISMATCH"))
+    sys.stderr.write("make_boresch: readback %-8s snapshot %10.4f  gromacs "
+                     "%10.4f  diff %8.4f%s   (emitted %10.4f)\n"
+                     % (nm, w, g, d, "" if ok else "   MISMATCH", e))
     if not ok:
       bad.append("%s off by %.4f" % (nm, d))
   if len(got) < 6:
@@ -2324,9 +2347,11 @@ elif _read is not None:
           "at %s" % (len(_read), boresch_idx))
   if bad:
     abort("PULL_READBACK_MISMATCH",
-          "GROMACS does not reproduce the emitted Boresch references (%s). A "
-          "sign or ordering convention in this file disagrees with the pull "
-          "code; do not run on this setup." % "; ".join(bad))
+          "GROMACS does not reproduce this file's own geometry for the reference "
+          "structure (%s). A sign or ordering convention here disagrees with the "
+          "pull code; do not run on this setup. Note this compares the SNAPSHOT "
+          "values, not the emitted references, which are ensemble means and are "
+          "expected to differ from any one frame." % "; ".join(bad))
 
 #======================================================
 # Output: number of moving pull coords whose forces feed the pull integrator.

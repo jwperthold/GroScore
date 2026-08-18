@@ -934,6 +934,13 @@ with open('$CUTOUT_PDB', 'w') as f:
   # differ in it without either editing tracked code, and every structure in one
   # directory is built at the same value. Absent, make_boresch.py applies its own
   # default and records whatever it used in boresch_analytical.gs either way.
+  # Clear the marker from any PREVIOUS attempt. It is written by make_boresch's
+  # abort path and read below to decide whether setup failed, so a stale one makes
+  # a retry that SUCCEEDS still report BORESCH_FAIL -- the run then dies with a
+  # complete, correct restraint set sitting on disk. The only other place it is
+  # removed is the full stale-setup cleanup, which also deletes every probe
+  # replica, so that path is not a fix for a re-run: it is 100 ns of resimulation.
+  rm -f boresch_failed.gs
   SUM_K=$(awk '$1=="sum_k"{print $2; exit}' ../run_config.gs 2>/dev/null)
   SUM_K_OPT=""
   if [[ -n "$SUM_K" ]]; then
