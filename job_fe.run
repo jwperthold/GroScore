@@ -140,15 +140,29 @@ fi
 # re-submitted against a fix that had been committed but not pulled on the cluster,
 # re-ran the old make_boresch, and failed identically, which read as "the fix did
 # not work" rather than "the fix is not here". One line makes that visible.
-GROSCORE_SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
-GROSCORE_REV=$(git -C "$GROSCORE_SRC" rev-parse --short HEAD 2>/dev/null || echo "not-a-git-checkout")
-if [[ -n "$(git -C "$GROSCORE_SRC" status --porcelain 2>/dev/null)" ]]; then
+# This file is COPIED into each structure directory as job.run, so its own path
+# says nothing about which checkout it came from; ask git for the work tree root
+# instead. And ignore untracked files when deciding "dirty": a run directory is
+# full of untracked output by construction, so counting it made every job report
+# a modified checkout.
+GROSCORE_SRC=$(git rev-parse --show-toplevel 2>/dev/null || echo "unknown")
+GROSCORE_REV=$(git rev-parse --short HEAD 2>/dev/null || echo "not-a-git-checkout")
+if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
   GROSCORE_REV="$GROSCORE_REV-dirty"
 fi
 echo "GroScore-FE code: $GROSCORE_SRC @ $GROSCORE_REV"
 
 # Get structure ID from current directory name
 STRUCT_ID=$(basename $(pwd))
+
+# Announce a fresh setup attempt before doing anything that could fail. This is
+# what lets a cycle task tell "this directory failed" from "this directory failed
+# once and is being redone": without it the newest line for the structure is still
+# the previous attempt's failure for as long as the new setup takes to reach its
+# first status write, and the array released alongside it exits on that.
+if [[ "$MODE" != "cycle" ]]; then
+  echo $STRUCT_ID "SETUP_RUNNING" >> ../results_0.gs
+fi
 MAXRUNS=0
 CUTOUT=1
 FORCEFIELD="charmm36"
@@ -194,10 +208,19 @@ if [[ "$MODE" == "cycle" ]]; then
   WAIT_INT=${GROSCORE_SETUP_POLL:-30}
   waited=0
   while [[ ! -f setup.done ]]; do
-    # Only a non-OK status is a definitive failure: "OK" is written part-way
-    # through the setup, before the restraints exist.
-    SETUP_STATUS=$(awk -v s="$STRUCT_ID" '$1==s && $2!="OK"{print $2}' ../results_0.gs 2>/dev/null | tail -1)
-    if [[ -n "$SETUP_STATUS" ]]; then
+    # The LAST line for this structure, whatever it says -- not the last FAILING
+    # line. results_0.gs is append-only across attempts, so filtering to non-OK
+    # before taking the tail makes the first failure permanent: every later "OK"
+    # is discarded and a directory that has since been fixed still reports the old
+    # failure. test13 sat in exactly that state, with a BORESCH_FAIL from a
+    # superseded attempt killing all 50 tasks of every array submitted after it.
+    #
+    # "OK" alone is not success: it is written part-way through the setup, before
+    # the restraints exist, so it means keep waiting. SETUP_RUNNING, written by the
+    # setup job as its first act, means the same and is what makes a fresh attempt
+    # supersede an old failure rather than inherit it.
+    SETUP_STATUS=$(awk -v s="$STRUCT_ID" '$1==s{print $2}' ../results_0.gs 2>/dev/null | tail -1)
+    if [[ -n "$SETUP_STATUS" && "$SETUP_STATUS" != "OK" && "$SETUP_STATUS" != "SETUP_RUNNING" ]]; then
       echo "Setup for $STRUCT_ID failed ($SETUP_STATUS); cycle $CYCLE_ARG has nothing to run."
       exit 0
     fi

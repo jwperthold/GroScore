@@ -821,17 +821,25 @@ def setup_and_submit(structids, structchains):
 #------------------------------------------------------
 
 def read_status(filepath, structids):
-  """Read results_0.gs -> {struct_id: status} for non-OK stage-0 outcomes."""
-  status = {}
+  """Read results_0.gs -> {struct_id: status} for non-OK stage-0 outcomes.
+
+  The file is APPEND-ONLY across setup attempts, so a structure that failed and was
+  then fixed carries both lines. Only the last one for a structure describes the
+  current state; keeping the last FAILING one instead makes an old failure permanent
+  and reports a working directory as broken. SETUP_RUNNING and OK are both
+  "not finished, not failed" and are not statuses to report.
+  """
+  last = {}
   if os.path.isfile(filepath):
     with open(filepath) as f:
       for line in f:
         if line.strip().startswith("#"):
           continue
         tmp = line.split()
-        if len(tmp) >= 2 and tmp[0] in structids and tmp[1] != "OK":
-          status[tmp[0]] = tmp[1]
-  return status
+        if len(tmp) >= 2 and tmp[0] in structids:
+          last[tmp[0]] = tmp[1]
+  return {sid: st for sid, st in last.items()
+          if st not in ("OK", "SETUP_RUNNING")}
 
 def read_analytical(filepath, andir="results_analytical.d"):
   """-> {struct_id: dG_release_kJ_mol}, merging the per-structure files written by
