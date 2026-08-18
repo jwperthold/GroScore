@@ -134,6 +134,19 @@ if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   rm -rf amber19sb.ff
 fi
 
+# WHICH CODE IS THIS. The scripts live in the checkout two levels up, and a run
+# directory is routinely carried between machines while the checkout beside it is
+# not. When they disagree there is nothing in any log to say so: test13 was
+# re-submitted against a fix that had been committed but not pulled on the cluster,
+# re-ran the old make_boresch, and failed identically, which read as "the fix did
+# not work" rather than "the fix is not here". One line makes that visible.
+GROSCORE_SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+GROSCORE_REV=$(git -C "$GROSCORE_SRC" rev-parse --short HEAD 2>/dev/null || echo "not-a-git-checkout")
+if [[ -n "$(git -C "$GROSCORE_SRC" status --porcelain 2>/dev/null)" ]]; then
+  GROSCORE_REV="$GROSCORE_REV-dirty"
+fi
+echo "GroScore-FE code: $GROSCORE_SRC @ $GROSCORE_REV"
+
 # Get structure ID from current directory name
 STRUCT_ID=$(basename $(pwd))
 MAXRUNS=0
