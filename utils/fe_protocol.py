@@ -23,30 +23,55 @@ cross-check.
 
 WHY STAGE AT ALL. A leg whose dissipation exceeds its own work width has forward and
 reverse histograms that do not meet, and then BAR returns nothing whatever the
-sampling. Splitting does not reduce dissipation, it partitions it into pieces each
-estimator can handle. Measured on test12, per leg, dissipation against work width:
+sampling. Splitting partitions the dissipation into pieces each estimator can
+handle, and -- because each stage runs at CONSTANT rate -- it also lowers the total,
+since a slow region can then be crossed slowly and a fast one quickly.
 
-  bound (whole)   69.8 / 29.4 = 2.4 sigma
-  stage A         84.7 / 23.7 = 3.6
-  stage B         46.9 / 12.8 = 3.7
-  stage C         36.4 / 15.5 = 2.4
+WHY THESE BOUNDARIES, AND WHY FIVE. The friction profile is recovered as zeta = g/v,
+because the stages ran at rates differing 8x and the raw dissipation density is not
+zeta. It is measured on ALL THREE repeats and pooled, not on one of them: the
+boundary is a property of the setup draw, and a cycle bootstrap inside a single run
+understates its uncertainty by 4-9x.
 
-against an observed mapping of 1.7 sigma -> overlap 54, 2.0 -> 41, 2.6 -> 9. Every
-leg was in or past the coin-toss regime. The shape below puts all of them at
-0.6-1.8 sigma.
+              b1      b2      b3      b4      b5
+  test10   0.164   0.218   0.295   0.419   0.630
+  test11   0.094   0.160   0.241   0.355   0.535
+  test12   0.088   0.156   0.230   0.330   0.518
+  sd_within 0.005  0.005   0.008   0.009   0.016     <- cycle bootstrap
+  sd_betwn  0.042  0.035   0.035   0.046   0.061     <- between runs
 
-WHY THESE BOUNDARIES. From the friction profile, recovered as zeta = g/v because the
-stages ran at rates differing 8x and the raw dissipation density is not zeta.
-Boundaries sit at equal dissipation under the OPTIMAL schedule, which is equal
-integrated sqrt(zeta), and the times are Sivak-Crooks on the same quantity. The
-five-stage optimum landed on 0.296 and 0.477, i.e. on the 0.30 and 0.50 that were
-already there, so those two are kept and the rest are added around them.
+Boundaries sit at equal dissipation per stage, which for constant-rate stages is
+equal sqrt(du * int zeta du), and the times follow the same quantity. Equalising the
+dissipation makes the times come out equal too, which is why every stage is 5200 ps.
+
+FIVE AND NOT SIX. Every boundary costs a hold in each direction out of a fixed 80 ns
+of legs, so the ramp shrinks by 1 ns per boundary added. Priced at that fixed budget
+on the pooled friction:
+
+  N   ramp ns  D total  W/stage  n_sig  sd_sum  P(fail)  LOO penalty
+  3      27.0     63.3     21.1   1.26    4.12       0%        13.6%
+  4      26.5     61.2     15.3   1.07    3.75       0%        20.0%
+  5      26.0     60.3     12.1   0.95    3.50       0%        23.6%
+  6      25.5     62.0     10.3   0.88    3.54       0%        27.4%
+  7      25.0     63.0      9.0   0.82    3.58       0%        28.6%
+
+Total dissipation and summed BAR variance both bottom out at N = 5 and get worse
+after, because past that the holds cost more ramp time than the finer partition
+saves. The LOO column is the price of transfer: boundaries fitted on two runs,
+scored on the worst stage of the third, against boundaries fitted on the third
+itself. It climbs monotonically, so each added boundary generalises less well than
+the last. Six stages cost 1 ns of ramp, 2.8% more dissipation and one more boundary
+to overfit, and returned nothing. Widths are calibrated rather than assumed:
+kappa = sigma^2/(2 RT W) measures 2.57 over the nine run/stage pairs, so the works
+are wider than linear response and overlap is easier than it would otherwise be.
 
 WHY NOT JUST RETIME. Because that is exhausted. The previous 17/3.5/3.5 split was
 already within 5% of optimal against the measured friction, and reallocating between
-the bound leg and the ramp buys 2%. Crooks also forbids the obvious response to noisy
-rebinding -- more time in reverse than forward -- since the reverse protocol must be
-the exact time-reverse of the forward one.
+the bound leg and the ramp is flat from 5 to 13 ns per direction against a Monte
+Carlo noise of 0.1, so the shipped 7.5 sits inside the flat region. Crooks also
+forbids the obvious response to noisy rebinding -- more time in reverse than
+forward -- since the reverse protocol must be the exact time-reverse of the
+forward one.
 
 HOLD LENGTHS ARE MEASURED. See RAMP_HOLD_PS below: dH/dlambda is written during a
 hold, so its autocorrelation time and its residual drift are both observable, and
@@ -67,25 +92,30 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0,   0.110, 5500.0),
-    ("B", 0.110, 0.185, 4900.0),
-    ("C", 0.185, 0.300, 5200.0),
-    ("D", 0.300, 0.400, 3200.0),
-    ("E", 0.400, 0.500, 2100.0),
-    ("F", 0.500, 1.000, 4600.0),
+    ("A", 0.0,   0.118, 5200.0),
+    ("B", 0.118, 0.199, 5200.0),
+    ("C", 0.199, 0.306, 5200.0),
+    ("D", 0.306, 0.494, 5200.0),
+    ("E", 0.494, 1.000, 5200.0),
 ]
 
-# THE BOUND LEG IS STAGED TOO, for the same reason the ramp is: at 5 ns each way it
-# dissipated 69.8 kJ/mol against a work width of 29.4, i.e. 2.4 sigma, and forward
-# and reverse histograms 2.4 sigma apart do not meet. Split and retimed it is
-# 0.6 sigma per sub-leg.
+# THE BOUND LEG IS STAGED TOO, but NOT because it needs the overlap. Pooled over the
+# three repeats it dissipates 10.8 kJ/mol unsplit against a work width of 23, i.e.
+# 0.46 sigma, nowhere near the cliff the ramp was at. What the split buys is
+# variance: about 10% off the summed BAR error (2.89 -> 2.61), and a third sub-leg
+# buys nothing further (2.61) while costing 2 ns. So two, for variance alone.
 #
-# The boundary is at lambda = 0.25 and NOT at the 0.125 an equal-dissipation split
-# of the CURRENT uniform rate suggests. Once the two sub-legs carry their own rates
-# the equal-dissipation point moves: 0.25 gives 34.5 kJ/mol round trip against
-# 38.5 at 0.125, and balances them (0.59/0.60 sigma against 0.35/0.96). 42% of the
-# leg's dissipation is still in the first tenth of lambda, which is why the split is
-# this asymmetric in lambda and near-symmetric in time.
+# The boundary stays at lambda = 0.25. The pooled optimum is 0.277, but the per-run
+# estimates are 0.186 / 0.226 / 0.388, sd 0.107, which is three times noisier than
+# any ramp boundary and not resolvable; and the difference costs nothing measurable,
+# 0.90/0.94 sigma at 0.25 against 0.93/0.92 at the optimum.
+#
+# WHAT THE BOUND LEG'S WIDTH ACTUALLY IS. At the same 5 ns leg and the same sum_k,
+# the three repeats give dissipation 15.7 / 17.8 / 21.4 against work widths of
+# 19.9 / 42.4 / 58.9. A 3x range in width across a 1.4x range in dissipation is not
+# a rate effect, so no leg time, boundary or sub-leg count reaches it. N_PROBES is
+# the only part of the design that does, and this is where it should show first,
+# since the interface reference geometry is exactly what the probe measures.
 #
 # (sub-leg name, lambda_from, lambda_to, ps) for the FORWARD direction; the reverse
 # runs them backwards, exactly as the ramp does.

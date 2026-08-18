@@ -1,4 +1,4 @@
-; bindrevC_fe.mdp - FE rebinding, stage C: u 0.3 -> 0.185 nm over 5.2 ns, lambda 0.3 -> 0.185.
+; bindrevC_fe.mdp - FE rebinding, stage C: u 0.306 -> 0.199 nm over 5.2 ns, lambda 0.306 -> 0.199.
 ; Interface restraints fade out (k -> kB=0) as the Boresch restraints fade
 ; in (k=0 -> kB), in proportion to the distance travelled. The full pull
 ; block (groups + coords) is appended per structure by make_boresch.py,
@@ -60,8 +60,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 0.3
-delta-lambda             = -8.84615385e-08
+init-lambda              = 0.306
+delta-lambda             = -8.23076923e-08
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

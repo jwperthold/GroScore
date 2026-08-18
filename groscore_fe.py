@@ -965,14 +965,20 @@ def read_works(filepath, workdir="results_fe.d"):
   # same silent-drop shape as the completeness gate and the ["nan"] * 19 literal,
   # and it is why the layout is asked of fe_protocol rather than inferred.
   #
-  # The old rule survives as the fallback so that every directory written before
-  # the bound leg was staged still parses and still scores. A width that both
-  # rules claim is resolved by the current protocol, which is the stricter claim.
+  # _PAST holds widths that SHIPPED under an earlier protocol and that the old rule
+  # cannot express either, because reshaping the ramp changes the width and the
+  # protocol only ever knows its current one. The old rule then survives as the last
+  # fallback, so every directory written before the bound leg was staged still parses
+  # and still scores. Each width listed is unique to one (nbound, nstages) pair, so
+  # the order matters only for widths more than one rule could claim.
   _CUR = {P.result_nf(): (P.n_bound(), P.n_stages())}
+  _PAST = {31: (2, 6)}          # the six-stage ramp, shipped 2026-08-17 to 08-18
 
   def _layout(nf):
     if nf in _CUR:
       return _CUR[nf]
+    if nf in _PAST:
+      return _PAST[nf]
     if nf >= 9 and (nf - 5) % 4 == 0:
       return 1, (nf - 5) // 4
     return None

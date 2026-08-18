@@ -1,4 +1,4 @@
-; bindfwdC_fe.mdp - FE unbinding, stage C: u 0.185 -> 0.3 nm over 5.2 ns, lambda 0.185 -> 0.3.
+; bindfwdC_fe.mdp - FE unbinding, stage C: u 0.199 -> 0.306 nm over 5.2 ns, lambda 0.199 -> 0.306.
 ; Interface restraints fade out (k -> kB=0) as the Boresch restraints fade
 ; in (k=0 -> kB), in proportion to the distance travelled. The full pull
 ; block (groups + coords) is appended per structure by make_boresch.py,
@@ -62,8 +62,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 0.185
-delta-lambda             = 8.84615385e-08
+init-lambda              = 0.199
+delta-lambda             = 8.23076923e-08
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes
