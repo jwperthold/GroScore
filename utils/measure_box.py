@@ -45,8 +45,14 @@ import os, sys, re, argparse, subprocess, shutil, tempfile
 import numpy as np
 
 p = argparse.ArgumentParser(description="Size the production box from an equilibration trajectory.")
-p.add_argument('-f', '--traj', default="npt_init.xtc", help="Equilibration trajectory.")
-p.add_argument('-s', '--tpr', default="npt_init.tpr", help="Run input matching --traj.")
+p.add_argument('-f', '--traj', nargs='+', default=["npt_init.xtc"],
+               help="Equilibration trajectory, or several. The running maximum is "
+                    "taken over ALL of them: with independent probe replicas the "
+                    "production box has to hold whichever one swung widest, and "
+                    "that is not known until they are all measured.")
+p.add_argument('-s', '--tpr', nargs='+', default=["npt_init.tpr"],
+               help="Run input matching --traj. One, broadcast to every "
+                    "trajectory, or one per trajectory.")
 p.add_argument('-n', '--index', default="index.ndx", help="Index file.")
 p.add_argument('-g', '--group', default="Protein_Struct",
                help="Solute group. Must be the solute only: !Water includes "
@@ -117,7 +123,12 @@ def gro_diameter(path):
   return None
 
 
-for f in (args.traj, args.tpr, args.index):
+if len(args.tpr) == 1 and len(args.traj) > 1:
+  args.tpr = args.tpr * len(args.traj)
+if len(args.tpr) != len(args.traj):
+  fail("%d --traj against %d --tpr; give one tpr, or one per trajectory"
+       % (len(args.traj), len(args.tpr)))
+for f in list(args.traj) + list(args.tpr) + [args.index]:
   if not os.path.isfile(f):
     fail("%s not found" % f)
 if not shutil.which("gmx"):
@@ -129,26 +140,37 @@ if not shutil.which("gmx"):
 work = tempfile.mkdtemp(prefix="measure_box.")
 sub = os.path.join(work, "solute.gro")
 try:
-  cmd = ["gmx", "trjconv", "-s", args.tpr, "-f", args.traj, "-n", args.index,
-         "-o", sub, "-pbc", "cluster", "-b", "%g" % args.begin]
-  r = subprocess.run(cmd, input="%s\n%s\n" % (args.group, args.group),
-                     capture_output=True, text=True)
-  if r.returncode != 0 or not os.path.isfile(sub):
-    fail("trjconv -pbc cluster failed for group %s:\n%s" % (args.group, r.stderr[-1500:]))
-
-  dmax, n_frames, per_frame = 0.0, 0, []
-  for natoms, xyz in read_multi_gro(sub):
-    if natoms == 0:
-      continue
-    d = max_pairwise(xyz)
-    per_frame.append(d)
-    dmax = max(dmax, d)
-    n_frames += 1
+  dmax, n_frames, per_frame, per_rep = 0.0, 0, [], []
+  for traj, tpr in zip(args.traj, args.tpr):
+    if os.path.isfile(sub):
+      os.remove(sub)
+    cmd = ["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", args.index,
+           "-o", sub, "-pbc", "cluster", "-b", "%g" % args.begin]
+    r = subprocess.run(cmd, input="%s\n%s\n" % (args.group, args.group),
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.isfile(sub):
+      fail("trjconv -pbc cluster failed for group %s on %s:\n%s"
+           % (args.group, traj, r.stderr[-1500:]))
+    rmax, rn = 0.0, 0
+    for natoms, xyz in read_multi_gro(sub):
+      if natoms == 0:
+        continue
+      d = max_pairwise(xyz)
+      per_frame.append(d)
+      dmax = max(dmax, d)
+      rmax = max(rmax, d)
+      n_frames += 1
+      rn += 1
+    per_rep.append((os.path.basename(traj), rn, rmax))
+  if len(per_rep) > 1:
+    sys.stderr.write("measure_box: per replica  "
+                     + "  ".join("%s %d frames max %.4f" % t for t in per_rep)
+                     + "\n")
 finally:
   shutil.rmtree(work, ignore_errors=True)
 
 if n_frames == 0:
-  fail("no usable frames in %s" % args.traj)
+  fail("no usable frames in %s" % ", ".join(args.traj))
 
 a = np.array(per_frame)
 sys.stderr.write("measure_box: group %s, %d frames, largest solute atom-atom "

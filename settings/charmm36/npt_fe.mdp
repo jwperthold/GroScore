@@ -1,13 +1,13 @@
-; npt_fe.mdp - 10 ns NPT equilibration of the unrestrained bound state before
+; npt_fe.mdp - 20 ns NPT equilibration of the unrestrained bound state before
 ; each FE cycle. Its output is the configuration boundfwd starts from, and the
 ; Crooks analysis assumes those are drawn from the true NPT ensemble, so it uses
 ; C-rescale and runs straight off the NVT ladder (C-rescale is first order and
 ; needs no weak-coupling stage in front of it).
 ;
-; nsteps 2500000 * dt 0.004 = 10000 ps.
+; nsteps 5000000 * dt 0.004 = 20000 ps.
 
 integrator               = md
-nsteps                   = 2500000
+nsteps                   = 5000000
 dt                       = 0.004
 mass-repartition-factor  = 3
 

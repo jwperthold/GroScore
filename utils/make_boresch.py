@@ -59,11 +59,11 @@ parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
 parser.add_argument('--sum-k', dest='sum_k', type=float, default=25000.0, help="Total interface restraint stiffness in kJ/mol/nm^2, split evenly over however many springs there are (k = sum_k/N). It sets the work of switching the interface restraints on, which is 0.5*sum_k*<(d-r0)^2> and is the largest single term in the bound leg; it also sets how hard the springs pull before the Boresch takes over, so it cannot go arbitrarily low. Default 25000.")
-parser.add_argument('--traj', type=str, default="npt_probe.xtc",
+parser.add_argument('--traj', type=str, nargs='+', default=["npt_probe.xtc"],
                     help="Equilibration trajectory used to measure backbone "
                          "rigidity for anchor selection (default: npt_probe.xtc). "
                          "If missing, the burial heuristic is used instead.")
-parser.add_argument('--tpr', type=str, default="npt_probe.tpr",
+parser.add_argument('--tpr', type=str, nargs='+', default=["npt_probe.tpr"],
                     help="Run input matching --traj (default: npt_probe.tpr). Also "
                          "the source of the atom masses the COMs are taken with.")
 parser.add_argument('--topol', type=str, default="topol.top",
@@ -93,6 +93,20 @@ parser.add_argument('--box-from', dest='box_from', type=str, default=None,
 parser.add_argument('--no-readback', dest='readback', action='store_false',
                     help="Skip the GROMACS pull readback check.")
 args = parser.parse_args()
+
+# One tpr per trajectory. A single tpr with several trajectories is the common case
+# (same system, different seeds), so it is broadcast rather than rejected; anything
+# else is a mistake worth stopping for, because trjconv would otherwise read the
+# wrong topology for every replica after the first and say nothing.
+if len(args.tpr) == 1 and len(args.traj) > 1:
+    args.tpr = args.tpr * len(args.traj)
+if len(args.tpr) != len(args.traj):
+    sys.stderr.write("make_boresch: %d --traj against %d --tpr; give one tpr, or "
+                     "one per trajectory\n" % (len(args.traj), len(args.tpr)))
+    sys.exit(2)
+TRAJ_PAIRS = [(t, u) for t, u in zip(args.traj, args.tpr)
+              if os.path.isfile(t) and os.path.isfile(u)]
+
 if args.readback_index is None:
   args.readback_index = args.index[0]
 
@@ -283,14 +297,14 @@ with open(args.input, "r") as f:
 
 # Load before anything takes a COM. The probe tpr already exists when job_fe.run
 # calls this script, and it is the same system, already repartitioned.
-TPR_MASS = load_tpr_masses(args.tpr)
+TPR_MASS = load_tpr_masses(args.tpr[0])
 if TPR_MASS:
   sys.stderr.write("make_boresch: masses read from %s (%d atoms)\n"
-                   % (args.tpr, len(TPR_MASS)))
+                   % (args.tpr[0], len(TPR_MASS)))
 else:
   sys.stderr.write("make_boresch: WARNING - no masses from %s, falling back to "
                    "element masses; COMs will not match GROMACS exactly\n"
-                   % args.tpr)
+                   % args.tpr[0])
 
 
 def box_vector_norms(box_line):
@@ -648,7 +662,14 @@ def tri_area(p, q, r):
 # the arm cap follows the box instead of a fixed 1.2 nm.
 #======================================================
 
-TRAJ_SKIP_PS = 1000.0   # discard as equilibration before measuring
+# Discard as equilibration before measuring, PER REPLICA. Derived from the probe
+# length rather than set here, so lengthening the probe lengthens the discard with
+# it: the point of running N of them for twice this long is that everything is
+# measured on the second half of each, after they have forgotten the shared
+# minimisation they all started from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fe_protocol as P
+TRAJ_SKIP_PS = P.NPT_INIT_PS * P.PROBE_SKIP_FRAC
 R_GROUP = 0.70          # nm, radius of a candidate group about its seed CA
 N_MIN_ATOMS = 18        # backbone-only, so 18 atoms is 6 residues
 # Escalating ceilings on a group's COM RMSF, in nm, tried IN ORDER, first success
@@ -729,6 +750,15 @@ _IMG = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1)
                  for k in (-1, 0, 1)], dtype=float)
 
 
+def min_image_vec(dv, M):
+  """Shortest vector equivalent to dv under box M. min_image_dist takes its norm;
+  angles and dihedrals need the vector itself."""
+  shifts = np.einsum("ij,...jk->...ik", _IMG, M)        # (..., 27, 3)
+  cand = dv[..., None, :] + shifts
+  k = np.argmin((cand ** 2).sum(-1), axis=-1)
+  return np.take_along_axis(cand, k[..., None, None], axis=-2)[..., 0, :]
+
+
 def min_image_dist(dv, M):
   """Shortest distance equivalent to displacement dv under box M.
 
@@ -749,22 +779,32 @@ def load_backbone_trajectory(atom_numbers):
   ("Molecule N marked for clustering but not atom 1 in it"). whole is what the
   per-protein fit below needs anyway, since that fit removes rigid-body motion
   and so does not care where the other protein sits. The cross-protein reference
-  geometry does care, and is taken from args.input instead, which job_fe.run has
-  already run through -pbc cluster."""
-  if not atom_numbers:
-    return None
-  if not (os.path.isfile(args.traj) and os.path.isfile(args.tpr)):
+  geometry does care, and is minimum-imaged where it is computed.
+
+  ALL REPLICAS ARE CONCATENATED, so anchor rigidity, the eps ranking and the frame
+  rotation are ensemble quantities rather than properties of whichever single
+  equilibration happened to run. That is the whole reason there are five of them."""
+  if not atom_numbers or not TRAJ_PAIRS:
     return None
   ndx, gro = ".bb_sel.ndx", ".bb_traj.gro"
+  out = []
   try:
     with open(ndx, "w") as f:
       f.write("[ bbsel ]\n" + " ".join(str(a) for a in atom_numbers) + "\n")
-    cmd = ["gmx", "trjconv", "-s", args.tpr, "-f", args.traj, "-n", ndx,
-           "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"]
-    r = subprocess.run(cmd, input="bbsel\n", capture_output=True, text=True)
-    if r.returncode != 0 or not os.path.isfile(gro):
+    for traj, tpr in TRAJ_PAIRS:
+      if os.path.isfile(gro):
+        os.remove(gro)
+      cmd = ["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", ndx,
+             "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"]
+      r = subprocess.run(cmd, input="bbsel\n", capture_output=True, text=True)
+      if r.returncode != 0 or not os.path.isfile(gro):
+        continue
+      part = read_multi_gro(gro, len(atom_numbers))
+      if part is not None:
+        out.append(part)
+    if not out:
       return None
-    return read_multi_gro(gro, len(atom_numbers))
+    return np.concatenate(out, axis=0)
   except (OSError, ValueError, IndexError):
     return None
   finally:
@@ -802,25 +842,33 @@ def reference_on_ensemble(pairs):
     return pairs, "no interface pairs"
   anums = sorted({prot1_data[i][3] for i, _, _ in pairs} |
                  {prot2_data[j][3] for _, j, _ in pairs})
-  if not (os.path.isfile(args.traj) and os.path.isfile(args.tpr)):
-    return pairs, "no %s/%s; keeping the snapshot references" % (args.traj, args.tpr)
+  if not TRAJ_PAIRS:
+    return pairs, "no usable --traj/--tpr; keeping the snapshot references"
   ndx, gro = ".if_sel.ndx", ".if_traj.gro"
+  Xs, Ms, nrep = [], [], 0
   try:
     with open(ndx, "w") as f:
       f.write("[ ifsel ]\n" + " ".join(str(a) for a in anums) + "\n")
-    r = subprocess.run(["gmx", "trjconv", "-s", args.tpr, "-f", args.traj,
-                        "-n", ndx, "-o", gro, "-b", "%g" % TRAJ_SKIP_PS,
-                        "-pbc", "whole"],
-                       input="ifsel\n", capture_output=True, text=True)
-    if r.returncode != 0 or not os.path.isfile(gro):
-      return pairs, "trjconv failed; keeping the snapshot references"
-    X, M = read_multi_gro(gro, len(anums), with_box=True)
+    for traj, tpr in TRAJ_PAIRS:
+      if os.path.isfile(gro):
+        os.remove(gro)
+      r = subprocess.run(["gmx", "trjconv", "-s", tpr, "-f", traj,
+                          "-n", ndx, "-o", gro, "-b", "%g" % TRAJ_SKIP_PS,
+                          "-pbc", "whole"],
+                         input="ifsel\n", capture_output=True, text=True)
+      if r.returncode != 0 or not os.path.isfile(gro):
+        continue
+      Xp, Mp = read_multi_gro(gro, len(anums), with_box=True)
+      if Xp is not None:
+        Xs.append(Xp); Ms.append(Mp); nrep += 1
   except (OSError, ValueError, IndexError) as e:
     return pairs, "%s; keeping the snapshot references" % e
   finally:
     for f in (ndx, gro):
       if os.path.isfile(f):
         os.remove(f)
+  X = np.concatenate(Xs, axis=0) if Xs else None
+  M = np.concatenate(Ms, axis=0) if Ms else None
   if X is None or len(X) < MIN_FRAMES:
     return pairs, ("only %s frames, need %d; keeping the snapshot references"
                    % (0 if X is None else len(X), MIN_FRAMES))
@@ -832,17 +880,18 @@ def reference_on_ensemble(pairs):
   snap = np.array([p[2] for p in pairs])
   shift = mean - snap
   sys.stderr.write(
-      "make_boresch: interface references re-measured on %d frames of %s -- moved "
+      "make_boresch: interface references re-measured on %d frames pooled over "
+      "%d replica(s) -- moved "
       "%+.3f A on average, rms %.3f A, worst %.3f A. Residual spread about the new "
       "reference is %.3f A rms, which is the part no choice of reference can "
       "remove. Removing the offset takes %.0f kJ/mol of systematic strain out of "
       "the bound leg.\n"
-      % (len(X), args.traj, 10.0 * shift.mean(),
+      % (len(X), nrep, 10.0 * shift.mean(),
          10.0 * float(np.sqrt((shift ** 2).mean())), 10.0 * float(np.abs(shift).max()),
          10.0 * float(sd.mean()),
          0.5 * (args.sum_k / len(pairs)) * float((shift ** 2).sum())))
   return ([(i, j, float(m)) for (i, j, _), m in zip(pairs, mean)],
-          "mean over %d frames" % len(X))
+          "mean over %d frames from %d replica(s)" % (len(X), nrep))
 
 
 def measure_rigidity(prot_data, traj, row_of):
@@ -891,7 +940,9 @@ def make_group(residues, by_res, idx_of, xyz_of, fit):
   com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
   eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
   xyz = np.array([xyz_of[a] for a in atoms])
-  return {"atoms": atoms, "com": (xyz * w[:, None]).sum(0) / w.sum(),
+  atomnames = [a for _r in residues for a in BACKBONE]
+  return {"atoms": atoms, "atomnames": atomnames,
+          "com": (xyz * w[:, None]).sum(0) / w.sum(),
           "com_t": com_t, "eps": eps, "nres": len(residues),
           "residues": list(residues)}
 
@@ -1317,19 +1368,170 @@ if anchors is None:
   print("0")
   sys.exit(1)
 
+
+def circular_mean_deg(a):
+  """Mean of angles in degrees, taken on the circle.
+
+  A PLAIN MEAN IS WRONG HERE AND WRONG SILENTLY. Dihedrals live on (-180, 180],
+  so two frames at +179 and -179 are 2 degrees apart and average to 180, while
+  arithmetic gives 0 -- a reference pointing the opposite way, which is exactly
+  the shape of the dihedral_deg sign bug that voided every work integral before
+  b4c267f. Averaging the unit vectors instead has no wrap to get wrong.
+
+  Returns the mean and the circular standard deviation, both in degrees; the
+  spread is what says whether averaging these frames was meaningful at all."""
+  r = np.radians(np.asarray(a, float))
+  c, s_ = np.cos(r).mean(), np.sin(r).mean()
+  # CLAMPED: on identical inputs the resultant comes out at 1 + 1e-16, and then
+  # log is positive and the sqrt below is a domain error rather than a spread of
+  # zero. Perfect agreement is the easiest case to hit and the easiest to miss.
+  R = min(1.0, math.hypot(c, s_))
+  mean = math.degrees(math.atan2(s_, c))
+  sd = math.degrees(math.sqrt(-2.0 * math.log(R))) if R > 1e-12 else float('nan')
+  return mean, sd
+
+
+def ensemble_boresch_geometry(groups):
+  """Boresch reference geometry averaged over every probe replica.
+
+  `groups` maps role -> the group dict make_group built, whose "atoms" are the
+  backbone atom numbers of that anchor cluster. Their COMs are recomputed frame by
+  frame from the pooled trajectory, which is the same measurement the single
+  snapshot used to supply -- only now it is an average over the ensemble the
+  production replicas are drawn from rather than one arbitrary configuration.
+
+  The ligand triad is minimum-imaged against P3 before anything is computed:
+  trjconv gives -pbc whole, so each protein is whole but the two can sit in
+  different periodic images, and an un-imaged cross-protein vector is wrong by a
+  box vector in whichever frames that happens.
+
+  Returns (dict of the six references, dict of their spreads, nframes) or
+  (None, None, 0) if the trajectory cannot be read.
+  """
+  roles = ("P1", "P2", "P3", "L1", "L2", "L3")
+  anums, slices = [], {}
+  for role in roles:
+    a = groups[role]["atoms"]
+    slices[role] = slice(len(anums), len(anums) + len(a))
+    anums += list(a)
+  if not TRAJ_PAIRS:
+    return None, None, 0
+  ndx, gro = ".bor_sel.ndx", ".bor_traj.gro"
+  Xs, Ms = [], []
+  try:
+    with open(ndx, "w") as f:
+      f.write("[ borsel ]\n" + " ".join(str(a) for a in anums) + "\n")
+    for traj, tpr in TRAJ_PAIRS:
+      if os.path.isfile(gro):
+        os.remove(gro)
+      r = subprocess.run(["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", ndx,
+                          "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"],
+                         input="borsel\n", capture_output=True, text=True)
+      if r.returncode != 0 or not os.path.isfile(gro):
+        continue
+      Xp, Mp = read_multi_gro(gro, len(anums), with_box=True)
+      if Xp is not None:
+        Xs.append(Xp); Ms.append(Mp)
+  except (OSError, ValueError, IndexError):
+    return None, None, 0
+  finally:
+    for f in (ndx, gro):
+      if os.path.isfile(f):
+        os.remove(f)
+  if not Xs:
+    return None, None, 0
+  X = np.concatenate(Xs, axis=0)
+  M = np.concatenate(Ms, axis=0)
+  if len(X) < MIN_FRAMES:
+    return None, None, len(X)
+
+  # Mass-weighted COM per role per frame, with the same weights make_group used.
+  com = {}
+  for role in roles:
+    a = groups[role]["atoms"]
+    w = np.array([mass_of(x, nm) for x, nm in zip(a, groups[role]["atomnames"])])
+    com[role] = (X[:, slices[role], :] * w[None, :, None]).sum(1) / w.sum()
+
+  # Everything is expressed relative to P3, with the ligand side imaged onto it.
+  d_L1 = min_image_vec(com["L1"] - com["P3"], M)
+  P3 = np.zeros_like(d_L1)
+  P2 = com["P2"] - com["P3"]
+  P1 = com["P1"] - com["P3"]
+  L1 = d_L1
+  L2 = d_L1 + (com["L2"] - com["L1"])
+  L3 = d_L1 + (com["L3"] - com["L1"])
+
+  r_t   = np.linalg.norm(L1, axis=1)
+  # SAME ARGUMENT ORDER as the snapshot definitions below: angle_deg(a, b, c) is
+  # the angle AT b, so theta_A is angle(P2, P3, L1) and theta_B is angle(P3, L1,
+  # L2). Getting this backwards moved the two angles by 66-78 degrees while the
+  # dihedrals stayed put, which is what gave it away.
+  thA_t = np.array([angle_deg(P2[i], P3[i], L1[i]) for i in range(len(X))])
+  thB_t = np.array([angle_deg(P3[i], L1[i], L2[i]) for i in range(len(X))])
+  phA_t = np.array([dihedral_deg(P1[i], P2[i], P3[i], L1[i]) for i in range(len(X))])
+  phB_t = np.array([dihedral_deg(P2[i], P3[i], L1[i], L2[i]) for i in range(len(X))])
+  phC_t = np.array([dihedral_deg(P3[i], L1[i], L2[i], L3[i]) for i in range(len(X))])
+
+  # Angles are confined to [0, 180] and average arithmetically; dihedrals wrap and
+  # do not. Getting that backwards is silent, so the two are not treated alike.
+  ref = {"r": float(r_t.mean()),
+         "thA": float(thA_t.mean()), "thB": float(thB_t.mean())}
+  sd = {"r": float(r_t.std(ddof=1)),
+        "thA": float(thA_t.std(ddof=1)), "thB": float(thB_t.std(ddof=1))}
+  for key, series in (("phA", phA_t), ("phB", phB_t), ("phC", phC_t)):
+    ref[key], sd[key] = circular_mean_deg(series)
+  return ref, sd, len(X)
+
+def _grp(name):
+  return rec_groups.get(anchors[name]) or lig_groups.get(anchors[name])
+
 def gc(name):
-  return (rec_groups.get(anchors[name]) or lig_groups.get(anchors[name]))["com"]
+  return _grp(name)["com"]
 
 P1c, P2c, P3c = gc("P1"), gc("P2"), gc("P3")
 L1c, L2c, L3c = gc("L1"), gc("L2"), gc("L3")
 
-# Reference geometry (Boresch definition)
+# Reference geometry (Boresch definition), AVERAGED OVER THE PROBE ENSEMBLE.
+#
+# It used to come from one clustered snapshot, and that is the same defect the
+# interface references had: a restraint referenced to one configuration charges
+# every production replica for the difference, and the difference is a draw. Three
+# repeats of one protocol scattered 14.4 kJ/mol on dG_bind against a within-run
+# bootstrap of 4.4, because all 50 cycles of a run share one setup and resampling
+# cycles cannot see it.
+#
+# The snapshot values are still computed, and are used if the trajectory cannot be
+# read, so a setup with no probe still produces a consistent restraint set -- the
+# old behaviour, named as such rather than arrived at silently.
 ref_r   = float(np.linalg.norm(P3c - L1c))          # nm
 ref_thA = angle_deg(P2c, P3c, L1c)                  # deg  theta_A = angle(P2,P3,L1)
 ref_thB = angle_deg(P3c, L1c, L2c)                  # deg  theta_B = angle(P3,L1,L2)
 ref_phA = dihedral_deg(P1c, P2c, P3c, L1c)          # deg  phi_A
 ref_phB = dihedral_deg(P2c, P3c, L1c, L2c)          # deg  phi_B
 ref_phC = dihedral_deg(P3c, L1c, L2c, L3c)          # deg  phi_C
+REF_SOURCE = "single reference frame"
+
+_ens, _esd, _enf = ensemble_boresch_geometry(
+    {role: _grp(role) for role in ("P1", "P2", "P3", "L1", "L2", "L3")})
+if _ens:
+  _snap = dict(r=ref_r, thA=ref_thA, thB=ref_thB,
+               phA=ref_phA, phB=ref_phB, phC=ref_phC)
+  ref_r, ref_thA, ref_thB = _ens["r"], _ens["thA"], _ens["thB"]
+  ref_phA, ref_phB, ref_phC = _ens["phA"], _ens["phB"], _ens["phC"]
+  REF_SOURCE = "mean over %d frames from %d replica(s)" % (_enf, len(TRAJ_PAIRS))
+  sys.stderr.write(
+      "make_boresch: Boresch geometry averaged over %d pooled frames from %d "
+      "replica(s). r %.4f -> %.4f nm (sd %.4f); angles/dihedrals moved "
+      "%.1f/%.1f/%.1f/%.1f/%.1f deg with circular sd %.1f/%.1f/%.1f on the "
+      "dihedrals. A dihedral sd near 90 deg means the frames disagree about the "
+      "orientation and the mean is not a pose.\n"
+      % (_enf, len(TRAJ_PAIRS), _snap["r"], ref_r, _esd["r"],
+         ref_thA - _snap["thA"], ref_thB - _snap["thB"],
+         ref_phA - _snap["phA"], ref_phB - _snap["phB"], ref_phC - _snap["phC"],
+         _esd["phA"], _esd["phB"], _esd["phC"]))
+else:
+  sys.stderr.write("make_boresch: Boresch geometry NOT averaged (%d usable frames); "
+                   "using the single reference frame\n" % _enf)
 
 #======================================================
 # PART 4 - Analytical standard-state term (Boresch 2003, eq. 32)
@@ -1477,6 +1679,10 @@ with open("boresch_analytical.gs", "w") as f:
   f.write("dG_release_kJ_mol     %.6f\n" % dG_release)
   f.write("temperature_K         %.2f\n" % args.temp)
   f.write("ref_r_bound_nm        %.6f\n" % ref_r)
+  # Where the geometry came from, in the same file as the geometry. Two runs that
+  # disagree are only diagnosable if each says what it measured itself on.
+  f.write("reference_source      %s\n" % REF_SOURCE.replace(" ", "_"))
+  f.write("n_probe_replicas      %d\n" % len(TRAJ_PAIRS))
   f.write("r0_release_nm         %.6f\n" % r0_release)
   f.write("pull_dist_nm          %.6f\n" % args.pull_dist)
   # Recorded so the work integration always uses the rate this structure was
@@ -1880,9 +2086,6 @@ def write_pull_block(filename, pull_groups, coords):
 # hold below, the internal holds KEEP their interface coordinates, because at
 # lambda < 1 the force constant is still (1 - lambda) of full and they are doing
 # real work holding the partly separated interface.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import fe_protocol as P
-
 stage_rates = {}
 # Where the six Boresch coordinates ended up inside the FIRST stage's block,
 # captured from the coords themselves rather than assumed. The readback below used
@@ -1984,8 +2187,16 @@ with open("boresch_analytical.gs", "a") as f:
 # Bound-state restraint leg
 pg_b_fwd, co_b_fwd = build_coords("bound", "fwd")
 pg_b_rev, co_b_rev = build_coords("bound", "rev")
-write_pull_block("boundfwd.mdp", pg_b_fwd, co_b_fwd)
-write_pull_block("boundrev.mdp", pg_b_rev, co_b_rev)
+# One block per bound sub-leg. The block itself is identical for all of them --
+# interface coords at k = 0 -> kB = k_inter, rate 0, no Boresch -- because only
+# init-lambda and delta-lambda distinguish the sub-legs, and those come from
+# make_fe_mdps.py. So this loops over whatever fe_protocol declares rather than
+# naming two files, and a reshaping of BOUND needs no edit here.
+for _leg in P.legs():
+  if _leg["kind"] != "bound":
+    continue
+  _pg, _co = (pg_b_fwd, co_b_fwd) if _leg["dirn"] == "fwd" else (pg_b_rev, co_b_rev)
+  write_pull_block(_leg["mdp"], _pg, _co)
 
 
 #======================================================

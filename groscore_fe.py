@@ -244,6 +244,11 @@ from local_runner import launch_local, print_local_status
 import estimators as est
 import fe_protocol as P
 
+# Display names for the bound sub-legs, taken from the protocol so a reshaping of
+# BOUND renames the channels and the columns with it. A run from before the bound
+# leg was staged has one sub-leg and keeps the old single-channel presentation.
+BOUND_NAMES = [b[0] for b in P.BOUND]
+
 RT = 0.00831446261815324 * args.temp  # kJ/mol
 
 
@@ -329,7 +334,8 @@ def _stream_cgi(fwd, rev):
   return out
 
 def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
-                     stages=None, n_boot=50000, n_boot_bar=5000, seed=12345):
+                     stages=None, bound=None, n_boot=50000, n_boot_bar=5000,
+                     seed=12345):
   """Joint cycle-level bootstrap for one structure.
 
   Point estimates and 95% CIs for dG_intro, dG_unbind and dG_bind under all three
@@ -368,6 +374,11 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
   nan = float('nan')
 
   st = [(L, np.asarray(f, float), np.asarray(v, float)) for L, f, v in (stages or [])]
+  # The bound leg is staged on exactly the same terms as the ramp: sub-legs with an
+  # equilibrium hold between them, each its own Crooks process, summed. Wi/Wr stay
+  # the works of the WHOLE switch and become the one-shot cross-check on that sum,
+  # the same role Wtot_f/Wtot_r play for the ramp.
+  bd = [(N, np.asarray(f, float), np.asarray(v, float)) for N, f, v in (bound or [])]
 
   r = dict(n=ncyc,
            intro_avg=nan, intro_avg_ci=nan, intro_cgi=nan, intro_cgi_ci=nan,
@@ -376,17 +387,25 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
            intro_bar=nan, intro_bar_ci=nan, unb_bar=nan, unb_bar_ci=nan,
            bind_bar=nan, bind_bar_ci=nan, intro_bar_note="", unb_bar_note="",
            unb1s_bar=nan, unb1s_bar_ci=nan, unb1s_avg=nan,
-           stages=[L for L, _, _ in st], staged=bool(st))
+           intro1s_bar=nan, intro1s_bar_ci=nan, intro1s_avg=nan,
+           stages=[L for L, _, _ in st], staged=bool(st),
+           bound=[N for N, _, _ in bd], bsplit=bool(bd))
   # One set of per-stage slots per stage actually present.
   for L, _, _ in st:
     r["unb%s_bar" % L] = nan
     r["unb%s_bar_ci" % L] = nan
     r["unb%s_bar_note" % L] = ""
+  for N, _, _ in bd:
+    r["intro%s_bar" % N] = nan
+    r["intro%s_bar_ci" % N] = nan
+    r["intro%s_bar_note" % N] = ""
   if ncyc == 0:
     return r
 
   # Point estimates from the full data.
-  r['intro_avg'] = float(_stream_avg(Wi, Wr))
+  r['intro1s_avg'] = float(_stream_avg(Wi, Wr))
+  r['intro_avg']   = (float(sum(_stream_avg(f, v) for _, f, v in bd))
+                      if bd else r['intro1s_avg'])
   r['unb1s_avg'] = float(_stream_avg(Wf, Wv))
   r['unb_avg']   = (float(sum(_stream_avg(f, v) for _, f, v in st))
                     if st else r['unb1s_avg'])
@@ -412,7 +431,18 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
   # no overlap therefore has no BAR column at all, which is the intended outcome,
   # and is exactly what unb1s_bar is expected to keep reading while the stage
   # columns beside it do not.
-  r['intro_bar'], r['intro_bar_note'] = est.bar(Wi, Wr, RT)
+  r['intro1s_bar'], intro1s_note      = est.bar(Wi, Wr, RT)
+  if not bd:
+    r['intro_bar'], r['intro_bar_note'] = r['intro1s_bar'], intro1s_note
+  else:
+    # Same rule as the stages: name the sub-leg that failed, not just the channel.
+    bvals = []
+    for N, f, v in bd:
+      b, note = est.bar(f, v, RT)
+      r["intro%s_bar" % N], r["intro%s_bar_note" % N] = b, note
+      bvals.append(b)
+    if all(np.isfinite(x) for x in bvals):
+      r['intro_bar'] = float(sum(bvals))
   r['unb1s_bar'], unb1s_note          = est.bar(Wf, Wv, RT)
   if not st:
     r['unb_bar'], r['unb_bar_note'] = r['unb1s_bar'], unb1s_note
@@ -438,7 +468,8 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
   idx = rng.integers(0, ncyc, size=(n_boot, ncyc))
   Wi_b, Wr_b, Wf_b, Wv_b = Wi[idx], Wr[idx], Wf[idx], Wv[idx]
 
-  ia = _stream_avg(Wi_b, Wr_b, axis=1)
+  ia = (sum(_stream_avg(f[idx], v[idx], axis=1) for _, f, v in bd)
+        if bd else _stream_avg(Wi_b, Wr_b, axis=1))
   ua = (sum(_stream_avg(f[idx], v[idx], axis=1) for _, f, v in st)
         if st else _stream_avg(Wf_b, Wv_b, axis=1))
   r['intro_avg_ci'] = 1.96 * float(np.std(ia))
@@ -446,7 +477,8 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
   r['bind_avg_ci']  = 1.96 * float(np.std(-(ia + ua + dG_release)))
 
   if ncyc >= 3:
-    ic = _stream_cgi(Wi_b, Wr_b)
+    ic = (sum(_stream_cgi(f[idx], v[idx]) for _, f, v in bd)
+          if bd else _stream_cgi(Wi_b, Wr_b))
     uc = (sum(_stream_cgi(f[idx], v[idx]) for _, f, v in st)
           if st else _stream_cgi(Wf_b, Wv_b))
     if np.isfinite(ic).sum() > 1:
@@ -472,7 +504,21 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
   jdx = idx[:nb]
   def boot(f, v, ok):
     return est.bar_bootstrap(f, v, RT, jdx) if ok else None
-  ib = boot(Wi, Wr, np.isfinite(r['intro_bar']))
+  i1 = boot(Wi, Wr, np.isfinite(r['intro1s_bar']))
+  if i1 is not None and np.isfinite(i1).sum() > 1:
+    r['intro1s_bar_ci'] = 1.96 * float(np.nanstd(i1))
+  if not bd:
+    ib = i1
+  else:
+    bper = []
+    for N, f, v in bd:
+      b = boot(f, v, np.isfinite(r["intro%s_bar" % N]))
+      if b is not None and np.isfinite(b).sum() > 1:
+        r["intro%s_bar_ci" % N] = 1.96 * float(np.nanstd(b))
+      bper.append(b)
+    # As for the stages: the sum is undefined if any sub-leg is unresolvable, and
+    # dG_intro is already NaN in that case.
+    ib = None if any(b is None for b in bper) else sum(bper)
   if ib is not None and np.isfinite(ib).sum() > 1:
     r['intro_bar_ci'] = 1.96 * float(np.nanstd(ib))
   s1 = boot(Wf, Wv, np.isfinite(r['unb1s_bar']))
@@ -861,26 +907,33 @@ def read_analytical(filepath, andir="results_analytical.d"):
   return vals
 
 def read_works(filepath, workdir="results_fe.d"):
-  """-> {struct_id: [ (cycle, W_intro, W_remove, rmsd, nstages,
+  """-> {struct_id: [ (cycle,
+                       [(Wf, Wr), ...one per BOUND sub-leg],
+                       rmsd, nstages,
                        [(Wf_pull, Wf_dhdl, Wr_pull, Wr_dhdl), ...one per stage]),
                       ... ]}, keeping only rows whose WORK values are all numeric.
 
-  ANY NUMBER OF RAMP STAGES is accepted, because the ramp has been reshaped three
-  times and will be again. A row is
+  ANY NUMBER OF BOUND SUB-LEGS AND RAMP STAGES is accepted, because both have been
+  reshaped repeatedly and will be again. A row is
 
-      STRUCT_ID cycle W_intro <4 works per stage> W_remove RMSD
+      STRUCT_ID cycle <1 work per bound sub-leg> <4 per stage> <1 per sub-leg> RMSD
 
-  with the forward stages in order and the reverse stages in the order they RUN,
-  i.e. reversed, so the stage count follows from the width alone:
+  with both groups laid out mirror-symmetrically about the centre: forward parts in
+  run order, then the reverse parts in the order they RUN, i.e. reversed. So a
+  sub-leg pairs with the field counted from its group's far end, and the same
+  arithmetic reads the bound leg and the ramp.
 
-      1 stage   ->  9 fields   the unstaged ramp, before 2026-08-14
-      2 stages  -> 13 fields   split at u = 0.3
-      3 stages  -> 17 fields   split at u = 0.3 and u = 0.5
+      1 bound, 1 stage   ->  9 fields   the unstaged ramp, before 2026-08-14
+      1 bound, 2 stages  -> 13 fields   split at u = 0.3
+      1 bound, 3 stages  -> 17 fields   split at u = 0.3 and u = 0.5
+      2 bound, 6 stages  -> 31 fields   current
 
-  and in general nstages = (NF - 5) / 4. Rows of any of those widths are read, so
-  a directory of results from an older protocol still scores; `nstages` travels
-  with each row so a structure whose cycles straddle a reshaping is scored on what
-  its rows actually contain rather than on what the current protocol expects.
+  The width of the CURRENT protocol is taken from fe_protocol; anything else falls
+  back to the old nstages = (NF - 5) / 4 rule, which assumed exactly one bound
+  sub-leg per direction and cannot express a split bound leg. Rows of any of those
+  widths are read, so a directory from an older protocol still scores, and the
+  layout travels with each row so a structure whose cycles straddle a reshaping is
+  scored on what its rows contain rather than on what the current protocol expects.
 
   The RMSD is the rebinding sanity check (last column, Angstrom); it is diagnostic
   only, so a row whose RMSD is missing or NaN is still a valid result and is kept
@@ -891,19 +944,39 @@ def read_works(filepath, workdir="results_fe.d"):
   legacy single results_fe.gs."""
   works = {}
 
+  # (nbound, nstages) for a row of a given width. The CURRENT protocol is asked
+  # first, by width, because the old rule below cannot express a split bound leg:
+  # it hardcodes exactly two non-stage work fields, so a 31-field row gives
+  # (31-5)/4 = 6.5, no match, and the row is dropped WITHOUT A WORD. That is the
+  # same silent-drop shape as the completeness gate and the ["nan"] * 19 literal,
+  # and it is why the layout is asked of fe_protocol rather than inferred.
+  #
+  # The old rule survives as the fallback so that every directory written before
+  # the bound leg was staged still parses and still scores. A width that both
+  # rules claim is resolved by the current protocol, which is the stricter claim.
+  _CUR = {P.result_nf(): (P.n_bound(), P.n_stages())}
+
+  def _layout(nf):
+    if nf in _CUR:
+      return _CUR[nf]
+    if nf >= 9 and (nf - 5) % 4 == 0:
+      return 1, (nf - 5) // 4
+    return None
+
   def take(line):
     if line.strip().startswith("#"):
       return
     tmp = line.split()
-    # With RMSD the row is 4*nstages + 5 wide; without it, one less. Try the
-    # RMSD-bearing width first, since every writer since 2026-07 emits one.
+    # With RMSD the row is nbound*2 + nstages*4 + 3 wide; without it, one less.
+    # Try the RMSD-bearing width first, since every writer since 2026-07 emits one.
     for nf, has_rmsd in ((len(tmp), True), (len(tmp) + 1, False)):
-      if nf >= 9 and (nf - 5) % 4 == 0:
-        nstages = (nf - 5) // 4
+      lay = _layout(nf)
+      if lay:
+        nbound, nstages = lay
         break
     else:
       return
-    nw = 2 + 4 * nstages                 # work fields, excluding the trailing RMSD
+    nw = 2 * nbound + 4 * nstages        # work fields, excluding the trailing RMSD
     if len(tmp) < 2 + nw:
       return
     try:
@@ -913,11 +986,13 @@ def read_works(filepath, workdir="results_fe.d"):
       return
     if any(math.isnan(v) for v in vals):
       return
-    W_intro, W_remove = vals[0], vals[-1]
-    body = vals[1:-1]
-    # Forward stages come first in run order; the reverse stages follow in the
-    # order they RUN, which is the reverse of the forward order, so stage i's
-    # reverse pair is counted from the end.
+    # Both groups are laid out mirror-symmetrically about the centre of the row:
+    # forward sub-legs in run order, then the ramp, then the reverse sub-legs in
+    # the order they RUN, which is the reverse of the forward order. So sub-leg i
+    # pairs with the i-th field counted from its group's far end, and the same
+    # arithmetic serves the bound leg and the ramp.
+    bound = [(vals[i], vals[nw - 1 - i]) for i in range(nbound)]
+    body = vals[nbound:nw - nbound]
     stages = []
     for i in range(nstages):
       fp, fd = body[2 * i], body[2 * i + 1]
@@ -930,7 +1005,7 @@ def read_works(filepath, workdir="results_fe.d"):
         rmsd = float(tmp[2 + nw])
       except ValueError:
         pass
-    works.setdefault(tmp[0], []).append((cyc, W_intro, W_remove, rmsd, nstages, stages))
+    works.setdefault(tmp[0], []).append((cyc, bound, rmsd, nstages, stages))
 
   if os.path.isfile(filepath):
     with open(filepath) as f:
@@ -1425,18 +1500,20 @@ def plot_convergence(conv, n_boot_bar):
             ("CGI", "bind_cgi", "bind_cgi_ci", SECONDARY, ":", 1.6))
 
   drawn = []
-  for sid, Wi, Wr, Wtf, Wtr, stage_w, rel, staged in conv[:CONV_MAX_STRUCTS]:
+  for sid, Wi, Wr, Wtf, Wtr, stage_w, rel, staged, bound_w in conv[:CONV_MAX_STRUCTS]:
     grid = _conv_grid(len(Wi))
     if len(grid) < 2:
       continue
     curves = {k: ([], [], []) for _, k, _, _, _, _ in series}
     for m in grid:
       sw = [(L, f[:m], v[:m]) for L, f, v in stage_w] if staged else None
+      bw = [(N, f[:m], v[:m]) for N, f, v in bound_w] if bound_w else None
       try:
         # the endpoint is the published number, so it gets the published bootstrap
         cheap = {} if m == grid[-1] else {"n_boot": CONV_NBOOT,
                                           "n_boot_bar": CONV_NBOOT_BAR}
         r = score_structure(Wi[:m], Wr[:m], Wtf[:m], Wtr[:m], rel, stages=sw,
+                            bound=bw,
                             **({"n_boot_bar": n_boot_bar} if not cheap else cheap))
       except (ValueError, FloatingPointError):
         continue
@@ -1536,6 +1613,9 @@ def plot_works(legs, stats):
   import matplotlib.pyplot as plt
 
   TITLES = {"restraints": "bound-state restraints (dhdl)",
+            "bound 1":    "bound-state restraints, sub-leg 1 (dhdl)",
+            "bound 2":    "bound-state restraints, sub-leg 2 (dhdl)",
+            "bound 1+2":  "bound-state restraints, sub-legs summed (dhdl)",
             "unbind A":   "unbinding stage A (pull + dhdl)",
             "unbind B":   "unbinding stage B (pull + dhdl)",
             "unbind A+B": "whole ramp, stages summed (pull + dhdl)",
@@ -1761,7 +1841,7 @@ def score(structids):
   bad_cycles = {}   # sid -> [(cycle, rmsd), …] that failed the rebinding check
   all_rmsds = []    # every measured cycle, for the summary statistics
   legs = []         # (sid, [(name, fwd, rev, plot), ...]) for the diagnostic
-  conv = []         # (sid, Wi, Wr, Wtf, Wtr, stage_w, dG_release, staged)
+  conv = []         # (sid, Wi, Wr, Wtf, Wtr, stage_w, dG_release, staged, bound_w)
   for sid in structids:
     if sid in status:
       rows.append((sid, None, None, 0, status[sid]))
@@ -1773,13 +1853,25 @@ def score(structids):
       by_cycle[row[0]] = row
     cycles = [by_cycle[c] for c in sorted(by_cycle)]
     if cycles:
-      W_intro   = [c[1] for c in cycles]
-      W_remove  = [c[2] for c in cycles]
+      # Bound sub-leg works. One channel per sub-leg, exactly as for the ramp; a
+      # run from before the bound leg was staged has one of them and behaves as it
+      # always did. Only cycles that agree on the count can be paired up.
+      bcounts = {len(c[1]) for c in cycles}
+      nbound = bcounts.pop() if len(bcounts) == 1 else 0
+      bound_w = []
+      for i in range(nbound):
+        f = [c[1][i][0] for c in cycles]
+        v = [c[1][i][1] for c in cycles]
+        bound_w.append((BOUND_NAMES[i] if i < len(BOUND_NAMES) else str(i + 1), f, v))
+      # The sub-leg works sum to the work of the whole switch, since the holds
+      # between them do none; that sum is what dG_intro is compared against.
+      W_intro  = [sum(x) for x in zip(*[f for _, f, _ in bound_w])] if bound_w else []
+      W_remove = [sum(x) for x in zip(*[v for _, _, v in bound_w])] if bound_w else []
 
       # How many ramp stages these cycles carry. A structure whose cycles straddle
       # a reshaping of the ramp cannot have its stages paired up, so it is scored
       # on the summed works alone, which are valid whatever the shape.
-      counts = {c[4] for c in cycles}
+      counts = {c[3] for c in cycles}
       nstages = counts.pop() if len(counts) == 1 else 0
       staged = nstages > 1
 
@@ -1789,8 +1881,8 @@ def score(structids):
       LETTERS = "ABCDEFGH"
       stage_w = []
       for i in range(nstages):
-        f = [SIGN_PULL_FWD * c[5][i][0] + c[5][i][1] for c in cycles]
-        v = [SIGN_PULL_REV * c[5][i][2] + c[5][i][3] for c in cycles]
+        f = [SIGN_PULL_FWD * c[4][i][0] + c[4][i][1] for c in cycles]
+        v = [SIGN_PULL_REV * c[4][i][2] + c[4][i][3] for c in cycles]
         stage_w.append((LETTERS[i] if i < len(LETTERS) else str(i + 1), f, v))
 
       # The hold segments do zero work, so these sums are the works of the full
@@ -1810,7 +1902,15 @@ def score(structids):
       # ("unbind A+B") rather than for a leg, because no simulation of that name
       # runs and the table must not read as reporting one. On an unstaged run the
       # ramp really is one leg, and there it keeps the leg's name.
-      chan = [("restraints", W_intro, W_remove, True)]
+      # The bound leg is drawn per sub-leg when it is split, for the same reason
+      # the ramp is: whether the split bought the overlap it was meant to is a
+      # question about the sub-legs, and the answer is the picture.
+      if len(bound_w) > 1:
+        chan = [("bound %s" % n, f, v, True) for n, f, v in bound_w]
+        chan.append(("bound %s" % "+".join(n for n, _, _ in bound_w),
+                     W_intro, W_remove, False))
+      else:
+        chan = [("restraints", W_intro, W_remove, True)]
       if staged:
         chan += [("unbind %s" % L, f, v, True) for L, f, v in stage_w]
         chan.append(("unbind %s" % "+".join(L for L, _, _ in stage_w),
@@ -1826,16 +1926,18 @@ def score(structids):
     dG_release = analytical[sid]
     r = score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
                         stages=stage_w if staged else None,
+                        bound=bound_w if len(bound_w) > 1 else None,
                         n_boot_bar=args.n_boot_bar)
     # Everything the convergence figure needs to re-score prefixes of this
     # structure. Collected here rather than recomputed there so the two can only
     # ever be looking at the same cycles in the same order.
-    conv.append((sid, W_intro, W_remove, Wtot_f, Wtot_r, stage_w, dG_release, staged))
+    conv.append((sid, W_intro, W_remove, Wtot_f, Wtot_r, stage_w, dG_release,
+                 staged, bound_w if len(bound_w) > 1 else None))
 
     # Rebinding sanity check: the thermodynamic cycle only closes if the
     # rebinding leg put the partners back into the pose the bound leg started
     # from. Diagnostic only -- the free energies are reported either way.
-    rmsds = [(c[0], c[3]) for c in cycles if not math.isnan(c[3])]
+    rmsds = [(c[0], c[2]) for c in cycles if not math.isnan(c[2])]
     r['rmsd_mean'] = float(np.mean([v for _, v in rmsds])) if rmsds else float('nan')
     r['rmsd_max']  = float(np.max([v for _, v in rmsds])) if rmsds else float('nan')
     all_rmsds.extend(v for _, v in rmsds)
@@ -1889,13 +1991,24 @@ def score(structids):
     if _r and len(_r.get('stages', [])) > len(STAGE_LETTERS):
       STAGE_LETTERS = list(_r['stages'])
   stage_cols = "  ".join("dG_unb%s_bar  dG_unb%s_bar_CI" % (L, L) for L in STAGE_LETTERS)
+  # Same treatment for the bound sub-legs: as wide as the widest structure scored,
+  # taken from the data rather than from this file, so a directory holding runs of
+  # two protocols still produces one rectangular table.
+  BOUND_COLS = []
+  for _sid, _r, _gr, _n, _note in rows:
+    if _r and len(_r.get('bound', [])) > len(BOUND_COLS):
+      BOUND_COLS = list(_r['bound'])
+  bound_cols = "  ".join("dG_intro%s_bar  dG_intro%s_bar_CI" % (N, N)
+                         for N in BOUND_COLS)
   cols = ("dGbind_bar  dGbind_bar_CI  pKD_bar  pKD_bar_CI  "
           "dGbind_avg  dGbind_avg_CI  pKD_avg  pKD_avg_CI  "
           "dGbind_cgi  dGbind_cgi_CI  pKD_cgi  pKD_cgi_CI  "
           "dG_intro_bar  dG_intro_bar_CI  dG_intro_avg  dG_intro_avg_CI  dG_intro_cgi  dG_intro_cgi_CI  "
           "dG_unbind_bar  dG_unbind_bar_CI  dG_unbind_avg  dG_unbind_avg_CI  dG_unbind_cgi  dG_unbind_cgi_CI  "
+          + (bound_cols + "  " if bound_cols else "")
           + (stage_cols + "  " if stage_cols else "")
-          + "dG_unbind_1s_bar  dG_unbind_1s_bar_CI  "
+          + "dG_intro_1s_bar  dG_intro_1s_bar_CI  "
+            "dG_unbind_1s_bar  dG_unbind_1s_bar_CI  "
             "dG_release  RMSD_mean_A  RMSD_max_A  Ncycles  Note")
   N_NUMERIC = len(cols.split()) - 2          # every column but Ncycles and Note
   with open("scores_fe.gs", "w") as f:
@@ -1923,6 +2036,9 @@ def score(structids):
         for L in r.get('stages', []):
           if r.get("unb%s_bar_note" % L):
             bar_notes.append(r["unb%s_bar_note" % L] + "_UNBIND_" + L)
+        for N in r.get('bound', []):
+          if r.get("intro%s_bar_note" % N):
+            bar_notes.append(r["intro%s_bar_note" % N] + "_INTRO_" + N)
         if bar_notes:
           note = ",".join(([note] if note else []) + bar_notes)
         note = note or "-"
@@ -1935,12 +2051,16 @@ def score(structids):
                 cell(r['unb_bar']), cell(r['unb_bar_ci']),
                 cell(r['unb_avg']), cell(r['unb_avg_ci']),
                 cell(r['unb_cgi']), cell(r['unb_cgi_ci'])]
-        # One pair per stage COLUMN, not per stage this structure has, so a run
+        # One pair per COLUMN, not per sub-leg this structure has, so a run
         # mixing protocols still writes a rectangular table.
+        for N in BOUND_COLS:
+          vals += [cell(r.get("intro%s_bar" % N, float('nan'))),
+                   cell(r.get("intro%s_bar_ci" % N, float('nan')))]
         for L in STAGE_LETTERS:
           vals += [cell(r.get("unb%s_bar" % L, float('nan'))),
                    cell(r.get("unb%s_bar_ci" % L, float('nan')))]
-        vals += [cell(r['unb1s_bar']), cell(r['unb1s_bar_ci']),
+        vals += [cell(r['intro1s_bar']), cell(r['intro1s_bar_ci']),
+                 cell(r['unb1s_bar']), cell(r['unb1s_bar_ci']),
                  cell(gr), cell(r['rmsd_mean']), cell(r['rmsd_max'])]
         f.write("\t".join([sid] + vals + [str(n), note]) + "\n")
 

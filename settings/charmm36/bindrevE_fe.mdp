@@ -1,10 +1,14 @@
-; boundrev.mdp - Bound-state restraint removal (dhdl only, no pulling).
-; Interface restraints switched OFF with the partners in place, lambda 1 -> 0.
+; bindrevE_fe.mdp - FE rebinding, stage E: u 0.5 -> 0.4 nm over 2.1 ns, lambda 0.5 -> 0.4.
+; Interface restraints fade out (k -> kB=0) as the Boresch restraints fade
+; in (k=0 -> kB), in proportion to the distance travelled. The full pull
+; block (groups + coords) is appended per structure by make_boresch.py,
+; which reads this file for the stage's length and derives its pull rate
+; from it -- so changing nsteps here changes the rate to match.
 ;
-; nsteps 1250000 * dt 0.004 = 5000 ps.
+; nsteps 525000 * dt 0.004 = 2100 ps.
 
 integrator               = md
-nsteps                   = 1250000
+nsteps                   = 525000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -22,21 +26,23 @@ nstcomm                  = 1000
 
 continuation             = yes
 constraint_algorithm     = lincs
-constraints              = all-bonds
+constraints              = h-bonds
 lincs_iter               = 1
 lincs_order              = 6
 
-cutoff-scheme            = verlet
+cutoff-scheme            = Verlet
 ns_type                  = grid
-rlist                    = 1.4
-rcoulomb                 = 1.4
-rvdw                     = 1.4
+rlist                    = 1.2
+rcoulomb                 = 1.2
+rvdw                     = 1.2
+rvdw-switch              = 1.0
 
-vdwtype                  = cut-off
-vdw-modifier             = none
+vdwtype                  = cutoff
+vdw-modifier             = force-switch
 
 coulombtype              = PME
-coulomb-modifier         = none
+
+DispCorr                 = no
 
 tcoupl                   = V-rescale
 tc-grps                  = Protein Non-Protein
@@ -56,8 +62,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 1
-delta-lambda             = -8.00000000e-07
+init-lambda              = 0.5
+delta-lambda             = -1.90476190e-07
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes
@@ -71,4 +77,4 @@ pull-print-com2          = no
 pull-print-ref-value     = no
 pull-print-components    = no
 pull-nstxout             = 0
-pull-nstfout             = 0
+pull-nstfout             = 500

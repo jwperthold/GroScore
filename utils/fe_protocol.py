@@ -14,52 +14,49 @@ step by hand. Every one of those lists is now computed from RAMP.
     python3 utils/fe_protocol.py            human-readable summary of the cycle
     python3 utils/fe_protocol.py --shell    the same as shell arrays, for job_fe.run
 
-THE RAMP. The unbinding pull runs from u = 0 to u = PULL_DIST in stages, with an
-equilibrium hold at every internal boundary in both directions. Each stage is its
-own Crooks process; the holds do zero work, so the stage works still sum exactly
-to the work of the whole ramp, and the summed value is scored alongside the
-staged one as the assumption-free cross-check.
+THE CYCLE IS STAGED IN BOTH HALVES. The bound-state restraint switch runs in BOUND
+sub-legs and the unbinding pull in RAMP stages, with an equilibrium hold at every
+internal boundary in both directions. Each sub-leg is its own Crooks process; the
+holds do zero work, so the sub-leg works still sum exactly to the work of the whole
+switch, and each sum is scored alongside the staged one as the assumption-free
+cross-check.
 
-WHY THESE BOUNDARIES AND TIMES (measured on 50 cycles of 2KTF, test3):
+WHY STAGE AT ALL. A leg whose dissipation exceeds its own work width has forward and
+reverse histograms that do not meet, and then BAR returns nothing whatever the
+sampling. Splitting does not reduce dissipation, it partitions it into pieces each
+estimator can handle. Measured on test12, per leg, dissipation against work width:
 
-  u 0.0-0.3   40.07 kJ/mol in 15 ns   local rate response p = 0.69
-  u 0.3-0.5   19.35 kJ/mol in 1.43 ns                     p = 1.05
-  u 0.5-1.0   19.16 kJ/mol in 3.57 ns                     p = 0.07
+  bound (whole)   69.8 / 29.4 = 2.4 sigma
+  stage A         84.7 / 23.7 = 3.6
+  stage B         46.9 / 12.8 = 3.7
+  stage C         36.4 / 15.5 = 2.4
 
-The middle zone is the only part of the pull where time converts to reduced
-dissipation at the full near-equilibrium 1/t rate, and the two-stage split put it
-in the FAST stage, where it received 1.43 ns and paid 19.35 kJ/mol. The outer
-half barely responds to rate at all: running it 2.8x faster than test2 cost
-1.26 kJ/mol across five windows. So the boundary at u = 0.5 separates the part
-worth slowing from the part that is not.
+against an observed mapping of 1.7 sigma -> overlap 54, 2.0 -> 41, 2.6 -> 9. Every
+leg was in or past the coin-toss regime. The shape below puts all of them at
+0.6-1.8 sigma.
 
-Minimising sum(c_i * t_i^-p_i) at fixed total 20 ns, with the tail held at the
-fastest rate ever actually run (0.14 nm/ns, hence 3.5 ns for its 0.5 nm), gave
-13 / 3.5 / 3.5 ns, and that shape was run as test4. It worked: every stage
-overlapped and BAR closed the whole cycle for the first time.
+WHY THESE BOUNDARIES. From the friction profile, recovered as zeta = g/v because the
+stages ran at rates differing 8x and the raw dissipation density is not zeta.
+Boundaries sit at equal dissipation under the OPTIMAL schedule, which is equal
+integrated sqrt(zeta), and the times are Sivak-Crooks on the same quantity. The
+five-stage optimum landed on 0.296 and 0.477, i.e. on the 0.30 and 0.50 that were
+already there, so those two are kept and the rest are added around them.
 
-CURRENT SHAPE, 2026-08-15, 80 ns per cycle. Three changes on top of test4, all
-of them buying reversibility rather than schedule efficiency, because test4
-measured the schedule to be nearly exhausted (Sivak-Crooks leaves 1.14x against
-the 1.43x the three-stage split already took):
+WHY NOT JUST RETIME. Because that is exhausted. The previous 17/3.5/3.5 split was
+already within 5% of optimal against the measured friction, and reallocating between
+the bound leg and the ramp buys 2%. Crooks also forbids the obvious response to noisy
+rebinding -- more time in reverse than forward -- since the reverse protocol must be
+the exact time-reverse of the forward one.
 
-  * boundfwd / boundrev 2 -> 5 ns. THE MEASURED DEFECT of test4. The interface
-    restraints are harmonic umbrellas with k_A = 0 -> k_B, so dH/dlambda is
-    exactly 0.5*k_B*S with S the summed squared deviation from the reference.
-    Raising npt_c to 10 ns doubled the strain handed to boundfwd (S 12.7 ->
-    27.7 nm^2) without rescaling the 2 ns switch, and the leg stopped finishing:
-    dH/dlambda at the end sat 71% ABOVE the restrained-equilibrium value, where
-    the same quantity was 6% BELOW it when npt_c was 1 ns. That leg carries 12.7%
-    of the dG_bind variance and, worse, its BAR overlap rested on exactly two
-    cycles out of 47.
-  * stage A 13 -> 17 ns. It carries 80.2% of the dG_bind variance and the
-    rupture peak, u 0.10-0.20, which alone is 30.6% of the ramp hysteresis.
-  * unbound hold 4 -> 6 ns.
+HOLD LENGTHS ARE MEASURED. See RAMP_HOLD_PS below: dH/dlambda is written during a
+hold, so its autocorrelation time and its residual drift are both observable, and
+1000 ps was 60-90 tau everywhere except the two bound<->ramp handoffs.
 
-Ramp is now 24 ns per direction, so the rates fall to 1.765e-5 / 5.714e-5 /
-1.429e-4 nm/ps. The exponents behind any of this are two-point estimates across
-runs differing on several axes, so treat the allocation as the best available
-guess and not as an optimum.
+THE PROBE IS REPLICATED. N_PROBES independent equilibrations, everything measured on
+the pooled second half of all of them. This is the only part of the design that
+touches the between-run scatter; see N_PROBES.
+
+100 ns per cycle, plus the 0.1 ns NVT ladder job_fe.run runs ahead of it.
 """
 import sys
 
@@ -70,16 +67,56 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0, 0.3, 17000.0),
-    ("B", 0.3, 0.5,  3500.0),
-    ("C", 0.5, 1.0,  3500.0),
+    ("A", 0.0,   0.110, 5500.0),
+    ("B", 0.110, 0.185, 4900.0),
+    ("C", 0.185, 0.300, 5200.0),
+    ("D", 0.300, 0.400, 3200.0),
+    ("E", 0.400, 0.500, 2100.0),
+    ("F", 0.500, 1.000, 4600.0),
 ]
 
-HOLD_PS         = 1000.0   # every equilibrium hold on the ramp, both directions
-UNBOUND_HOLD_PS = 6000.0   # the hold at u = PULL_DIST, between the two directions
-BOUND_PS        = 5000.0   # boundfwd / boundrev, the restraint switch (no pull)
-NPT_PS          = 10000.0  # per-cycle equilibration of the bound state
-NPT_INIT_PS     = 11000.0  # setup equilibration, once per structure
+# THE BOUND LEG IS STAGED TOO, for the same reason the ramp is: at 5 ns each way it
+# dissipated 69.8 kJ/mol against a work width of 29.4, i.e. 2.4 sigma, and forward
+# and reverse histograms 2.4 sigma apart do not meet. Split and retimed it is
+# 0.6 sigma per sub-leg.
+#
+# The boundary is at lambda = 0.25 and NOT at the 0.125 an equal-dissipation split
+# of the CURRENT uniform rate suggests. Once the two sub-legs carry their own rates
+# the equal-dissipation point moves: 0.25 gives 34.5 kJ/mol round trip against
+# 38.5 at 0.125, and balances them (0.59/0.60 sigma against 0.35/0.96). 42% of the
+# leg's dissipation is still in the first tenth of lambda, which is why the split is
+# this asymmetric in lambda and near-symmetric in time.
+#
+# (sub-leg name, lambda_from, lambda_to, ps) for the FORWARD direction; the reverse
+# runs them backwards, exactly as the ramp does.
+BOUND = [
+    ("1", 0.0,  0.25, 3750.0),
+    ("2", 0.25, 1.0,  3750.0),
+]
+
+# HOLD LENGTHS ARE MEASURED, NOT ASSUMED. dH/dlambda is written during a hold, so
+# how long one needs is a question the data answers: the autocorrelation time is
+# 11-16 ps on the ramp and 39 ps at u = 1, the relaxation profiles are flat after the
+# first tenth, and the end-of-hold state does not predict the next stage's work
+# (r = +0.06 over 49 cycles). The 1000 ps holds were 60-90 tau.
+#
+# The exception is the bound <-> ramp handoff. holdfwd0 and holdrev0 settle at 500
+# and 700 ps, about 40 tau, where the purely mid-ramp holds settle in 0-300. They
+# cross a change of restraint regime rather than a lambda step, so they keep 1 ns.
+# The bound leg's own internal hold is a handoff of the same kind and keeps 1 ns too.
+RAMP_HOLD_PS    = 500.0    # holds between ramp stages, both directions
+HANDOFF_HOLD_PS = 1000.0   # holdfwd0 / holdrev0, and the bound leg's internal hold
+UNBOUND_HOLD_PS = 5000.0   # the hold at u = PULL_DIST, between the two directions
+NPT_PS          = 20000.0  # per-cycle equilibration of the bound state
+NPT_INIT_PS     = 20000.0  # ONE probe replica; N_PROBES of them run per structure
+
+# Independent probe equilibrations per structure. Every restraint and every anchor
+# is measured on the POOLED last half of all of them, because the alternative is
+# what three repeats of one protocol measured: dG_bind scattering 14.4 kJ/mol
+# between runs against a within-run bootstrap of 4.4, since all 50 cycles of a run
+# share one probe, one triad and one spring set and resampling cycles cannot see it.
+N_PROBES        = 5
+PROBE_SKIP_FRAC = 0.5      # discard this much of each replica before measuring
 
 # Trajectory frame interval, ps. The setup equilibration is the input to the
 # anchor selection and needs frames to measure a backbone RMSF from; nothing else
@@ -105,9 +142,19 @@ def _check():
                              % (a[0], a[2], b[0], b[1]))
     if len({s[0] for s in RAMP}) != len(RAMP):
         raise ValueError("stage letters must be unique")
+    # The bound leg is checked the same way, in lambda instead of u.
+    if BOUND[0][1] != 0.0 or abs(BOUND[-1][2] - 1.0) > 1e-12:
+        raise ValueError("the bound leg must run lambda 0 -> 1")
+    for a, b in zip(BOUND, BOUND[1:]):
+        if abs(a[2] - b[1]) > 1e-12:
+            raise ValueError("bound sub-legs must be contiguous: %s ends at %g, %s starts at %g"
+                             % (a[0], a[2], b[0], b[1]))
+    if len({s[0] for s in BOUND}) != len(BOUND):
+        raise ValueError("bound sub-leg names must be unique")
 _check()
 
 RAMP_PS = sum(s[3] for s in RAMP)
+BOUND_PS = sum(s[3] for s in BOUND)
 
 def legs():
     """The whole cycle in run order.
@@ -137,13 +184,20 @@ def legs():
                         pull=pull, dhdl=dhdl, stage=stage, dirn=dirn))
 
     # Bound state: the interface restraints are switched on with the partners in
-    # place. u is 0 throughout, and lambda runs the full 0 -> 1.
-    add("boundfwd", "boundfwd.mdp", "bound", BOUND_PS, 0.0, 0.0, False, True,
-        dirn="fwd", lam=(0.0, 1.0))
+    # place. u is 0 throughout, and lambda runs the full 0 -> 1 in BOUND sub-legs,
+    # with an equilibrium hold at each internal boundary exactly as on the ramp.
+    for i, (name, l0, l1, ps) in enumerate(BOUND):
+        if i:
+            add("holdbfwd%d" % i, "holdbfwd%d_fe.mdp" % i, "hold", HANDOFF_HOLD_PS,
+                0.0, 0.0, False, False, lam=(l0, l0))
+        add("boundfwd%s" % name, "boundfwd%s.mdp" % name, "bound", ps, 0.0, 0.0,
+            False, True, stage=name, dirn="fwd", lam=(l0, l1))
 
     # Forward: hold at every boundary the stage is about to leave, then the stage.
+    # The first one is the bound -> ramp handoff and is longer; see HANDOFF_HOLD_PS.
     for i, (letter, u0, u1, ps) in enumerate(RAMP):
-        add("holdfwd%d" % i, "holdfwd%d_fe.mdp" % i, "hold", HOLD_PS, u0, u0, False, False)
+        add("holdfwd%d" % i, "holdfwd%d_fe.mdp" % i, "hold",
+            HANDOFF_HOLD_PS if i == 0 else RAMP_HOLD_PS, u0, u0, False, False)
         add("bindfwd%s" % letter, "bindfwd%s_fe.mdp" % letter, "stage", ps, u0, u1,
             True, True, stage=letter, dirn="fwd")
 
@@ -155,13 +209,20 @@ def legs():
         letter, u0, u1, ps = RAMP[i]
         if i < len(RAMP) - 1:
             add("holdrev%d" % (i + 1), "holdrev%d_fe.mdp" % (i + 1), "hold",
-                HOLD_PS, u1, u1, False, False)
+                RAMP_HOLD_PS, u1, u1, False, False)
         add("bindrev%s" % letter, "bindrev%s_fe.mdp" % letter, "stage", ps, u1, u0,
             True, True, stage=letter, dirn="rev")
-    add("holdrev0", "holdrev0_fe.mdp", "hold", HOLD_PS, 0.0, 0.0, False, False)
+    add("holdrev0", "holdrev0_fe.mdp", "hold", HANDOFF_HOLD_PS, 0.0, 0.0, False, False)
 
-    add("boundrev", "boundrev.mdp", "bound", BOUND_PS, 0.0, 0.0, False, True,
-        dirn="rev", lam=(1.0, 0.0))
+    # Reverse bound leg: the sub-legs run backwards, each retracing its own lambda
+    # span, so the whole cycle is the exact time-reverse Crooks requires.
+    for i in range(len(BOUND) - 1, -1, -1):
+        name, l0, l1, ps = BOUND[i]
+        if i < len(BOUND) - 1:
+            add("holdbrev%d" % (i + 1), "holdbrev%d_fe.mdp" % (i + 1), "hold",
+                HANDOFF_HOLD_PS, 0.0, 0.0, False, False, lam=(l1, l1))
+        add("boundrev%s" % name, "boundrev%s.mdp" % name, "bound", ps, 0.0, 0.0,
+            False, True, stage=name, dirn="rev", lam=(l1, l0))
     return out
 
 def cycle_ps():
@@ -174,16 +235,33 @@ def works():
     at that stage's own rate and the dhdl channel over that stage's own lambda
     span; both come from the leg's mdp, which is why the leg name is carried
     here rather than the numbers.
+
+    The row is laid out so that a sub-leg's forward field and its reverse field are
+    mirror images about the centre: bound-forward fields, then the ramp stages
+    forward then reverse, then bound-reverse. Sub-leg j of either group therefore
+    pairs with the j-th field counted from its group's other end, which is the rule
+    read_works uses and the only reason the reverse ordering is not arbitrary.
     """
-    out = [("W_intro", "boundfwd", "dhdl", "fwd")]
-    for l in legs():
+    L = legs()
+    out = [("W_intro%s" % l["stage"], l["name"], "dhdl", "fwd")
+           for l in L if l["kind"] == "bound" and l["dirn"] == "fwd"]
+    for l in L:
         if l["kind"] != "stage":
             continue
         tag = "u" if l["dirn"] == "fwd" else "r"
         out.append(("W%s%s_pull" % (tag, l["stage"]), l["name"], "pull", l["dirn"]))
         out.append(("W%s%s_dhdl" % (tag, l["stage"]), l["name"], "dhdl", l["dirn"]))
-    out.append(("W_remove", "boundrev", "dhdl", "rev"))
+    out += [("W_remove%s" % l["stage"], l["name"], "dhdl", "rev")
+            for l in L if l["kind"] == "bound" and l["dirn"] == "rev"]
     return out
+
+def n_bound():
+    """Bound sub-legs per direction."""
+    return len(BOUND)
+
+def n_stages():
+    """Ramp stages per direction."""
+    return len(RAMP)
 
 def result_nf():
     """Fields in one results_fe.d row: id, cycle, the works, the RMSD."""
@@ -221,6 +299,11 @@ def _shell():
     cannot fall out of step with the protocol it is running."""
     L = legs()
     print("FE_RESULT_NF=%d" % result_nf())
+    # Setup shape, so job_fe.run cannot disagree with the protocol about how
+    # many probe replicas to run or how much of each to discard.
+    print("N_PROBES=%d" % N_PROBES)
+    print("FE_PROBE_PS=%g" % NPT_INIT_PS)
+    print("FE_PROBE_SKIP_PS=%g" % (NPT_INIT_PS * PROBE_SKIP_FRAC))
     print("FE_RAMP_STAGES=(%s)" % " ".join(stage_letters()))
     print("FE_LEGS=(%s)" % " ".join(l["name"] for l in L))
     print("FE_LEG_MDP=(%s)" % " ".join(l["mdp"] for l in L))

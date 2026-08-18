@@ -128,7 +128,8 @@ if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   # are measured from is derived from the probe run and is guarded on its own
   # existence, so a stale one would be reused against a re-derived topology.
   # `npt_probe.*` does not match `npt_probe_cluster.gro`.
-  rm -f npt_probe.* npt_probe_* boxpad.gs boxpad.tmp boxpad_used.gs
+  rm -f npt_probe.* npt_probe_* npt_probe[0-9]* nvt_[1-5]_probe[0-9]* \
+        boxpad.gs boxpad.tmp boxpad_used.gs
   rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
   rm -rf amber19sb.ff
 fi
@@ -669,34 +670,58 @@ with open('$CUTOUT_PDB', 'w') as f:
           echo -e "! \"Water\"\nq\n" | gmx make_ndx -f emin_probe.gro -o index_probe.ndx
           python3 ../../utils/make_cluster_group.py -f emin_probe.gro -n index_probe.ndx
         fi
-        prev=emin_probe
-        for stage in 1 2 3 4 5; do
-          if [[ ! -f nvt_${stage}_probe.gro ]]; then
-            if [[ "$prev" == "emin_probe" ]]; then
-              gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c emin_probe.gro -p topol_probe.top -o nvt_${stage}_probe -n index_probe.ndx -maxwarn 10
-            else
-              gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o nvt_${stage}_probe -n index_probe.ndx -maxwarn 10
+        # INDEPENDENT PROBE REPLICAS. Every restraint, every anchor and the box
+        # are measured on the pooled second half of all of them.
+        #
+        # One probe was the largest single source of irreproducibility in the
+        # method: three repeats of one protocol scattered 14.4 kJ/mol on dG_bind
+        # against a within-run bootstrap of 4.4, because all 50 cycles of a run
+        # share one probe, one Boresch triad and one spring set, and resampling
+        # cycles holds every one of those fixed. Averaging over replicas is the
+        # only part of the design that touches that term.
+        #
+        # The NVT ladder is re-run per replica rather than branching all of them
+        # off one equilibrated state: gen_seed = -1 gives fresh velocities, but
+        # branching late would leave them sharing most of their history, which is
+        # the correlation this is meant to break.
+        PROBE_TRAJ=(); PROBE_TPR=()
+        for rep in $(seq 1 $N_PROBES); do
+          prev=emin_probe
+          for stage in 1 2 3 4 5; do
+            if [[ ! -f nvt_${stage}_probe${rep}.gro ]]; then
+              if [[ "$prev" == "emin_probe" ]]; then
+                gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c emin_probe.gro -p topol_probe.top -o nvt_${stage}_probe${rep} -n index_probe.ndx -maxwarn 10
+              else
+                gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o nvt_${stage}_probe${rep} -n index_probe.ndx -maxwarn 10
+              fi
+              timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_${stage}_probe${rep}
             fi
-            timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_${stage}_probe
+            prev=nvt_${stage}_probe${rep}
+          done
+          if [[ ! -f npt_probe${rep}.tpr ]]; then
+            gmx grompp -r emin_probe.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_probe${rep}.tpr -t nvt_5_probe${rep}.cpt -p topol_probe.top -o npt_probe${rep} -n index_probe.ndx -maxwarn 10
           fi
-          prev=nvt_${stage}_probe
+          if [[ ! -f npt_probe${rep}.gro ]]; then
+            CPI=""
+            [[ -f npt_probe${rep}.cpt ]] && CPI="-cpi npt_probe${rep}.cpt"
+            timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_probe${rep} $CPI
+          fi
+          if [[ ! -f npt_probe${rep}.gro ]]; then
+            echo "Stage 0 failed: probe replica $rep did not finish (no npt_probe${rep}.gro)."
+            echo "  Re-running this structure resumes from npt_probe${rep}.cpt."
+            echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+            exit 0
+          fi
+          PROBE_TRAJ+=(npt_probe${rep}.xtc); PROBE_TPR+=(npt_probe${rep}.tpr)
         done
-        if [[ ! -f npt_probe.tpr ]]; then
-          gmx grompp -r emin_probe.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_probe.tpr -t nvt_5_probe.cpt -p topol_probe.top -o npt_probe -n index_probe.ndx -maxwarn 10
-        fi
-        if [[ ! -f npt_probe.gro ]]; then
-          CPI=""
-          [[ -f npt_probe.cpt ]] && CPI="-cpi npt_probe.cpt"
-          timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_probe $CPI
-        fi
-        if [[ ! -f npt_probe.gro ]]; then
-          echo "Stage 0 failed: probe equilibration did not finish (no npt_probe.gro)."
-          echo "  Re-running this structure resumes from npt_probe.cpt."
-          echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
-          exit 0
-        fi
-        # Running maximum over the whole probe run, on Protein_Struct, clustered.
-        python3 ../../utils/measure_box.py -f npt_probe.xtc -s npt_probe.tpr \
+        # Replica 1 is the structure the restraint set is BUILT on -- which pairs
+        # are contacts, which residues are anchors. Where each one SITS is the
+        # pooled average, which is the part that was a lottery before.
+        ln -sf npt_probe1.gro npt_probe.gro
+        ln -sf npt_probe1.tpr npt_probe.tpr
+        # Running maximum over every replica, on Protein_Struct, clustered: the box
+        # has to hold whichever one swung widest.
+        python3 ../../utils/measure_box.py -f "${PROBE_TRAJ[@]}" -s "${PROBE_TPR[@]}" \
                 -n index_probe.ndx -g Protein_Struct -c emin_vac.gro \
                 --pad 1.5 > boxpad.tmp
         MB_RC=$?
@@ -888,7 +913,19 @@ with open('$CUTOUT_PDB', 'w') as f:
   # The probe is the only equilibration, so there is no second trajectory to fall
   # back to. make_boresch degrades to the burial heuristic on its own if the
   # trajectory is missing or too short, and says so on stderr.
-  BOR_TRAJ=npt_probe.xtc; BOR_TPR=npt_probe.tpr
+  # EVERY replica, pooled. make_boresch concatenates their second halves before
+  # measuring anything, so eps, the anchor ranking, the frame-rotation check, the
+  # interface references and the Boresch geometry are all ensemble quantities.
+  BOR_TRAJ=(); BOR_TPR=()
+  for rep in $(seq 1 $N_PROBES); do
+    [[ -f npt_probe${rep}.xtc ]] && { BOR_TRAJ+=(npt_probe${rep}.xtc); BOR_TPR+=(npt_probe${rep}.tpr); }
+  done
+  # A directory set up before the replicas existed still has the single pair, and
+  # is measured on it exactly as it was.
+  if [[ ${#BOR_TRAJ[@]} -eq 0 ]]; then
+    BOR_TRAJ=(npt_probe.xtc); BOR_TPR=(npt_probe.tpr)
+  fi
+  echo "make_boresch will pool ${#BOR_TRAJ[@]} probe replica(s): ${BOR_TRAJ[*]}"
   # --index takes BOTH indexes: the generated a_*/bor_* groups are solute atom
   # numbers, valid in either system, and the legs run with index.ndx while the
   # readback grompps in the probe system that -f actually came from.
@@ -904,7 +941,8 @@ with open('$CUTOUT_PDB', 'w') as f:
     echo "Interface restraint budget pinned by run_config.gs: sum_k = $SUM_K kJ/mol/nm^2"
   fi
   python3 ../../utils/make_boresch.py -f npt_probe_cluster.gro -m chain_map.gs -T $REF_T \
-      --pull-dist $PULL_DIST --pull-rate 0.00005 --traj $BOR_TRAJ --tpr $BOR_TPR \
+      --pull-dist $PULL_DIST --pull-rate 0.00005 \
+      --traj "${BOR_TRAJ[@]}" --tpr "${BOR_TPR[@]}" \
       --index index.ndx index_probe.ndx \
       --topol topol_probe.top --readback-index index_probe.ndx \
       --box-from emin_solv.gro $SUM_K_OPT > numpertres.tmp
