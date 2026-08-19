@@ -689,6 +689,37 @@ whole` can leave the two proteins in different images; and the three dihedrals a
 averaged **circularly**, since +179 and -179 are two degrees apart and average to
 180, where an arithmetic mean gives 0 and a reference pointing the other way.
 
+#### Which interface pairs get a spring
+
+A pair is a contact if it is inside 0.6 nm, and with the references now averaged
+over the pooled replicas that test is applied to the **mean** distance. A mean
+cannot see how much of the time a pair is actually in contact, and pooling five
+replicas is what makes the difference visible: measured across three runs, 27-40%
+of the springs that survive the mean cutoff sit outside it in more than a quarter
+of the frames, and `r(mean, sd)` is only +0.27 to +0.32, so filtering on the mean
+does not remove them. They hide at short mean distance and swing.
+
+They are not free. A harmonic spring referenced to `r0 = <d>` costs `var(d)`, so
+
+    <W_intro> = 0.5 * sum_k * mean_i(sd_i^2)
+
+which does **not** depend on the number of springs: dropping the widest lowers the
+bound leg's work and its fluctuation even though `k = sum_k/N` rises to compensate.
+The widest 10% of pairs carry 33-48% of `sum(sd^2)`.
+
+So a second criterion applies, `--sd-max`, defaulting to **0.15 nm**. On the three
+runs it takes the final spring count down only 5-8% (322/272/239 to 295/257/227),
+because most wide pairs also sit far out and the two filters overlap, while
+removing 26-40% of the `sum(sd^2)` of the springs the cutoff would have kept
+anyway. Pass `--sd-max 0` to keep every pair; the spread is reported either way,
+and the value is recorded in `boresch_analytical.gs` beside `sum_k`, since it
+selects which springs exist and two directories built at different values do not
+have comparable bound legs.
+
+It refuses to strip the interface bare: if the ceiling would leave fewer than 60
+springs it is not applied at all and says so, because an interface pinned at a
+handful of points is a worse failure than one pinned at some mobile ones.
+
 `make_boresch.py` then takes its geometry from the production reference (`-f`) and its backbone RMSF from the probe trajectories (`--traj`, which takes the whole list of replicas); solute atom numbering is identical between the two systems, only the solvent count differs. On 2KTF the measurement returns `-d 1.844`, within 0.05 nm of the constant it replaces, but it will move on the next complex instead of staying put.
 
 All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and Bussi 2020) at `tau_p` 2.0 ps, with V-rescale for temperature. Berendsen generates no strictly correct ensemble, which matters most for the per-cycle `npt_fe`: its output is the bound-state configuration `boundfwd` starts from, and Crooks assumes those initial states are drawn from the true equilibrium distribution.

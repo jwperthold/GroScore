@@ -49,6 +49,28 @@ from scipy.spatial.distance import cdist
 
 #------------------------------------------------------
 
+# WIDTH CEILING ON AN INTERFACE SPRING, nm. The contact cutoff above is applied to
+# the MEAN distance over the pooled probe replicas, and the mean cannot see how
+# much of the time a pair is actually in contact. Measured across test13/14/15,
+# 27-40% of the springs that survive the mean cutoff are outside it in more than a
+# quarter of the frames, and r(mean, sd) is only +0.27 to +0.32, so filtering on
+# the mean does not remove them: they sit at short mean distance and swing.
+#
+# They are not free. A harmonic spring referenced to r0 = <d> costs var(d), so
+#
+#     <W_intro> = 0.5 * sum_k * mean_i(sd_i^2)
+#
+# which does NOT depend on the number of springs: dropping the widest lowers the
+# bound-leg work and its fluctuation even though k = sum_k/N rises to compensate.
+# The widest 10% of pairs carry 33-48% of sum(sd^2) on those runs.
+#
+# 0.15 nm is where that trade is best: it keeps 92-95% of the springs, so the
+# interface is still pinned at nearly as many points, while cutting the modelled
+# bound-leg work to 63-78%. Dropping on intermittency directly instead removes a
+# third of the interface for a similar gain, which is a worse trade.
+SD_MAX_DEFAULT = 0.15
+SD_MIN_KEEP = 60          # never let the width ceiling take the set below this
+
 parser = argparse.ArgumentParser(description="Generate Boresch + interface + elastic-network pull config for the FE protocol.")
 parser.add_argument('-f', '--input', type=str, default="npt_probe_cluster.gro",
                     help="Reference structure the restraints are measured from "
@@ -58,13 +80,14 @@ parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
-parser.add_argument('--sd-max', dest='sd_max', type=float, default=None,
+parser.add_argument('--sd-max', dest='sd_max', type=float, default=SD_MAX_DEFAULT,
                     help="Drop interface pairs whose distance standard deviation "
-                         "over the pooled probe replicas exceeds this, in nm. Off "
-                         "by default: the spread is REPORTED always, and whether an "
-                         "intermittent contact should be restrained is a modelling "
-                         "choice, not a default. Dropping pairs also raises k on "
-                         "the ones that remain, since sum_k is fixed.")
+                         "over the pooled probe replicas exceeds this, in nm "
+                         "(default: %g). A pair wider than this is not a contact "
+                         "being restrained, it is an average of a contact and a "
+                         "gap. Pass 0 or a negative value to keep every pair; the "
+                         "spread is reported either way."
+                         % SD_MAX_DEFAULT)
 parser.add_argument('--sum-k', dest='sum_k', type=float, default=12500.0, help="Total interface restraint stiffness in kJ/mol/nm^2, split evenly over however many springs there are (k = sum_k/N). It sets the work of switching the interface restraints on, which is 0.5*sum_k*<(d-r0)^2> and is the largest single term in the bound leg; it also sets how hard the springs pull before the Boresch takes over, so it cannot go arbitrarily low. The ramp boundaries in fe_protocol.py were measured at this value and do not transfer to another one unchanged. Default 12500.")
 parser.add_argument('--traj', type=str, nargs='+', default=["npt_probe.xtc"],
                     help="Equilibration trajectory used to measure backbone "
@@ -146,6 +169,7 @@ ANG_LO, ANG_HI = 45.0, 135.0   # Boresch angle window, keeps eq.32 valid
 
 # Interface / elastic-network parameters (identical to make_disres_en.py)
 interfacecutoff = 0.6
+
 en_min = 0.4
 en_max = 0.9
 enk = 250.0
@@ -820,9 +844,10 @@ def load_backbone_trajectory(atom_numbers):
         os.remove(f)
 
 
-# --sd-max, or None. Bound here rather than read from args inside the routine so
-# that the routine stays testable without an argv.
-SD_MAX_NM = args.sd_max
+# --sd-max, or None when the user disabled it with a non-positive value. Bound
+# here rather than read from args inside the routine so that the routine stays
+# testable without an argv.
+SD_MAX_NM = args.sd_max if (args.sd_max or 0) > 0 else None
 
 
 def reference_on_ensemble(pairs):
@@ -931,9 +956,37 @@ def reference_on_ensemble(pairs):
          n_int, interfacecutoff, n_in))
   if SD_MAX_NM is not None:
     drop = sd > SD_MAX_NM
-    if drop.any():
-      sys.stderr.write("make_boresch: --sd-max %.3f nm drops %d of %d pairs\n"
-                       % (SD_MAX_NM, int(drop.sum()), len(sd)))
+    # A ceiling that would leave almost nothing is refused rather than obeyed. The
+    # springs exist to hold the pose while the Boresch set takes over, and an
+    # interface pinned at a handful of points is a worse failure than one pinned at
+    # some wide ones. On test13/14/15 this ceiling drops 5-8%, nowhere near the
+    # floor, so tripping it means the interface is unlike anything measured here
+    # and the ceiling is the wrong tool for it.
+    if drop.all() or (len(sd) - int(drop.sum())) < SD_MIN_KEEP:
+      sys.stderr.write(
+          "make_boresch: --sd-max %.3f nm would leave only %d of %d springs, below "
+          "the floor of %d; KEEPING ALL PAIRS. This interface is much more mobile "
+          "than the ceiling assumes -- check the spread line above before "
+          "trusting the bound leg.\n"
+          % (SD_MAX_NM, len(sd) - int(drop.sum()), len(sd), SD_MIN_KEEP))
+    elif drop.any():
+      # The saving is quoted against the pairs the MEAN cutoff would have kept
+      # anyway, not against all candidates. Most wide pairs also sit far out, so
+      # the two filters overlap heavily and quoting the whole candidate set would
+      # credit this ceiling with removals the cutoff below was going to make. On
+      # test13/14/15 the honest figure is 22-37%; the candidate-set figure is
+      # 84-93%, and would be nonsense.
+      surv = mean <= interfacecutoff
+      s_all = float((sd[surv] ** 2).sum())
+      s_cut = float((sd[surv & drop] ** 2).sum())
+      sys.stderr.write(
+          "make_boresch: --sd-max %.3f nm drops %d of %d candidates (%.0f%%). Of "
+          "the pairs the contact cutoff would have kept regardless, it removes "
+          "%d of %d and %.0f%% of their sum(sd^2), which is the part of the bound "
+          "leg's work and fluctuation this actually saves.\n"
+          % (SD_MAX_NM, int(drop.sum()), len(sd), 100.0 * drop.mean(),
+             int((surv & drop).sum()), int(surv.sum()),
+             100.0 * s_cut / max(s_all, 1e-12)))
       keep = ~drop
       pairs = [p for p, k in zip(pairs, keep) if k]
       mean = mean[keep]
@@ -1746,6 +1799,10 @@ with open("boresch_analytical.gs", "w") as f:
   # having to remember which sum-k the directory was set up with.
   f.write("sum_k_kJ_mol_nm2      %.4f\n" % args.sum_k)
   f.write("n_interface_springs   %d\n" % numinterdis)
+  # Recorded for the same reason as sum_k: it selects WHICH springs exist, so two
+  # directories built at different values do not have comparable bound legs.
+  f.write("sd_max_nm             %s\n"
+          % ("%.4f" % SD_MAX_NM if SD_MAX_NM is not None else "off"))
   f.write("ref_thetaA_deg        %.4f\n" % ref_thA)
   f.write("ref_thetaB_deg        %.4f\n" % ref_thB)
   f.write("ref_phiA_deg          %.4f\n" % ref_phA)
