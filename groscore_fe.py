@@ -92,12 +92,34 @@ parser.add_argument('--sum-k', dest='sum_k', type=float, default=None,
                          "restraint noise for pulling authority (default: the "
                          "remembered value, or DEFAULT_SUM_K = 12500 for a fresh "
                          "directory).")
+parser.add_argument('--sd-max', dest='sd_max', type=float, default=None,
+                    help="Ceiling on an interface pair's distance standard deviation "
+                         "over the pooled probe replicas, in nm; wider pairs get no "
+                         "spring. Remembered in run_config.gs like --sum-k, and for "
+                         "the same reason: it selects WHICH springs exist, so two "
+                         "directories built at different values do not have "
+                         "comparable bound legs. 0 keeps every pair (default: the "
+                         "remembered value, or DEFAULT_SD_MAX for a fresh directory).")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
-parser.add_argument('-ff', '--forcefield', type=str, default="amber19sb_opc3",
+parser.add_argument('-ff', '--forcefield', type=str, default=None,
                     choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
-                    help="Force field (default: amber19sb_opc3).")
-parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout.")
-parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Disable OpenFF small-molecule parametrization.")
+                    help="Force field (default: amber19sb_opc3). Remembered in "
+                         "run_config.gs: a directory whose cycles were built under "
+                         "one force field cannot have the rest built under another.")
+# store_const with default None rather than store_false: a remembered setting can
+# only be honoured if "the user said nothing" is distinguishable from "the user
+# asked for the default", which store_false cannot express. The positive form is
+# added so a directory can be changed back, not only away.
+parser.add_argument('--no-cutout', dest='cutout', action='store_const', const=False,
+                    default=None, help="Disable interface cutout.")
+parser.add_argument('--cutout', dest='cutout', action='store_const', const=True,
+                    default=None, help="Enable interface cutout (the default).")
+parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_const',
+                    const=False, default=None,
+                    help="Disable OpenFF small-molecule parametrization.")
+parser.add_argument('--ligand-param', dest='ligand_param', action='store_const',
+                    const=True, default=None,
+                    help="Enable OpenFF small-molecule parametrization (the default).")
 parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ (default: workstation).")
 parser.add_argument('--run-local', dest='run_local', action='store_true',
                     help="Run on this machine instead of submitting to SLURM. Setup jobs and "
@@ -117,7 +139,10 @@ parser.add_argument('--restart', action='store_true',
                     help="Submit again for an existing run: re-queues missing/failed cycles "
                          "and, with a larger -n, adds new ones.")
 parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job_fe.run into archived (.tar.gz) structures.")
-parser.add_argument('--temp', type=float, default=310.0, help="Temperature in K (default: 310).")
+parser.add_argument('--temp', type=float, default=None,
+                    help="Temperature in K (default: 310). Remembered in "
+                         "run_config.gs: it sets RT for pKD and for BAR, so scoring "
+                         "the same works at two temperatures gives two answers.")
 parser.add_argument('--n-boot-bar', dest='n_boot_bar', type=int, default=5000, metavar='N',
                     help="Bootstrap rows for the BAR confidence intervals (default: 5000). "
                          "avg and CGI always use 50000; BAR is a root-find per row rather "
@@ -135,7 +160,6 @@ parser.add_argument('--array-throttle', type=int, default=0, metavar='N',
 parser.add_argument('--sequential', action='store_true',
                     help="Legacy submission: one job per structure running all cycles "
                          "sequentially, instead of a setup job + per-cycle job array.")
-parser.set_defaults(cutout=True, ligand_param=True)
 args = parser.parse_args()
 
 if args.run_local and args.ngpus < 1:
@@ -190,6 +214,17 @@ DEFAULT_NUMRUNS = 50
 # by the next invocation that omitted the flag.
 DEFAULT_SUM_K = 12500.0
 
+# Width ceiling on an interface spring, nm. Pinned equal to make_boresch.py's own
+# SD_MAX_DEFAULT by tests/test_sd_max.py, exactly as DEFAULT_SUM_K is pinned to its
+# --sum-k default: this file records the value in run_config.gs and job_fe.run
+# passes it on, so the two must not drift. 0 means keep every pair.
+#
+# It belongs in the remembered set for the same reason sum_k does, and slightly
+# more sharply: sum_k scales the springs, this decides WHICH of them exist, so a
+# directory that built half its cycles at one value and half at another has two
+# different bound legs pooled into one number.
+DEFAULT_SD_MAX = 0.15
+
 
 def read_run_config():
   cfg = {}
@@ -217,41 +252,73 @@ def write_run_config(**kw):
       f.write("%s\t%s\n" % (key, cfg[key]))
 
 
-_cfg = read_run_config()
-NUMRUNS_REMEMBERED = False
-if args.numruns is None:
-  try:
-    args.numruns = int(_cfg["numruns"])
-    NUMRUNS_REMEMBERED = True
-  except (KeyError, ValueError):
-    args.numruns = DEFAULT_NUMRUNS
-# Recorded even when it is the default, so the fallback the paragraph above warns
-# about can never be reached: a directory always states its own target.
-if _cfg.get("numruns") != str(args.numruns):
-  write_run_config(numruns=args.numruns)
+# EVERY SETTING THAT CHANGES WHAT IS SIMULATED IS REMEMBERED, from this one table.
+#
+# A run directory is filled in over days by repeated invocations -- topping up
+# cycles, restarting failures, re-scoring -- and each of those is a fresh command
+# line. Anything that alters what is simulated must therefore come from the
+# DIRECTORY rather than from whichever command line happened to run last, or the
+# cycles in one directory stop being samples of one thing. That is not hypothetical:
+# sum_k selects the springs, sd_max selects which of them survive, the force field
+# selects the topology, and a --restart that silently omitted any of them would
+# build the remaining cycles against a different system and pool them anyway.
+#
+# The rule for each entry: an explicit value wins and WARNS if it differs from what
+# the directory already has; no value takes the remembered one; a fresh directory
+# takes the default and RECORDS it, so a directory always states its own settings
+# rather than relying on a default that may move under it.
+#
+# What is deliberately NOT here: everything about how the work is scheduled or
+# reported rather than what it is. --slurm, --run-local, --ngpus, --jobs-per-gpu,
+# --threads-per-job, --array-throttle, --sequential, --restart, --inject-job-run
+# are scheduling; -s is which structures; --n-boot-bar and --rmsd-warn only change
+# how finished works are summarised and can be varied freely on the same data.
+#
+#         attr           key            parse   format             default
+REMEMBERED = [
+  ("numruns",      "numruns",      int,   lambda v: "%d" % v, lambda: DEFAULT_NUMRUNS,
+   "how many cycles this directory is aiming for"),
+  ("sum_k",        "sum_k",        float, lambda v: "%g" % v, lambda: DEFAULT_SUM_K,
+   "the interface stiffness budget, so works from two values are not comparable"),
+  ("sd_max",       "sd_max",       float, lambda v: "%g" % v, lambda: DEFAULT_SD_MAX,
+   "which interface pairs get a spring at all, so the bound legs differ"),
+  ("forcefield",   "forcefield",   str,   lambda v: "%s" % v, lambda: "amber19sb_opc3",
+   "the force field, so the topology itself differs"),
+  ("temp",         "temp",         float, lambda v: "%g" % v, lambda: 310.0,
+   "the temperature RT is taken at, so pKD and BAR both move"),
+  ("cutout",       "cutout",       lambda x: x == "1", lambda v: "1" if v else "0",
+   lambda: True, "whether the interface is cut out, so the system differs"),
+  ("ligand_param", "ligand_param", lambda x: x == "1", lambda v: "1" if v else "0",
+   lambda: True, "whether small molecules are parametrised, so the topology differs"),
+]
 
-# sum_k travels the same way, and for a stronger reason: it is a property of the
-# restraint set, so every cycle in a directory must be built with the same value or
-# their works are not comparable. Remembering it means the second invocation cannot
-# quietly build the rest of the cycles at a different stiffness. job_fe.run reads
-# this file and passes the value to make_boresch.py.
-SUM_K_REMEMBERED = False
-if args.sum_k is None:
-  try:
-    args.sum_k = float(_cfg["sum_k"])
-    SUM_K_REMEMBERED = True
-  except (KeyError, ValueError):
-    args.sum_k = DEFAULT_SUM_K
-elif "sum_k" in _cfg and _cfg["sum_k"] != ("%g" % args.sum_k):
-  print("WARNING: this directory was set up with sum_k = %s and you asked for %g."
-        % (_cfg["sum_k"], args.sum_k))
-  print("  Cycles already built keep the old value; only structures whose setup")
-  print("  re-runs will pick up the new one, and works from the two are not")
-  print("  comparable. Use a fresh directory unless that is what you meant.")
-# Recorded even when it is the default, so a directory always states its own
-# stiffness and job_fe.run always has an explicit value to pass on.
-if _cfg.get("sum_k") != ("%g" % args.sum_k):
-  write_run_config(sum_k="%g" % args.sum_k)
+_cfg = read_run_config()
+REMEMBERED_FROM_CFG = set()
+_to_write = {}
+for _attr, _key, _parse, _fmt, _default, _why in REMEMBERED:
+  _given = getattr(args, _attr)
+  if _given is None:
+    try:
+      setattr(args, _attr, _parse(_cfg[_key]))
+      REMEMBERED_FROM_CFG.add(_attr)
+    except (KeyError, ValueError):
+      setattr(args, _attr, _default())
+  elif _key in _cfg and _cfg[_key] != _fmt(_given):
+    print("WARNING: this directory was set up with %s = %s and you asked for %s."
+          % (_key, _cfg[_key], _fmt(_given)))
+    print("  That is %s." % _why)
+    print("  Cycles already built keep the old value; only structures whose setup")
+    print("  re-runs will pick up the new one, and works from the two are not")
+    print("  comparable. Use a fresh directory unless that is what you meant.")
+  _now = _fmt(getattr(args, _attr))
+  if _cfg.get(_key) != _now:
+    _to_write[_key] = _now
+if _to_write:
+  write_run_config(**_to_write)
+
+# Kept as names because the submission summary reads them.
+NUMRUNS_REMEMBERED = "numruns" in REMEMBERED_FROM_CFG
+SUM_K_REMEMBERED = "sum_k" in REMEMBERED_FROM_CFG
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
 from local_runner import launch_local, print_local_status

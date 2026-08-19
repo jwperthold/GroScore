@@ -983,12 +983,24 @@ with open('$CUTOUT_PDB', 'w') as f:
     SUM_K_OPT="--sum-k $SUM_K"
     echo "Interface restraint budget pinned by run_config.gs: sum_k = $SUM_K kJ/mol/nm^2"
   fi
+  # The width ceiling travels the same way and for a sharper reason: sum_k scales
+  # the springs, sd_max decides which of them exist at all, so a directory that
+  # built half its cycles at one value and half at another has two different bound
+  # legs pooled into one number. groscore_fe.py records it on every invocation, so
+  # an absent line means a directory from before it was remembered; make_boresch's
+  # own default then applies, which is what those cycles were built with anyway.
+  SD_MAX=$(awk '$1=="sd_max"{print $2; exit}' ../run_config.gs 2>/dev/null)
+  SD_MAX_OPT=""
+  if [[ -n "$SD_MAX" ]]; then
+    SD_MAX_OPT="--sd-max $SD_MAX"
+    echo "Interface spring width ceiling pinned by run_config.gs: sd_max = $SD_MAX nm"
+  fi
   python3 ../../utils/make_boresch.py -f npt_probe_cluster.gro -m chain_map.gs -T $REF_T \
       --pull-dist $PULL_DIST --pull-rate 0.00005 \
       --traj "${BOR_TRAJ[@]}" --tpr "${BOR_TPR[@]}" \
       --index index.ndx index_probe.ndx \
       --topol topol_probe.top --readback-index index_probe.ndx \
-      --box-from emin_solv.gro $SUM_K_OPT > numpertres.tmp
+      --box-from emin_solv.gro $SUM_K_OPT $SD_MAX_OPT > numpertres.tmp
   MB_RC=$?
   # If Boresch anchor selection failed, flag the structure and stop.
   if [[ -f boresch_failed.gs ]]; then
