@@ -145,14 +145,37 @@ def two_cols(path):
     return a[:, 0], a[:, 1]
 
 
+# (nbound, nstages) by row width: the CURRENT protocol first, then widths that
+# SHIPPED under an earlier one, then the old rule as the last fallback. Kept in
+# step with groscore_fe.read_works by tests/test_leg_efficiency_layout.py.
+_CUR = {_P.result_nf(): (_P.n_bound(), _P.n_stages())}
+_PAST = {31: (2, 6)}
+
+
+def _layout(nf):
+    if nf in _CUR:
+        return _CUR[nf]
+    if nf in _PAST:
+        return _PAST[nf]
+    if nf >= 9 and (nf - 5) % 4 == 0:
+        return 1, (nf - 5) // 4
+    return None
+
+
 def read_works():
     """{cycle: [W_intro, <4 works per stage>, W_remove]} with the stages in
     forward order, i.e. the reverse pairs reordered out of the protocol's
     run order. NaN rows dropped exactly as groscore_fe.read_works drops them.
 
-    The stage count comes from the row width, nstages = (NF - 5) / 4, so rows
-    from every earlier protocol still parse. NSTAGES records what each cycle
-    actually carried."""
+    The layout comes from the row WIDTH, and the width has to be resolved the way
+    groscore_fe.read_works resolves it, not by the old (NF - 5) / 4 rule alone.
+    That rule hardcodes exactly two non-stage work fields, so it cannot express a
+    split bound leg: a 27-field row gives 5.5, matches nothing, and EVERY row is
+    rejected. This tool reported "no complete cycles" for the entire five-stage
+    protocol for that reason -- a silent-drop of the same family as the one
+    groscore_fe closed, and the reason the layout is asked of fe_protocol here too.
+
+    NSTAGES records what each cycle actually carried."""
     out = {}
     pat = os.path.join(args.resultsdir, "%s_c*.gs" % args.struct)
     # Legacy results_fe.gs FIRST, per-cycle files last, because the last writer of
@@ -165,10 +188,13 @@ def read_works():
         for line in open(path):
             f = line.split()
             nf = len(f)
-            if nf < 9 or (nf - 5) % 4 != 0 or f[0] != args.struct:
+            if f[0] != args.struct:
                 continue
-            ns = (nf - 5) // 4
-            nw = 2 + 4 * ns
+            lay = _layout(nf) or _layout(nf + 1)     # rows with and without RMSD
+            if lay is None:
+                continue
+            nb, ns = lay
+            nw = 2 * nb + 4 * ns
             try:
                 vals = [float(x) for x in f[2:2 + nw]]
             except ValueError:
@@ -177,26 +203,36 @@ def read_works():
                 continue
             out[int(f[1])] = vals
             NSTAGES[int(f[1])] = ns
+            NBOUND[int(f[1])] = nb
     return out
 
 
 NSTAGES = {}
+NBOUND = {}
 
 
 def leg_pair(works):
     """(forward, sign-aligned reverse) works of the selected leg, per cycle."""
     ks = sorted(works)
     ns = NSTAGES[ks[0]]
+    nb = NBOUND[ks[0]]
     if args.leg == "bound":
-        f = np.array([works[c][0] for c in ks])
-        r_raw = np.array([works[c][-1] for c in ks])
+        # The bound leg may be SPLIT. Its sub-leg works sum to the work of the whole
+        # switch (the holds between them do none), so the whole leg is their sum,
+        # forward parts at the front of the row and reverse parts mirrored at the
+        # back. Taking works[c][0] and works[c][-1] was right only while there was
+        # exactly one of each.
+        nb = NBOUND[ks[0]]
+        nw = len(works[ks[0]])
+        f = np.array([sum(works[c][i] for i in range(nb)) for c in ks])
+        r_raw = np.array([sum(works[c][nw - 1 - i] for i in range(nb)) for c in ks])
         return ks, f, r_raw, -r_raw
 
     def stage(i, sign_p, sign_r):
         """Stage i of the row, forward and reverse. The reverse pairs are stored
         in the order they run, which is the reverse of the forward order."""
-        j = 1 + 2 * i
-        k = 1 + 2 * ns + 2 * (ns - 1 - i)
+        j = nb + 2 * i
+        k = nb + 2 * ns + 2 * (ns - 1 - i)
         return (np.array([sign_p * works[c][j] + works[c][j + 1] for c in ks]),
                 np.array([sign_r * works[c][k] + works[c][k + 1] for c in ks]))
 
