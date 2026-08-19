@@ -42,7 +42,40 @@ understates its uncertainty by 4-9x.
 
 Boundaries sit at equal dissipation per stage, which for constant-rate stages is
 equal sqrt(du * int zeta du), and the times follow the same quantity. Equalising the
-dissipation makes the times come out equal too, which is why every stage is 5200 ps.
+dissipation makes the times come out equal too, which is why the stages are all the
+same length as each other.
+
+EVERY SWITCHING LEG IS NOW RUN AT HALF THE RATE it was calibrated at: the stages
+are 10400 ps rather than 5200 and the bound sub-legs 7500 rather than 3750, with
+the holds and npt_c untouched. This is a deliberate 2x arm, not a retune, and it is
+there to measure the one number the schedule argument turns on.
+
+WHAT IT IS FOR. Whether a slower ramp is worth its cost depends on p in
+diss ~ t^-p. p = 1 is the near-equilibrium ceiling; at p = 1 doubling a leg at fixed
+budget breaks even on variance, and below it loses (SE x 1.19 at p = 0.5, x 1.30 at
+p = 0.25). The linear-response check in fe_leg_efficiency.py says p is nowhere near
+1 here: the friction measured along the trajectories predicts 0.1 to 4.3% of the
+hysteresis each stage actually shows, so the dissipation is carried by modes slower
+than the averaging window. That is an argument, not a measurement OF p, and the
+measurement is this: run at half the rate and read the dissipation off the works.
+
+    diss(2t) / diss(t) = 2^-p     ->  p = -log2( diss_2x / diss_1x )
+
+against test13/14/15, which are the 1x arm, per leg:
+
+    bound1 4.13   bound2 1.34
+    stageA 6.87   stageB 12.96   stageC 9.21   stageD 13.16   stageE 13.95
+
+Equal times across stages were an equal-DISSIPATION choice. If p differs between
+stages, and the tail is the place it is most suspected to, doubling everything
+uniformly will pull the dissipation out of balance again -- which is itself part of
+the measurement. Re-derive the boundaries from this arm before keeping it.
+
+WHAT IT COSTS. 167 ns per cycle rather than 100, so 50 cycles is 8.4 us per
+structure rather than 5.0. At cost parity that is 30 cycles, which is above the ~20
+where BAR resolves at all on these works but well below the 40 where the estimate
+settled, so a 50-cycle arm is the one that answers the question cleanly and a
+30-cycle arm is the one that fits the old budget.
 
 FIVE AND NOT SIX. Every boundary costs a hold in each direction out of a fixed 80 ns
 of legs, so the ramp shrinks by 1 ns per boundary added. Priced at that fixed budget
@@ -81,7 +114,9 @@ THE PROBE IS REPLICATED. N_PROBES independent equilibrations, everything measure
 the pooled second half of all of them. This is the only part of the design that
 touches the between-run scatter; see N_PROBES.
 
-100 ns per cycle, plus the 0.1 ns NVT ladder job_fe.run runs ahead of it.
+167 ns per cycle, plus the 0.1 ns NVT ladder job_fe.run runs ahead of it. It was
+100 before the switching legs were doubled; the holds and npt_c are unchanged, so
+the fixed 33 ns is the same and only the 67 ns of switching became 134.
 """
 import sys
 
@@ -92,11 +127,11 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0,   0.118, 5200.0),
-    ("B", 0.118, 0.199, 5200.0),
-    ("C", 0.199, 0.306, 5200.0),
-    ("D", 0.306, 0.494, 5200.0),
-    ("E", 0.494, 1.000, 5200.0),
+    ("A", 0.0,   0.118, 10400.0),
+    ("B", 0.118, 0.199, 10400.0),
+    ("C", 0.199, 0.306, 10400.0),
+    ("D", 0.306, 0.494, 10400.0),
+    ("E", 0.494, 1.000, 10400.0),
 ]
 
 # THE BOUND LEG IS STAGED TOO, but NOT because it needs the overlap. Pooled over the
@@ -120,8 +155,8 @@ RAMP = [
 # (sub-leg name, lambda_from, lambda_to, ps) for the FORWARD direction; the reverse
 # runs them backwards, exactly as the ramp does.
 BOUND = [
-    ("1", 0.0,  0.25, 3750.0),
-    ("2", 0.25, 1.0,  3750.0),
+    ("1", 0.0,  0.25, 7500.0),
+    ("2", 0.25, 1.0,  7500.0),
 ]
 
 # HOLD LENGTHS ARE MEASURED, NOT ASSUMED. dH/dlambda is written during a hold, so

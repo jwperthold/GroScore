@@ -136,6 +136,15 @@ def build(text, ps, lam_from, lam_to, pull_fout, xout_ps):
     # covers 0 -> 0.3 must land exactly on 0.3 and the next stage start there. A
     # hold has lam_from == lam_to and gets 0 for free, which is also what makes it
     # contribute no work.
+    #
+    # WHY %.12e AND NOT %.8e. The drift at the endpoint is nsteps times whatever
+    # the last digit rounds away, so the longer the leg the worse it gets: at
+    # 8 significant digits and 1.3M steps stage E landed on 1.0 to within 5e-10,
+    # and doubling the leg to 2.6M steps took that to 1e-9 and tripped the span
+    # check in tests/test_staged.py. Nothing was wrong with the leg -- the format
+    # was simply too narrow to survive a longer one, which is the same failure
+    # pull-coordN-rate had at %.8f, where each stage overshot its end reference by
+    # 4e-5 nm. Written wide enough that leg length cannot reach it.
     dl = (lam_to - lam_from) / nsteps if lam_to != lam_from else 0.0
     fe = ("\n; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----\n"
           "free-energy              = yes\n"
@@ -146,7 +155,7 @@ def build(text, ps, lam_from, lam_to, pull_fout, xout_ps):
           "separate-dhdl-file       = yes\n"
           "calc-lambda-neighbors    = 0\n"
           "sc-alpha                 = 0\n"
-          % (("%g" % lam_from), "0" if dl == 0 else ("%.8e" % dl)))
+          % (("%g" % lam_from), "0" if dl == 0 else ("%.12e" % dl)))
     pull = ("\n; ---- COM pulling (pull block appended by make_boresch.py) ----\n"
             "pull                     = yes\n"
             "pull-print-com1          = no\n"
