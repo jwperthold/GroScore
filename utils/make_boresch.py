@@ -58,6 +58,13 @@ parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
 parser.add_argument('--pull-rate', type=float, default=0.00005, help="Pull rate in nm/ps (default: 0.00005, i.e. 1.0 nm over the 20 ns unbinding leg).")
+parser.add_argument('--sd-max', dest='sd_max', type=float, default=None,
+                    help="Drop interface pairs whose distance standard deviation "
+                         "over the pooled probe replicas exceeds this, in nm. Off "
+                         "by default: the spread is REPORTED always, and whether an "
+                         "intermittent contact should be restrained is a modelling "
+                         "choice, not a default. Dropping pairs also raises k on "
+                         "the ones that remain, since sum_k is fixed.")
 parser.add_argument('--sum-k', dest='sum_k', type=float, default=12500.0, help="Total interface restraint stiffness in kJ/mol/nm^2, split evenly over however many springs there are (k = sum_k/N). It sets the work of switching the interface restraints on, which is 0.5*sum_k*<(d-r0)^2> and is the largest single term in the bound leg; it also sets how hard the springs pull before the Boresch takes over, so it cannot go arbitrarily low. The ramp boundaries in fe_protocol.py were measured at this value and do not transfer to another one unchanged. Default 12500.")
 parser.add_argument('--traj', type=str, nargs='+', default=["npt_probe.xtc"],
                     help="Equilibration trajectory used to measure backbone "
@@ -813,6 +820,11 @@ def load_backbone_trajectory(atom_numbers):
         os.remove(f)
 
 
+# --sd-max, or None. Bound here rather than read from args inside the routine so
+# that the routine stays testable without an argv.
+SD_MAX_NM = args.sd_max
+
+
 def reference_on_ensemble(pairs):
   """Re-reference each interface spring to its MEAN distance over the probe run.
 
@@ -890,6 +902,41 @@ def reference_on_ensemble(pairs):
          10.0 * float(np.sqrt((shift ** 2).mean())), 10.0 * float(np.abs(shift).max()),
          10.0 * float(sd.mean()),
          0.5 * (args.sum_k / len(pairs)) * float((shift ** 2).sum())))
+  # THE SPREAD, not just the mean. A harmonic spring costs <(d-r0)^2> = var(d) at
+  # r0 = <d>, so the per-pair variance IS that pair's contribution to the bound-leg
+  # work and to its fluctuation. Pooling five replicas makes a new failure mode
+  # possible that one replica could not show: a pair whose MEAN sits inside the
+  # contact cutoff while it spends much of its time far outside it. Such a pair is
+  # not a contact being restrained, it is an average of a contact and a gap, and it
+  # pays full price in both work and noise.
+  #
+  # Reported rather than filtered, because how much intermittency is acceptable is
+  # a modelling choice and dropping pairs raises k on the ones that remain.
+  frac_out = (d > interfacecutoff).mean(0)
+  order = np.argsort(sd)[::-1]
+  q = np.percentile(sd, [50, 90, 99])
+  worst = sd[order[0]]
+  top10 = max(1, len(sd) // 10)
+  share = float((sd[order[:top10]] ** 2).sum() / max((sd ** 2).sum(), 1e-12))
+  n_int = int((frac_out > 0.25).sum())
+  n_in = int(((mean <= interfacecutoff) & (frac_out > 0.25)).sum())
+  sys.stderr.write(
+      "make_boresch: per-pair distance spread over the pooled frames -- sd median "
+      "%.3f A, p90 %.3f A, p99 %.3f A, worst %.3f A. The widest 10%% of pairs carry "
+      "%.0f%% of sum(sd^2), which is what the bound leg pays. %d pairs are outside "
+      "the %.2f nm cutoff in more than a quarter of frames, %d of them while their "
+      "MEAN is still inside it: those are intermittent contacts, not restrained "
+      "ones.\n"
+      % (10 * q[0], 10 * q[1], 10 * q[2], 10 * worst, 100 * share,
+         n_int, interfacecutoff, n_in))
+  if SD_MAX_NM is not None:
+    drop = sd > SD_MAX_NM
+    if drop.any():
+      sys.stderr.write("make_boresch: --sd-max %.3f nm drops %d of %d pairs\n"
+                       % (SD_MAX_NM, int(drop.sum()), len(sd)))
+      keep = ~drop
+      pairs = [p for p, k in zip(pairs, keep) if k]
+      mean = mean[keep]
   return ([(i, j, float(m)) for (i, j, _), m in zip(pairs, mean)],
           "mean over %d frames from %d replica(s)" % (len(X), nrep))
 
