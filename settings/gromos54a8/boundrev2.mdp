@@ -1,10 +1,10 @@
 ; boundrev2.mdp - Bound-state restraint removal (dhdl only, no pulling).
 ; Interface restraints switched OFF with the partners in place, lambda 1 -> 0.25.
 ;
-; nsteps 1875000 * dt 0.004 = 7500 ps.
+; nsteps 937500 * dt 0.004 = 3750 ps.
 
 integrator               = md
-nsteps                   = 1875000
+nsteps                   = 937500
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -57,7 +57,7 @@ gen_vel                  = no
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
 init-lambda              = 1
-delta-lambda             = -4.000000000000e-07
+delta-lambda             = -8.000000000000e-07
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

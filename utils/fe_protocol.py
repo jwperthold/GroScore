@@ -77,9 +77,49 @@ where BAR resolves at all on these works but well below the 40 where the estimat
 settled, so a 50-cycle arm is the one that answers the question cleanly and a
 30-cycle arm is the one that fits the old budget.
 
-FIVE AND NOT SIX. Every boundary costs a hold in each direction out of a fixed 80 ns
-of legs, so the ramp shrinks by 1 ns per boundary added. Priced at that fixed budget
-on the pooled friction:
+RE-PLACED AND RE-TIMED ON A MEASURED RATE RESPONSE, 2026-08-20. The boundaries
+above came from a model in which dissipation scales as 1/t, i.e. p = 1 in
+W ~ t^-p. p has since been MEASURED, by running the whole protocol at half rate
+(test16/17/18 against test13/14/15) and reading the dissipation off the works:
+
+    p = -log2( W(2x) / W(1x) ) = 0.33, 95% CI +-0.09, fourteen sigma below 1
+
+so the old model both mis-placed the boundaries and mis-priced what more time buys.
+The equal-dissipation target it was aiming for was not hit: measured, the stages
+came out 6.87 / 12.96 / 9.21 / 13.16 / 13.95, a factor 2.03 between best and worst,
+with stage E the worst and the leg that produced test16's 8.91 kJ/mol interval.
+
+The table above is the optimum of
+
+    W(a,b,t) = integral_a^b rho(u) * (v/v_ref(u))^p du,     v = (b-a)/t
+
+minimising the WORST stage, which is what BAR fails on. rho(u) is the dissipation
+density measured at 120 bins per stage and POOLED over test13/14/15 -- not flat per
+stage, which is what the previous placement assumed and is worst exactly where it
+mattered: stage E's density falls from 57 to 22 across its window and its first
+eighth carries 22% of its dissipation, so moving E's left edge up removes the
+densest part first. Predicted result, every stage equal:
+
+    stage      now                        new
+    A    0.000-0.118  5.20 ns  6.87   0.000-0.141  4.80 ns  11.19
+    B    0.118-0.199  5.20    12.96   0.141-0.216  5.55     11.18
+    C    0.199-0.306  5.20     9.21   0.216-0.350  5.60     11.20
+    D    0.306-0.494  5.20    13.16   0.350-0.555  5.25     11.19
+    E    0.494-1.000  5.20    13.95   0.555-1.000  4.80     11.23
+
+Worst stage 13.95 -> 11.23, a 19% cut, at the same 26 ns and the same total
+dissipation. Stage E's window narrows 12% and it gives back 0.4 ns, because at
+p = 0.25 there time buys it less than a shorter window does.
+
+STILL FIVE. At the new placement the worst stage sits at n_sigma 0.93, so overlap is
+no longer the binding constraint and more stages would optimise something that is
+not limiting. Six would reach 9.37 and eight 7.10, but each costs a hold, another
+summed BAR estimate and another boundary fitted to three setups. Revisit only if a
+future complex puts a leg back near the cliff.
+
+WHY FIVE RATHER THAN SIX, on the pricing that first chose it. Every boundary costs a
+hold in each direction out of a fixed 80 ns of legs, so the ramp shrinks by 1 ns per
+boundary added. Priced at that fixed budget on the pooled friction:
 
   N   ramp ns  D total  W/stage  n_sig  sd_sum  P(fail)  LOO penalty
   3      27.0     63.3     21.1   1.26    4.12       0%        13.6%
@@ -127,11 +167,11 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0,   0.118, 10400.0),
-    ("B", 0.118, 0.199, 10400.0),
-    ("C", 0.199, 0.306, 10400.0),
-    ("D", 0.306, 0.494, 10400.0),
-    ("E", 0.494, 1.000, 10400.0),
+    ("A", 0.0,   0.141, 4800.0),
+    ("B", 0.141, 0.216, 5550.0),
+    ("C", 0.216, 0.350, 5600.0),
+    ("D", 0.350, 0.555, 5250.0),
+    ("E", 0.555, 1.000, 4800.0),
 ]
 
 # THE BOUND LEG IS STAGED TOO, but NOT because it needs the overlap. Pooled over the
@@ -155,8 +195,8 @@ RAMP = [
 # (sub-leg name, lambda_from, lambda_to, ps) for the FORWARD direction; the reverse
 # runs them backwards, exactly as the ramp does.
 BOUND = [
-    ("1", 0.0,  0.25, 7500.0),
-    ("2", 0.25, 1.0,  7500.0),
+    ("1", 0.0,  0.25, 3750.0),
+    ("2", 0.25, 1.0,  3750.0),
 ]
 
 # HOLD LENGTHS ARE MEASURED, NOT ASSUMED. dH/dlambda is written during a hold, so
