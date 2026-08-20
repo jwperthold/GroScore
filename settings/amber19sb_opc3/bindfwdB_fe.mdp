@@ -1,14 +1,14 @@
-; bindfwdB_fe.mdp - FE unbinding, stage B: u 0.141 -> 0.216 nm over 5.55 ns, lambda 0.141 -> 0.216.
+; bindfwdB_fe.mdp - FE unbinding, stage B: u 0.14 -> 0.22 nm over 6 ns, lambda 0.14 -> 0.22.
 ; Interface restraints fade out (k -> kB=0) as the Boresch restraints fade
 ; in (k=0 -> kB), in proportion to the distance travelled. The full pull
 ; block (groups + coords) is appended per structure by make_boresch.py,
 ; which reads this file for the stage's length and derives its pull rate
 ; from it -- so changing nsteps here changes the rate to match.
 ;
-; nsteps 1387500 * dt 0.004 = 5550 ps.
+; nsteps 1500000 * dt 0.004 = 6000 ps.
 
 integrator               = md
-nsteps                   = 1387500
+nsteps                   = 1500000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -62,8 +62,8 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 0.141
-delta-lambda             = 5.405405405405e-08
+init-lambda              = 0.14
+delta-lambda             = 5.333333333333e-08
 dhdl-derivatives         = yes
 nstdhdl                  = 500
 separate-dhdl-file       = yes

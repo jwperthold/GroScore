@@ -1,4 +1,4 @@
-; holdfwd4_fe.mdp - 0.5 ns equilibrium hold at u = 0.555, lambda = 0.555.
+; holdfwd4_fe.mdp - 0.5 ns equilibrium hold at u = 0.57, lambda = 0.57.
 ; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage
 ; works still sum exactly to the work of the whole ramp. It exists so the
 ; stages either side of it can be estimated SEPARATELY and their estimates
@@ -61,7 +61,7 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 0.555
+init-lambda              = 0.57
 delta-lambda             = 0
 dhdl-derivatives         = yes
 nstdhdl                  = 500

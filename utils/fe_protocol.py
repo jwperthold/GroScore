@@ -89,6 +89,16 @@ The equal-dissipation target it was aiming for was not hit: measured, the stages
 came out 6.87 / 12.96 / 9.21 / 13.16 / 13.95, a factor 2.03 between best and worst,
 with stage E the worst and the leg that produced test16's 8.91 kJ/mol interval.
 
+BOTH ARMS, NOT ONE. rho(u) was first taken from test13/14/15 alone, which is the
+arm that ran with NO width ceiling (322/272/239 springs) while the protocol now
+builds with it. Measured on test16/17/18 as well (256/277/185 springs) the density
+SHAPE survives the change -- the two correlate at 0.935 and their separately
+optimised boundaries differ by at most 0.021 in u -- but the TIMES do not: a table
+timed on one arm costs about 10% on the other's worst stage, which is the same size
+as the disagreement between the arms. rho(u) is therefore pooled over all six runs,
+and the boundaries are rounded to two decimals rather than carrying a precision the
+data does not support.
+
 The table above is the optimum of
 
     W(a,b,t) = integral_a^b rho(u) * (v/v_ref(u))^p du,     v = (b-a)/t
@@ -167,11 +177,11 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0,   0.141, 4800.0),
-    ("B", 0.141, 0.216, 5550.0),
-    ("C", 0.216, 0.350, 5600.0),
-    ("D", 0.350, 0.555, 5250.0),
-    ("E", 0.555, 1.000, 4800.0),
+    ("A", 0.0,  0.14, 4500.0),
+    ("B", 0.14, 0.22, 6000.0),
+    ("C", 0.22, 0.35, 6400.0),
+    ("D", 0.35, 0.57, 4550.0),
+    ("E", 0.57, 1.00, 4550.0),
 ]
 
 # THE BOUND LEG IS STAGED TOO, but NOT because it needs the overlap. Pooled over the
