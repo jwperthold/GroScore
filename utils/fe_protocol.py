@@ -89,17 +89,31 @@ The equal-dissipation target it was aiming for was not hit: measured, the stages
 came out 6.87 / 12.96 / 9.21 / 13.16 / 13.95, a factor 2.03 between best and worst,
 with stage E the worst and the leg that produced test16's 8.91 kJ/mol interval.
 
-BOTH ARMS, NOT ONE. rho(u) was first taken from test13/14/15 alone, which is the
-arm that ran with NO width ceiling (322/272/239 springs) while the protocol now
-builds with it. Measured on test16/17/18 as well (256/277/185 springs) the density
-SHAPE survives the change -- the two correlate at 0.935 and their separately
-optimised boundaries differ by at most 0.021 in u -- but the TIMES do not: a table
-timed on one arm costs about 10% on the other's worst stage, which is the same size
-as the disagreement between the arms. rho(u) is therefore pooled over all six runs,
-and the boundaries are rounded to two decimals rather than carrying a precision the
-data does not support.
+PLACEMENT IS NOT OPTIMISABLE ON THIS DATA, and the table above is deliberately the
+plain one: five equal stages on the boundaries that three clean runs were measured
+at. An attempt to place and time them against a fitted dissipation density
+(`21e9990`) was REVERTED after test19-23, and the reason is worth keeping because it
+is not obvious from the arithmetic.
 
-The table above is the optimum of
+That optimisation predicted every stage at 11.2 kJ/mol. Delivered, over four runs:
+
+    stage       A      B      C      D      E    worst   min overlap
+    predicted 11.22  11.22  11.21  11.23  11.17   11.2
+    got        7.88   8.69  11.20  14.98  12.98   16.46   16/0/0/3 %
+    this table 6.87  12.96   9.21  13.16  13.95   14.44   19/23/21 %
+
+Two of four runs lost BAR outright to a stage with zero overlap. The cause is that
+the per-stage dissipation varies 17-26% between SETUP DRAWS, while the optimisation
+was chasing a 19% cut in the worst stage: the noise was the same size as the signal,
+so the table was fitted to sampling error. The warning was already visible and was
+misread -- the two rate arms disagreed about the optimum by 0.021 in u, which is not
+"robust", it is "unresolvable".
+
+So: five equal stages, boundaries to two decimals, and no finer. If the worst stage
+needs to come down, the lever that does not depend on placement is ANOTHER STAGE,
+which cuts it wherever the boundaries sit at the cost of one hold.
+
+The boundaries below the reverted table came from the optimum of
 
     W(a,b,t) = integral_a^b rho(u) * (v/v_ref(u))^p du,     v = (b-a)/t
 
@@ -177,11 +191,11 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
 RAMP = [
-    ("A", 0.0,  0.14, 4500.0),
-    ("B", 0.14, 0.22, 6000.0),
-    ("C", 0.22, 0.35, 6400.0),
-    ("D", 0.35, 0.57, 4550.0),
-    ("E", 0.57, 1.00, 4550.0),
+    ("A", 0.0,  0.12, 5200.0),
+    ("B", 0.12, 0.20, 5200.0),
+    ("C", 0.20, 0.31, 5200.0),
+    ("D", 0.31, 0.49, 5200.0),
+    ("E", 0.49, 1.00, 5200.0),
 ]
 
 # THE BOUND LEG IS STAGED TOO, but NOT because it needs the overlap. Pooled over the

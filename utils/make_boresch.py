@@ -1162,6 +1162,87 @@ def relative_rotation(rec_g, lig_g, P, L):
   return float(np.sqrt(np.mean(np.square(ang))))
 
 
+def group_weights(g):
+  """Mass weights for a group's atoms, whatever built it.
+
+  The measured path's make_group records "atomnames"; the burial fallback builds
+  its triads straight from BACKBONE and records none, so reading the key blindly
+  turned every burial-path setup into a KeyError the moment the reference geometry
+  started being averaged over the probe ensemble. It surfaced only when a bug
+  forced 2KTF down the fallback, which is exactly the kind of path that is never
+  exercised until it matters.
+  """
+  a = g["atoms"]
+  names = g.get("atomnames")
+  if not names or len(names) != len(a):
+    names = [BACKBONE[k % len(BACKBONE)] for k in range(len(a))]
+  return np.array([mass_of(x, nm) for x, nm in zip(a, names)])
+
+
+def ensemble_cross_r(cand):
+  """Mean cross distance over the pooled probe frames, for many candidate pairs.
+
+  WHY THIS EXISTS. The anchor search rejects a triad whose r + pull_dist exceeds
+  the box budget, and the final guard aborts on the same budget -- but until now
+  the search measured r on the SNAPSHOT while the guard measured it on the
+  ENSEMBLE mean, and ensemble averaging moves r. On test23 the snapshot gave
+  1.306 nm, which passes (2.306 < 2.467), and the pooled mean gave 1.490, which
+  does not (2.490 > 2.467): the setup was selected, ran its five 20 ns probes, and
+  then aborted, losing the whole run. Searching on the quantity the guard enforces
+  closes that dead band, exactly as matching R_LIMIT_FRAC closed the earlier one
+  between 0.9 and 0.6.
+
+  `cand` maps a key to a group dict with "atoms" and "atomnames". Returns
+  {(key_a, key_b): mean distance} for every cross pair, or None if the trajectory
+  cannot be read, in which case the caller keeps the snapshot behaviour.
+
+  One trjconv pass over the union of candidate atoms serves every pair, so the
+  cost is one extraction per replica per search round, not one per pair.
+  """
+  if not TRAJ_PAIRS or not cand:
+    return None
+  keys = sorted(cand)
+  anums, slices = [], {}
+  for k in keys:
+    a = cand[k]["atoms"]
+    slices[k] = slice(len(anums), len(anums) + len(a))
+    anums += list(a)
+  ndx, gro = ".xr_sel.ndx", ".xr_traj.gro"
+  Xs, Ms = [], []
+  try:
+    with open(ndx, "w") as f:
+      f.write("[ xrsel ]\n" + " ".join(str(a) for a in anums) + "\n")
+    for traj, tpr in TRAJ_PAIRS:
+      if os.path.isfile(gro):
+        os.remove(gro)
+      r = subprocess.run(["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", ndx,
+                          "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"],
+                         input="xrsel\n", capture_output=True, text=True)
+      if r.returncode != 0 or not os.path.isfile(gro):
+        continue
+      Xp, Mp = read_multi_gro(gro, len(anums), with_box=True)
+      if Xp is not None:
+        Xs.append(Xp); Ms.append(Mp)
+  except (OSError, ValueError, IndexError):
+    return None
+  finally:
+    for f in (ndx, gro):
+      if os.path.isfile(f):
+        os.remove(f)
+  if not Xs:
+    return None
+  X = np.concatenate(Xs, axis=0)
+  M = np.concatenate(Ms, axis=0)
+  if len(X) < MIN_FRAMES:
+    return None
+  com = {}
+  for k in keys:
+    a = cand[k]["atoms"]
+    w = group_weights(cand[k])
+    com[k] = (X[:, slices[k], :] * w[None, :, None]).sum(1) / w.sum()
+  return com, M
+
+
 def try_measured_anchors():
   """Anchors chosen from measured rigidity, or None to fall back to burial.
 
@@ -1242,12 +1323,38 @@ def try_measured_anchors():
     if not D1 or not D2:
       return None
 
+    # The cross distance is measured on the ENSEMBLE, not on the snapshot,
+    # because that is what the final guard aborts on. One trjconv pass over every
+    # candidate anchor group in this round serves all pairs; if the trajectory
+    # cannot be read we fall back to the snapshot, which is the old behaviour.
+    cand = {}
+    for Pt, d1 in D1:
+      for p in Pt:
+        cand[("P", p)] = d1[p]
+    for Lt, d2 in D2:
+      for l in Lt:
+        cand[("L", l)] = d2[l]
+    ens = ensemble_cross_r(cand)
+    if ens is None:
+      sys.stderr.write("make_boresch: cross distances from the SNAPSHOT (no usable "
+                       "trajectory); the box budget is checked on that\n")
+    else:
+      com_e, M_e = ens
+      sys.stderr.write("make_boresch: cross distances from %d pooled frames over "
+                       "%d candidate groups\n" % (len(M_e), len(cand)))
+
+    def cross_r(p, l, d1, d2):
+      if ens is None:
+        return float(np.linalg.norm(d1[p]["com"] - d2[l]["com"]))
+      return float(np.mean(np.linalg.norm(
+          min_image_vec(com_e[("L", l)] - com_e[("P", p)], M_e), axis=1)))
+
     best = None
+    n_over = 0
     for Pt, d1 in D1:
       for Lt, d2 in D2:
         # P3 and L1 carry r: take the closest cross pair of the two triads.
-        pairs = [(np.linalg.norm(d1[p]["com"] - d2[l]["com"]), p, l)
-                 for p in Pt for l in Lt]
+        pairs = [(cross_r(p, l, d1, d2), p, l) for p in Pt for l in Lt]
         r_cross, P3, L1 = min(pairs)
         # ARM_MIN/arm_max bound the three INTRA-protein edges of each triad;
         # rank_triads never sees a cross pair, so without this r was whatever the
@@ -1264,6 +1371,7 @@ def try_measured_anchors():
         # means the search either returns a usable triad or reports honestly that
         # this rigidity ceiling has none.
         if PULL_LIMIT and r_cross + args.pull_dist > R_LIMIT_FRAC * PULL_LIMIT:
+          n_over += 1
           continue
         rest_p = [k for k in Pt if k != P3]
         rest_l = [k for k in Lt if k != L1]
@@ -1279,7 +1387,16 @@ def try_measured_anchors():
                             "L1": L1, "L2": L2, "L3": L3}, d1, d2)
     if best is None:
       sys.stderr.write("make_boresch: no anchor set met the angle window at "
-                       "eps_max %.3f\n" % eps_max)
+                       "eps_max %.3f (%d combinations were over the box budget "
+                       "of %.3f nm)\n"
+                       % (eps_max, n_over,
+                          R_LIMIT_FRAC * PULL_LIMIT if PULL_LIMIT else float('inf')))
+    elif n_over:
+      sys.stderr.write("make_boresch: %d triad combinations rejected for exceeding "
+                       "the box budget (r + pull_dist > %.3f nm); the accepted set "
+                       "sits at %.3f\n"
+                       % (n_over, R_LIMIT_FRAC * PULL_LIMIT,
+                          cross_r(best[1]["P3"], best[1]["L1"], best[2], best[3])))
     return best
 
   # Escalate the rigidity threshold rather than giving up on the measured path.
@@ -1549,7 +1666,7 @@ def ensemble_boresch_geometry(groups):
   com = {}
   for role in roles:
     a = groups[role]["atoms"]
-    w = np.array([mass_of(x, nm) for x, nm in zip(a, groups[role]["atomnames"])])
+    w = group_weights(groups[role])
     com[role] = (X[:, slices[role], :] * w[None, :, None]).sum(1) / w.sum()
 
   # Everything is expressed relative to P3, with the ligand side imaged onto it.
