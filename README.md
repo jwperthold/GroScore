@@ -738,8 +738,24 @@ averaged **circularly**, since +179 and -179 are two degrees apart and average t
 #### Which interface pairs get a spring
 
 A pair is a contact if it is inside 0.6 nm, and with the references now averaged
-over the pooled replicas that test is applied to the **mean** distance. A mean
-cannot see how much of the time a pair is actually in contact, and pooling five
+over the pooled replicas that test is applied to the **mean** distance.
+
+**Candidates are enumerated at 0.9 nm so that the frame decides only what gets
+measured.** The cutoff has been applied to the ensemble mean since test7, but the
+pairs it was applied to used to be enumerated at 0.6 nm in a single snapshot, so a
+pair at 0.62 nm in that frame whose mean was 0.55 never got considered. That frame
+is a draw: across eight runs of one structure it produced 556-918 candidates and
+228-322 springs, and because `k = sum_k/N` the spring count sets both `dG_intro`
+(`r = +0.91`) and, through the stiffness, stage E's dissipation (`r = -0.73`). It
+cancels in `dG_bind` at `r = -0.10`, so it was never a bias — it is why the
+per-channel intervals are four to five times too small, and why the stiffness of
+the whole set was being drawn at random. Re-run on test27's own probes, the wider
+pass takes the set from 228 springs at `k = 54.8` to 281 at `k = 44.5`, and 19% of
+the final set consists of pairs the old pass could not have seen. Whether 0.9 nm is
+wide enough is reported rather than assumed: the setup prints the margin between the
+widest restrained pair's frame distance and the cut, which on test27 was 0.107 nm.
+
+A mean cannot see how much of the time a pair is actually in contact, and pooling five
 replicas is what makes the difference visible: measured across three runs, 27-40%
 of the springs that survive the mean cutoff sit outside it in more than a quarter
 of the frames, and `r(mean, sd)` is only +0.27 to +0.32, so filtering on the mean

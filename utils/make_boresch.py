@@ -170,6 +170,42 @@ ANG_LO, ANG_HI = 45.0, 135.0   # Boresch angle window, keeps eq.32 valid
 # Interface / elastic-network parameters (identical to make_disres_en.py)
 interfacecutoff = 0.6
 
+# THE CANDIDATE PASS IS DELIBERATELY WIDER THAN THE CONTACT CUTOFF, so that which
+# pairs end up restrained is decided by the ENSEMBLE and not by the one frame the
+# candidates are enumerated from.
+#
+# The 0.6 nm cutoff is applied to the ensemble mean (see finalise_interface), but
+# the candidates it is applied to used to be enumerated at 0.6 nm in
+# npt_probe1_cluster.gro. So a pair sitting at 0.62 nm in that frame whose mean is
+# 0.55 was never considered, and the frame is a draw: across eight runs of one
+# structure it yielded 556 to 918 candidates and 228 to 322 springs, a 41% range in
+# the spring count that set dG_intro (r = +0.91 with the count) and, because
+# k = sum_k/N, the stiffness of every spring with it (r = -0.73 with stage E's
+# dissipation). It cancels in dG_bind, at r = -0.10, so it was never a bias -- but
+# it is why the per-channel intervals are 4-5x too small and it fed the stage that
+# loses BAR.
+#
+# 0.9 nm is chosen so the pass is NON-BINDING rather than merely wider. The
+# frame-to-mean shift measured over those eight runs is +1.1 to +2.0 A on average
+# with an rms of 1.6 to 2.7 A, and the pairs the mean cutoff already rejects reach
+# 0.906 nm from inside 0.6, i.e. shifts of +0.3 nm; 0.9 covers the mirror image of
+# that. Whether it actually was non-binding is not assumed: finalise_interface
+# reports the margin between the widest RESTRAINED pair's frame distance and this
+# cut, and a margin near zero means 0.9 is too tight for that interface.
+#
+# MEASURED, by re-running this on test27's own five probe replicas. Candidates go
+# 672 -> 3786 and the spring set goes 228 at k = 54.82 to 281 at k = 44.48, of which
+# 53 -- 19% of the final set -- sat beyond 0.6 nm in the reference frame and could
+# not have been candidates at all before. The widest restrained pair sat at
+# 0.793 nm, so 0.9 was not binding, but with 0.107 nm to spare rather than a lot:
+# that number is what to watch on a new interface, not this comment. The anchor
+# search is untouched by any of it and reproduced test27's triad exactly, down to
+# r 1.4407 -> 1.4602 nm and 4.9 deg of frame rotation.
+#
+# Cost, on the same run: 2m22s and 1.6 GB peak, against a trajectory pass that is
+# chunked precisely so this cut can be chosen on physics (see CHUNK_BYTES).
+CANDIDATE_CUT = 0.9
+
 en_min = 0.4
 en_max = 0.9
 enk = 250.0
@@ -420,13 +456,23 @@ prot2_coords = np.array([(d[4], d[5], d[6]) for d in prot2_data], dtype=np.float
 prot1_valid = np.array([i for i in range(len1) if prot1_data[i][2][0] != "H" and prot1_data[i][2][:2] != "MN"])
 prot2_valid = np.array([i for i in range(len2) if prot2_data[i][2][0] != "H" and prot2_data[i][2][:2] != "MN"])
 
+# CANDIDATES, at CANDIDATE_CUT rather than interfacecutoff. The contact cutoff is
+# applied later, to the ensemble mean, so that this frame decides only what gets
+# MEASURED and the trajectory decides what gets restrained.
 interdis = []  # (i, j, dist) indices into prot1_data / prot2_data
 if len(prot1_valid) > 0 and len(prot2_valid) > 0:
   d = cdist(prot1_coords[prot1_valid], prot2_coords[prot2_valid])
   for i_idx, i in enumerate(prot1_valid):
     for j_idx, j in enumerate(prot2_valid):
-      if d[i_idx, j_idx] <= interfacecutoff:
+      if d[i_idx, j_idx] <= CANDIDATE_CUT:
         interdis.append((i, j, d[i_idx, j_idx]))
+  _n_at_contact = int((d <= interfacecutoff).sum())
+  sys.stderr.write(
+      "make_boresch: %d candidate pairs within %.2f nm in the reference frame; "
+      "%d of them are already inside the %.2f nm contact cutoff there, so the "
+      "wider pass adds %d pairs for the ensemble to rule on\n"
+      % (len(interdis), CANDIDATE_CUT, _n_at_contact, interfacecutoff,
+         len(interdis) - _n_at_contact))
 
 #------------------------------------------------------
 # Cap the restraints per residue-residue contact.
@@ -912,7 +958,20 @@ def reference_on_ensemble(pairs):
   row = {a: k for k, a in enumerate(anums)}
   ia = np.array([row[prot1_data[i][3]] for i, _, _ in pairs])
   ib = np.array([row[prot2_data[j][3]] for _, j, _ in pairs])
-  d = min_image_dist(X[:, ia, :] - X[:, ib, :], M[:, None, :, :])   # (frames, pairs)
+  # IN CHUNKS OVER PAIRS. min_image_dist builds a (frames, pairs, 27, 3) array of
+  # image candidates, so this one call sizes the whole setup's memory: at 5005
+  # pooled frames it is 3.2 MB per pair, which was 2.9 GB at the old 900-candidate
+  # pass and would be 8 GB now that the pass is wide enough to be non-binding.
+  # Chunking bounds it at CHUNK_BYTES whatever the candidate count, which is what
+  # lets CANDIDATE_CUT be chosen on physics rather than on what fits.
+  CHUNK_BYTES = 512 << 20
+  per_pair = max(len(X) * len(_IMG) * 3 * 8, 1)
+  blk = max(1, min(len(pairs), CHUNK_BYTES // per_pair))
+  d = np.empty((len(X), len(pairs)), dtype=np.float64)
+  for s in range(0, len(pairs), blk):
+    e = min(s + blk, len(pairs))
+    d[:, s:e] = min_image_dist(X[:, ia[s:e], :] - X[:, ib[s:e], :],
+                               M[:, None, :, :])
   mean, sd = d.mean(0), d.std(0)
   snap = np.array([p[2] for p in pairs])
   shift = mean - snap
@@ -962,13 +1021,21 @@ def reference_on_ensemble(pairs):
     # some wide ones. On test13/14/15 this ceiling drops 5-8%, nowhere near the
     # floor, so tripping it means the interface is unlike anything measured here
     # and the ceiling is the wrong tool for it.
-    if drop.all() or (len(sd) - int(drop.sum())) < SD_MIN_KEEP:
+    #
+    # COUNTED AMONG THE PAIRS THAT WILL ACTUALLY BE RESTRAINED, not among all
+    # candidates. The two were the same number while candidates were enumerated at
+    # the contact cutoff; now that the pass is wide enough to be non-binding, most
+    # candidates are destined for the mean cutoff below and counting them here
+    # would let the floor be cleared by pairs that never become springs -- the
+    # guard would go quiet exactly as the set it protects got small.
+    n_left = int((sd <= SD_MAX_NM)[mean <= interfacecutoff].sum())
+    if drop.all() or n_left < SD_MIN_KEEP:
       sys.stderr.write(
-          "make_boresch: --sd-max %.3f nm would leave only %d of %d springs, below "
-          "the floor of %d; KEEPING ALL PAIRS. This interface is much more mobile "
-          "than the ceiling assumes -- check the spread line above before "
-          "trusting the bound leg.\n"
-          % (SD_MAX_NM, len(sd) - int(drop.sum()), len(sd), SD_MIN_KEEP))
+          "make_boresch: --sd-max %.3f nm would leave only %d springs inside the "
+          "%.2f nm contact cutoff, below the floor of %d; KEEPING ALL PAIRS. This "
+          "interface is much more mobile than the ceiling assumes -- check the "
+          "spread line above before trusting the bound leg.\n"
+          % (SD_MAX_NM, n_left, interfacecutoff, SD_MIN_KEEP))
     elif drop.any():
       # The saving is quoted against the pairs the MEAN cutoff would have kept
       # anyway, not against all candidates. Most wide pairs also sit far out, so
@@ -1856,11 +1923,17 @@ dG_release = -RT * math.log(numerator / denominator)   # kJ/mol
 # rebinding; against its real ceiling it had recovered 96% of what was reachable.
 #
 # So the cutoff is now applied to the same distance the spring is referenced to.
-# Note what this does NOT do: the candidate pass still uses one frame, so a pair
+#
+# AND THE CANDIDATE PASS IS NOW WIDER THAN THE CUTOFF, which is the other half of
+# the same fix and used to be the note here saying it had not been done: "a pair
 # sitting at 0.62 nm in that frame whose mean is 0.55 nm is a genuine contact that
-# never gets considered. Widening the candidate pass would fix that and is cheap,
-# but it is a separate question from making the two ends agree, and only one of
-# them has been measured to cost anything.
+# never gets considered ... only one of them has been measured to cost anything."
+# It has now been measured. Across eight runs of 2KTF under one protocol the frame
+# yielded 556 to 918 candidates and 228 to 322 springs, and the spring count sets
+# dG_intro at r = +0.91 and, through k = sum_k/N, stage E's dissipation at r =
+# -0.73. dG_bind is unaffected (r = -0.10), so this was never a bias; it is why the
+# per-channel intervals are 4-5x too small and why the stiffness of the whole set
+# was being drawn at random. See CANDIDATE_CUT.
 def finalise_interface(cands):
   """-> (pairs, note). Re-reference on the ensemble, then re-apply the cutoff to
   the reference that resulted, then cap. In that order, because each step should
@@ -1881,12 +1954,30 @@ def finalise_interface(cands):
     far = sorted((p[2] for p in pairs if p[2] > interfacecutoff), reverse=True)
     sys.stderr.write(
         "make_boresch: %d of %d candidates have a MEAN distance beyond the %.2f nm "
-        "contact cutoff and are not restrained (worst %.3f nm); they were within "
-        "it only in the frame the candidates were picked from. %d springs remain, "
+        "contact cutoff and are not restrained (worst %.3f nm). %d springs remain, "
         "so k is %.2f rather than %.2f kJ/mol/nm^2 for the same %.0f total.\n"
         % (dropped, len(pairs), interfacecutoff, far[0], len(keep),
            args.sum_k / max(len(keep), 1), args.sum_k / max(len(pairs), 1),
            args.sum_k))
+
+  # WAS THE CANDIDATE PASS NON-BINDING? The whole point of enumerating at
+  # CANDIDATE_CUT is that the frame stops deciding which pairs are restrained, and
+  # that is a claim about THIS interface, not a general one. Two numbers settle it:
+  # how many springs the old 0.6 nm pass would have missed, and how much room is
+  # left between the widest restrained pair's frame distance and the cut. A margin
+  # near zero means 0.9 nm is too tight here and the frame is deciding again.
+  gained = [p for p in keep if _snap_of.get((p[0], p[1]), 0.0) > interfacecutoff]
+  widest = max((_snap_of.get((p[0], p[1]), 0.0) for p in keep), default=0.0)
+  sys.stderr.write(
+      "make_boresch: %d of the %d springs (%.0f%%) sat beyond %.2f nm in the "
+      "reference frame and would not have been candidates at all under the old "
+      "pass. The widest restrained pair was at %.3f nm in that frame, leaving "
+      "%.3f nm of margin to the %.2f nm candidate cut%s\n"
+      % (len(gained), len(keep), 100.0 * len(gained) / max(len(keep), 1),
+         interfacecutoff, widest, CANDIDATE_CUT - widest, CANDIDATE_CUT,
+         "" if CANDIDATE_CUT - widest > 0.05 else
+         " -- WHICH IS NOT MARGIN. Raise CANDIDATE_CUT: this frame is still "
+         "deciding which pairs the ensemble gets to rule on."))
   if not keep:
     abort("NO_INTERFACE_CONTACTS",
           "all %d candidate pairs have a mean distance beyond %.2f nm, so the "
@@ -1915,8 +2006,9 @@ if MAX_PER_CONTACT and _n_uncapped:
 
 numinterdis = len(interdis)
 sys.stderr.write("make_boresch: %d interface springs at k = %.2f kJ/mol/nm^2 "
-                 "(%d candidates from the reference frame)\n"
-                 % (numinterdis, args.sum_k / max(numinterdis, 1), _n_snapshot))
+                 "(%d candidates enumerated at %.2f nm, settled on the ensemble)\n"
+                 % (numinterdis, args.sum_k / max(numinterdis, 1), _n_snapshot,
+                    CANDIDATE_CUT))
 
 # The contact list the rebinding QC checks recovery against, written now that the
 # set and its references are both final. utils/interface_qc.py reads it rather than
