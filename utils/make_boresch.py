@@ -1243,6 +1243,36 @@ def ensemble_cross_r(cand):
   return com, M
 
 
+def climb_ladder(search, ladder=EPS_LADDER, rot_max=ROT_MAX_DEG, log=None):
+  """Walk an eps ladder and return (result, eps) for the set that is accepted.
+
+  Split out of try_measured_anchors so the ACCEPTANCE POLICY can be exercised on
+  its own: the search itself needs a trajectory, five probe replicas and a tpr,
+  and a policy that is only ever read cannot be checked against the sentence that
+  describes it. `search(eps)` returns None or a tuple whose first element is the
+  relative frame rotation in degrees, smaller being better.
+
+  The policy, in one line: the first rung that yields a set UNDER rot_max wins;
+  if none does, the best rung's set is used and the caller warns."""
+  best, best_eps = None, None
+  for eps in ladder:
+    if log:
+      log("make_boresch: --- anchor search at eps_max %.3f nm ---\n" % eps)
+    r = search(eps)
+    if r is None:
+      if log:
+        log("make_boresch: eps_max %.3f found nothing, relaxing\n" % eps)
+      continue
+    if best is None or r[0] < best[0]:
+      best, best_eps = r, eps
+    if r[0] <= rot_max:
+      break
+    if log:
+      log("make_boresch: eps_max %.3f gives %.1f deg of relative frame rotation, "
+          "over the %.1f limit; trying the next rung\n" % (eps, r[0], rot_max))
+  return best, best_eps
+
+
 def try_measured_anchors():
   """Anchors chosen from measured rigidity, or None to fall back to burial.
 
@@ -1426,31 +1456,41 @@ def try_measured_anchors():
   # rotating 6.6 deg where 0.060 would have found 4.5 deg. Both clear ROT_MAX_DEG,
   # and the 0.045 groups are the more rigid ones, which is the trade being made
   # deliberately.
-  chosen, chosen_eps = None, None
-  for eps_max in EPS_LADDER:
-    sys.stderr.write("make_boresch: --- anchor search at eps_max %.3f nm ---\n"
-                     % eps_max)
-    r = search(eps_max)
-    if r is not None:
-      chosen, chosen_eps = r, eps_max
-      break
-    sys.stderr.write("make_boresch: eps_max %.3f found nothing, relaxing\n"
-                     % eps_max)
+  # ROT_MAX_DEG IS AN ACCEPTANCE TEST, NOT A LABEL. The note above already says so
+  # -- "a loose ceiling that passes the rotation check has earned it while one that
+  # does not is rejected regardless of which rung found it" -- but the code used to
+  # print the limit and then keep the set anyway. Two of eight runs of the same
+  # structure took a set the stated criterion rejects (test15 at 8.1 deg, test25 at
+  # 8.9) with two and three rungs still untried, and those two are the dissipation
+  # tail: 61.3 and 75.7 kJ/mol per cycle against 56.8-64.9 for the six under
+  # 5.5 deg, with test25 carrying the worst ramp stage in the whole set at 24.7.
+  # Over the eight, rotation correlates +0.68 with the cycle's total dissipation
+  # and +0.64 with stage E's.
+  #
+  # Relaxing eps admits MORE groups, so the pool the search minimises rotation over
+  # grows monotonically and the best achievable rotation can only improve -- except
+  # through the 0.5 nm thinning and TOP_PER_SIDE, which can evict a good group when
+  # more candidates appear. Hence "keep looking, remember the best so far" rather
+  # than "take the last rung": a later rung is used only if it is actually better.
+  #
+  # First success that CLEARS the limit still wins, so nothing changes for a
+  # structure whose tightest rung already passes, which is six of the eight.
+  chosen, chosen_eps = climb_ladder(search, log=sys.stderr.write)
   if chosen is None:
     sys.stderr.write("make_boresch: no measured anchor set at any eps_max in %s, "
                      "falling back to the burial heuristic\n" % (EPS_LADDER,))
     return None
 
   rot, anch, g1, g2 = chosen
-  sys.stderr.write("make_boresch: accepted the first round that succeeded, "
-                   "eps_max %.3f\n" % chosen_eps)
+  sys.stderr.write("make_boresch: accepted eps_max %.3f\n" % chosen_eps)
   sys.stderr.write("make_boresch: selected anchors give %.1f deg RMS relative "
                    "frame rotation over the equilibration (limit %.1f)\n"
                    % (rot, ROT_MAX_DEG))
   if rot > ROT_MAX_DEG:
-    sys.stderr.write("make_boresch: WARNING - the best anchor set still rotates "
-                     "%.1f deg; the Boresch frame will not hold orientation "
-                     "well and dG_release will overstate the confinement\n" % rot)
+    sys.stderr.write("make_boresch: WARNING - no rung of %s met the %.1f deg limit; "
+                     "the best was %.1f deg at eps_max %.3f. The Boresch frame will "
+                     "not hold orientation well and dG_release will overstate the "
+                     "confinement\n" % (EPS_LADDER, ROT_MAX_DEG, rot, chosen_eps))
   return g1, g2, anch, rot
 
 
