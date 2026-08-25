@@ -480,7 +480,7 @@ This works for **archived** structures too: the setup job unpacks the tarball, t
 
 ### Compute cost
 
-Each cycle runs forty-two switching/hold legs plus one equilibration. **Both
+Each cycle runs forty-three switching/hold legs plus one equilibration. **Both
 halves of the cycle are staged**: the bound-state restraint switch runs as two
 sub-legs and the unbinding ramp as nine, with an equilibrium hold at every internal
 boundary in both directions.
@@ -503,19 +503,19 @@ setups against ±0.035-0.061 for the boundary the fit was moving. See
 | `holdbfwd1` | hold | 0.25 | 1 ns |
 | `boundfwd2` | bound restraints on (dhdl) | 0.25 -> 1 | 3.75 ns |
 | `holdfwd0` | hold, bound | 0 | 1 ns |
-| `bindfwdA` | unbind | 0 -> 0.12 | 5.12 ns |
-| `bindfwdB` | unbind | 0.12 -> 0.166 | 2.94 ns |
-| `bindfwdC` | unbind | 0.166 -> 0.2 | 2.18 ns |
-| `bindfwdD` | unbind | 0.2 -> 0.25 | 2.33 ns |
-| `bindfwdE` | unbind | 0.25 -> 0.31 | 2.79 ns |
-| `bindfwdF` | unbind | 0.31 -> 0.379 | 1.96 ns |
-| `bindfwdG` | unbind | 0.379 -> 0.49 | 3.16 ns |
-| `bindfwdH` | unbind | 0.49 -> 0.622 | 1.33 ns |
-| `bindfwdI` | unbind | 0.622 -> 1 | 3.80 ns |
-| `holdfwd1` .. `holdfwd8` | holds, one before each stage after the first | | 8 × 0.3 ns |
+| `bindfwdA` | unbind | 0 -> 0.12 | 5.04 ns |
+| `bindfwdB` | unbind | 0.12 -> 0.166 | 2.90 ns |
+| `bindfwdC` | unbind | 0.166 -> 0.2 | 2.14 ns |
+| `bindfwdD` | unbind | 0.2 -> 0.25 | 2.29 ns |
+| `bindfwdE` | unbind | 0.25 -> 0.31 | 2.75 ns |
+| `bindfwdF` | unbind | 0.31 -> 0.379 | 1.93 ns |
+| `bindfwdG` | unbind | 0.379 -> 0.49 | 3.11 ns |
+| `bindfwdH` | unbind | 0.49 -> 0.622 | 1.30 ns |
+| `bindfwdI` | unbind | 0.622 -> 1 | 3.74 ns |
+| `holdfwd1` .. `holdfwd8` | holds, one before each stage after the first | | 8 × 0.35 ns |
 | `nptrev_fe` | hold unbound | 1 | 5 ns |
 | `bindrevI` .. `bindrevA` | rebind, the exact mirror | 1 -> 0 | the same, reversed |
-| `holdrev8` .. `holdrev1` | holds | | 8 × 0.3 ns |
+| `holdrev8` .. `holdrev1` | holds | | 8 × 0.35 ns |
 | `holdrev0` | hold, bound | 0 | 1 ns |
 | `boundrev2` | bound restraints off (dhdl) | 1 -> 0.25 | 3.75 ns |
 | `holdbrev1` | hold | 0.25 | 1 ns |
@@ -524,9 +524,9 @@ setups against ±0.035-0.061 for the boundary the fit was moving. See
 
 The four extra boundaries are free in wall time. Each buys a hold in each direction
 out of a fixed 80 ns of legs, and the mid-ramp holds went from 500 to 300 ps to pay
-for it: eight at 300 cost 2.4 ns per direction against the four at 500 they replace
-costing 2.0. The holds are still 19-27 times the 11-16 ps autocorrelation of
-dH/dlambda that set their length.
+for it: eight at 350 cost 2.8 ns per direction against the four at 500 they replace
+costing 2.0. The holds are still 22-32 times the 11-16 ps autocorrelation of
+`dH/dlambda` that set their length.
 
 At the default 50 cycles this is **~5.0 µs/structure**, plus a setup pass of
 5 × 20 ns of probe equilibration. The default is 50 rather than the classic
@@ -575,7 +575,10 @@ A bootstrap inside one run understates the boundary uncertainty by four to nine
 times, so a single run can neither locate a boundary nor reveal that it cannot.
 Boundaries then sit at **equal dissipation per stage**, which for constant-rate
 stages means equal `sqrt(du × int zeta du)`; equalising the dissipation makes the
-Sivak-Crooks times equal too, which is why every stage is 5.2 ns.
+Sivak-Crooks times equal too, which is why all five stages were the same 5.2 ns
+as each other. That equality is what the subdivision below inherits and breaks:
+the nine stages are unequal in time because each pair splits its parent's 5.2 ns
+in proportion to span, which is precisely what holds the rate fixed across a cut.
 
 **Then nine, by subdividing those five rather than replacing them.** The five
 boundaries above are unchanged; four of the five stages are cut in half at a point
@@ -689,7 +692,10 @@ so how long one needs is a question the data answers directly: its autocorrelati
 time is 11-16 ps on the ramp and 39 ps at u = 1, the relaxation profiles are flat
 after the first tenth, and the state at the end of a hold does not predict the next
 stage's work (r = +0.06 over 49 cycles). The 1 ns holds were therefore 60-90 tau and
-the mid-ramp ones are now **0.5 ns**.
+the mid-ramp ones are now **0.35 ns**, which is 22-32 tau. They went 500 -> 350 ps to
+pay for the four extra boundaries of the nine-stage ramp; 300 ps would have paid for
+them outright but is 18.75 tau against the slowest measured relaxation, under the
+20 tau floor `tests/test_staged.py` enforces.
 
 The exception is the **bound/ramp handoff**. `holdfwd0` and `holdrev0` settle at 500
 and 700 ps, about 40 tau, where the purely mid-ramp holds settle within 0-300 ps.
@@ -786,9 +792,9 @@ handful of points is a worse failure than one pinned at some mobile ones.
 
 All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and Bussi 2020) at `tau_p` 2.0 ps, with V-rescale for temperature. Berendsen generates no strictly correct ensemble, which matters most for the per-cycle `npt_fe`: its output is the bound-state configuration `boundfwd` starts from, and Crooks assumes those initial states are drawn from the true equilibrium distribution.
 
-The effort is deliberately concentrated where the uncertainty is. The unbinding/rebinding legs dominate the error and are given 52 ns per direction against the bound switch's 15. **Each stage's pull rate is tied to its own length**: `rate x stage_time = stage_span`, hence 2.31e-5, 1.54e-5, 2.12e-5, 3.46e-5 and 9.81e-5 nm/ps for stages A to E, which is simply each stage's own span over the same 5.2 ns. `delta-lambda` is written at `%.12e` for the same reason the pull rate is written at `%.10g`: the endpoint drifts by `nsteps` times whatever the last digit rounds away, so a format wide enough for a short leg silently stops being wide enough for a long one. Nothing sets a rate by hand: `make_boresch.py` reads each stage's own mdp and derives it, then records all of them in `boresch_analytical.gs` as `stage_rate_nm_ps`, because `integrate.py` turns the time integral of the pull force into work by multiplying by the rate and a stage integrated at another stage's rate is silently rescaled. The lambda spans are read back from the mdps for the same reason on the dhdl side.
+The effort is deliberately concentrated where the uncertainty is. The unbinding/rebinding legs dominate the error and are given 50.4 ns across the two directions against the bound switch's 15. **Each stage's pull rate is tied to its own length**: `rate x stage_time = stage_span`, hence 2.38e-5, 1.59e-5, 1.59e-5, 2.18e-5, 2.18e-5, 3.57e-5, 3.57e-5, 1.01e-4 and 1.01e-4 nm/ps for stages A to I. **Nine stages but only five distinct rates**, because each subdivided pair splits its parent's time in proportion to its span and therefore inherits its parent's rate; that repetition is the invariant the whole subdivision argument rests on, and `tests/test_subdivision.py` fails if it is broken. `delta-lambda` is written at `%.12e` for the same reason the pull rate is written at `%.10g`: the endpoint drifts by `nsteps` times whatever the last digit rounds away, so a format wide enough for a short leg silently stops being wide enough for a long one. Nothing sets a rate by hand: `make_boresch.py` reads each stage's own mdp and derives it, then records all of them in `boresch_analytical.gs` as `stage_rate_nm_ps`, because `integrate.py` turns the time integral of the pull force into work by multiplying by the rate and a stage integrated at another stage's rate is silently rescaled. The lambda spans are read back from the mdps for the same reason on the dhdl side.
 
-The **5 ns unbound hold** (1 ns before 2026-08-11, then 5, 3, 6 and back to 5) exists because the rebinding leg is the one which starts from the Boresch-restrained separated state, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks requires, which neither longer switching legs nor additional cycles can repair. Over 40 cycles of 2KTF the rebinding works were 2.4× wider than the unbinding works (σ 51.5 vs 21.6). Raising the hold to 5 ns did not fix that: the next run came back with `sf/sr` 0.32 against 0.42, i.e. moved the wrong way. That run also carried the dihedral sign fix, so the two changes are confounded and the hold is not convicted on it, but nothing supported 5 ns either. It is now 4 ns, and the measurement that matters is a different one: on the two-stage run it was fully plateaued after 800 ps, where the earlier 5 ns hold never settled at all. Whether a hold is long enough can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
+The **5 ns unbound hold** (1 ns before 2026-08-11, then 5, 3, 6 and back to 5) exists because the rebinding leg is the one which starts from the Boresch-restrained separated state, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks requires, which neither longer switching legs nor additional cycles can repair. Over 40 cycles of 2KTF the rebinding works were 2.4× wider than the unbinding works (σ 51.5 vs 21.6). Raising the hold to 5 ns did not fix that: the next run came back with `sf/sr` 0.32 against 0.42, i.e. moved the wrong way. That run also carried the dihedral sign fix, so the two changes are confounded and the hold is not convicted on it, but nothing supported 5 ns either. It is 5 ns (`UNBOUND_HOLD_PS`), and the measurement that matters is a different one: on the two-stage run it was fully plateaued after 800 ps, where the earlier 5 ns hold never settled at all. Whether a hold is long enough can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
 
 `fe_leg_efficiency.py` takes `--leg unbind<L>` for each stage and `--leg unbind` for the ramp as a whole; the choices are generated from `fe_protocol.py`, so they follow the ramp. The stages are the real switching processes and are what the friction and cost model apply to; the whole ramp has no trace files of its own, so for it the tool reports the work distributions only.
 
