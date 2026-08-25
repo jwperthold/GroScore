@@ -1,0 +1,78 @@
+; bindfwdI_fe.mdp - FE unbinding, stage I: u 0.622 -> 1 nm over 3.736 ns, lambda 0.622 -> 1.
+; Interface restraints fade out (k -> kB=0) as the Boresch restraints fade
+; in (k=0 -> kB), in proportion to the distance travelled. The full pull
+; block (groups + coords) is appended per structure by make_boresch.py,
+; which reads this file for the stage's length and derives its pull rate
+; from it -- so changing nsteps here changes the rate to match.
+;
+; nsteps 934000 * dt 0.004 = 3736 ps.
+
+integrator               = md
+nsteps                   = 934000
+dt                       = 0.004
+mass-repartition-factor  = 3
+
+nstxout                  = 0
+nstxout-compressed       = 100000
+compressed-x-precision   = 1000
+nstvout                  = 0
+nstfout                  = 0
+nstenergy                = 2000
+nstlog                   = 10000
+nstcalcenergy            = 100
+
+comm-mode                = linear
+nstcomm                  = 1000
+
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = all-bonds
+lincs_iter               = 1
+lincs_order              = 6
+
+cutoff-scheme            = verlet
+ns_type                  = grid
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
+
+vdwtype                  = cut-off
+vdw-modifier             = none
+
+coulombtype              = PME
+coulomb-modifier         = none
+
+tcoupl                   = V-rescale
+tc-grps                  = Protein Non-Protein
+tau_t                    = 0.1  0.1
+ref_t                    = 310  310
+
+pcoupl                   = C-rescale
+pcoupltype               = isotropic
+tau_p                    = 2.0
+ref_p                    = 1.0
+compressibility          = 4.5e-5
+refcoord_scaling         = com
+
+pbc                      = xyz
+
+gen_vel                  = no
+
+; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
+free-energy              = yes
+init-lambda              = 0.622
+delta-lambda             = 4.047109207709e-07
+dhdl-derivatives         = yes
+nstdhdl                  = 500
+separate-dhdl-file       = yes
+calc-lambda-neighbors    = 0
+sc-alpha                 = 0
+
+; ---- COM pulling (pull block appended by make_boresch.py) ----
+pull                     = yes
+pull-print-com1          = no
+pull-print-com2          = no
+pull-print-ref-value     = no
+pull-print-components    = no
+pull-nstxout             = 0
+pull-nstfout             = 500

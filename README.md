@@ -409,7 +409,7 @@ All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm3
 python3 utils/make_fe_mdps.py
 ```
 
-Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. **`dG_bind` and `pKD` are BAR**; the average and CGI values are retained beside them, so the file leads with `dGbind_bar` and then repeats the block for `_avg` and `_cgi`. Three estimators over the same works are the cheapest convergence check there is: where they agree the leg has converged, and where they disagree it has not, whichever number you would rather believe. `dG_unbind_*` is the [staged](#why-these-boundaries) sum over the ramp stages, and the columns after it are its audit trail: one `dG_unb<L>_bar` pair per stage, then `dG_unbind_1s_bar`, the same free energy taken from the whole ramp in one shot. The stage columns follow the protocol, so the current five-stage ramp writes `dG_unbA_bar` through `dG_unbE_bar`. `dG_intro_*` is staged the same way, with one `dG_intro<N>_bar` pair per bound sub-leg and `dG_intro_1s_bar` as its one-shot cross-check. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
+Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. **`dG_bind` and `pKD` are BAR**; the average and CGI values are retained beside them, so the file leads with `dGbind_bar` and then repeats the block for `_avg` and `_cgi`. Three estimators over the same works are the cheapest convergence check there is: where they agree the leg has converged, and where they disagree it has not, whichever number you would rather believe. `dG_unbind_*` is the [staged](#why-these-boundaries) sum over the ramp stages, and the columns after it are its audit trail: one `dG_unb<L>_bar` pair per stage, then `dG_unbind_1s_bar`, the same free energy taken from the whole ramp in one shot. The stage columns follow the protocol, so the current nine-stage ramp writes `dG_unbA_bar` through `dG_unbI_bar`. `dG_intro_*` is staged the same way, with one `dG_intro<N>_bar` pair per bound sub-leg and `dG_intro_1s_bar` as its one-shot cross-check. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
 
 Every scoring pass also writes **`fe_works.png`**, the work distributions of every leg with one row per structure: bound-state legs on the left, then one panel per ramp stage. No second command is needed; the figure appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run. The undivided ramp is not drawn, since its stages already are, but it does appear in the consistency table below, as `unbind A+B+C+D+E`, the baseline the split is measured against. That row is arithmetic, not a leg: no simulation of that name runs.
 
@@ -480,16 +480,21 @@ This works for **archived** structures too: the setup job unpacks the tarball, t
 
 ### Compute cost
 
-Each cycle runs twenty-six switching/hold legs plus one equilibration. **Both
+Each cycle runs forty-two switching/hold legs plus one equilibration. **Both
 halves of the cycle are staged**: the bound-state restraint switch runs as two
-sub-legs and the unbinding ramp as five, with an equilibrium hold at every internal
+sub-legs and the unbinding ramp as nine, with an equilibrium hold at every internal
 boundary in both directions.
 
-**The five stages are equal in time and unequal in span.** An attempt to place and
-time them against a fitted dissipation density was reverted: the per-stage
-dissipation varies 17-26% between setup draws, which is the same size as the gain
-the fit was chasing, so it fitted sampling error and cost two of four runs their
-BAR. See [Why these boundaries](#why-these-boundaries-and-why-five).
+**The nine stages are five measured boundaries, four of them subdivided.** The
+stages are unequal in both span and time, and neither was fitted. An attempt to
+place and time them against a fitted dissipation density was reverted, because the
+per-stage dissipation varies 17-26% between setup draws, which is the same size as
+the gain the fit was chasing. Subdividing is a different operation: cutting a stage
+in two with the time split in proportion to the span leaves the pulling rate
+unchanged on both sides, so the cut point is read off a run that has already been
+done rather than modelled, and it reproduces to ±0.014 in u across independent
+setups against ±0.035-0.061 for the boundary the fit was moving. See
+[Why these boundaries](#why-these-boundaries-and-why-five).
 
 | Leg | Purpose | lambda | Length |
 |---|---|---|---|
@@ -498,23 +503,30 @@ BAR. See [Why these boundaries](#why-these-boundaries-and-why-five).
 | `holdbfwd1` | hold | 0.25 | 1 ns |
 | `boundfwd2` | bound restraints on (dhdl) | 0.25 -> 1 | 3.75 ns |
 | `holdfwd0` | hold, bound | 0 | 1 ns |
-| `bindfwdA` | unbind | 0 -> 0.12 | 5.2 ns |
-| `holdfwd1` | hold | 0.12 | 0.5 ns |
-| `bindfwdB` | unbind | 0.12 -> 0.2 | 5.2 ns |
-| `holdfwd2` | hold | 0.2 | 0.5 ns |
-| `bindfwdC` | unbind | 0.2 -> 0.31 | 5.2 ns |
-| `holdfwd3` | hold | 0.31 | 0.5 ns |
-| `bindfwdD` | unbind | 0.31 -> 0.49 | 5.2 ns |
-| `holdfwd4` | hold | 0.49 | 0.5 ns |
-| `bindfwdE` | unbind | 0.49 -> 1 | 5.2 ns |
+| `bindfwdA` | unbind | 0 -> 0.12 | 5.12 ns |
+| `bindfwdB` | unbind | 0.12 -> 0.166 | 2.94 ns |
+| `bindfwdC` | unbind | 0.166 -> 0.2 | 2.18 ns |
+| `bindfwdD` | unbind | 0.2 -> 0.25 | 2.33 ns |
+| `bindfwdE` | unbind | 0.25 -> 0.31 | 2.79 ns |
+| `bindfwdF` | unbind | 0.31 -> 0.379 | 1.96 ns |
+| `bindfwdG` | unbind | 0.379 -> 0.49 | 3.16 ns |
+| `bindfwdH` | unbind | 0.49 -> 0.622 | 1.33 ns |
+| `bindfwdI` | unbind | 0.622 -> 1 | 3.80 ns |
+| `holdfwd1` .. `holdfwd8` | holds, one before each stage after the first | | 8 × 0.3 ns |
 | `nptrev_fe` | hold unbound | 1 | 5 ns |
-| `bindrevE` .. `bindrevA` | rebind, the exact mirror | 1 -> 0 | the same, reversed |
-| `holdrev4` .. `holdrev1` | holds | | 4 × 0.5 ns |
+| `bindrevI` .. `bindrevA` | rebind, the exact mirror | 1 -> 0 | the same, reversed |
+| `holdrev8` .. `holdrev1` | holds | | 8 × 0.3 ns |
 | `holdrev0` | hold, bound | 0 | 1 ns |
 | `boundrev2` | bound restraints off (dhdl) | 1 -> 0.25 | 3.75 ns |
 | `holdbrev1` | hold | 0.25 | 1 ns |
 | `boundrev1` | bound restraints off (dhdl) | 0.25 -> 0 | 3.75 ns |
 | **per cycle** | | | **100 ns** (+0.1 NVT ladder) |
+
+The four extra boundaries are free in wall time. Each buys a hold in each direction
+out of a fixed 80 ns of legs, and the mid-ramp holds went from 500 to 300 ps to pay
+for it: eight at 300 cost 2.4 ns per direction against the four at 500 they replace
+costing 2.0. The holds are still 19-27 times the 11-16 ps autocorrelation of
+dH/dlambda that set their length.
 
 At the default 50 cycles this is **~5.0 µs/structure**, plus a setup pass of
 5 × 20 ns of probe equilibration. The default is 50 rather than the classic
@@ -565,34 +577,62 @@ Boundaries then sit at **equal dissipation per stage**, which for constant-rate
 stages means equal `sqrt(du × int zeta du)`; equalising the dissipation makes the
 Sivak-Crooks times equal too, which is why every stage is 5.2 ns.
 
-**Five and not six.** Each boundary costs an equilibrium hold in both directions out
-of a fixed 80 ns of legs, so the ramp loses 1 ns per boundary added. Priced at that
-fixed budget on the pooled friction:
+**Then nine, by subdividing those five rather than replacing them.** The five
+boundaries above are unchanged; four of the five stages are cut in half at a point
+measured inside each of them.
 
-| N | ramp ns | total dissipation | per stage | n_sigma | summed BAR sd | transfer penalty |
-|---|---|---|---|---|---|---|
-| 3 | 27.0 | 63.3 | 21.1 | 1.26 | 4.12 | 13.6% |
-| 4 | 26.5 | 61.2 | 15.3 | 1.07 | 3.75 | 20.0% |
-| **5** | **26.0** | **60.3** | **12.1** | **0.95** | **3.50** | **23.6%** |
-| 6 | 25.5 | 62.0 | 10.3 | 0.88 | 3.54 | 27.4% |
-| 7 | 25.0 | 63.0 | 9.0 | 0.82 | 3.58 | 28.6% |
+*Why subdividing is measurable where moving a boundary was not.* Cutting a stage at
+`x`, with the two halves given time in proportion to their spans, leaves the pulling
+**rate** unchanged on both sides of `x`, so the cumulative dissipation curve measured
+on a run that has already been done applies to the split unmodified and the cut point
+is a measurement. Moving a boundary changes the rate on both sides, so predicting the
+result needs the friction density differentiated back out of the works and refitted,
+which is the fit that chased sampling error. Over three independent setup draws:
 
-Both total dissipation and summed BAR variance bottom out at five and get worse
-after, because past that the holds cost more ramp time than the finer partition
-saves. The last column prices **transfer**: boundaries fitted on two runs, scored on
-the worst stage of the third, against boundaries fitted on that third run itself. It
-climbs monotonically, so each added boundary generalises less well than the last. It
-never inverts, though, and fitted boundaries beat naive equal-u spacing roughly two
-to one throughout, so the fitting is worth doing.
+| parent | window | measured cut point | spread |
+|---|---|---|---|
+| A | 0.00-0.12 | 0.076 / 0.072 / 0.079 | 0.007 |
+| B | 0.12-0.20 | 0.160 / 0.174 / 0.165 | 0.014 |
+| C | 0.20-0.31 | 0.256 / 0.245 / 0.250 | 0.011 |
+| D | 0.31-0.49 | 0.374 / 0.377 / 0.387 | 0.013 |
+| E | 0.49-1.00 | 0.612 / 0.615 / 0.641 | 0.029 |
+
+Three to four times more reproducible than the boundary the reverted table moved, on
+the same runs.
+
+*Which stages, and why not the obvious one.* `n_sigma = 2 * diss / sigma` predicts the
+overlap count at `r = -0.85` over all sixty ramp-stage instances run so far, and no
+stage below `n_sigma` 2.5 has ever lost BAR (0 of 39) against 3 of 21 above it. Per
+run the stage that binds is B, D, B, B, C, C, C, D across test13/14/15 and
+test24-28 — **B three times, C three times, D twice, and stage E never**, although E
+is the stage that lost BAR in test27. The bottleneck rotates between draws, which is
+the same fact that made placement unfittable seen from the other side: a table tuned
+to relieve one stage does not help the run where a different one binds. So B, C, D
+and E are all subdivided and A, at `n_sigma` 1.51, is left alone.
+
+| splits | stages | mean worst `n_sigma` | max | runs over 2.5 |
+|---|---|---|---|---|
+| none | 5 | 3.16 | 3.97 | 8/8 |
+| E only | 6 | 3.19 | 4.00 | 8/8 |
+| D+E | 7 | 3.11 | 4.02 | 6/8 |
+| C+D+E | 8 | 2.72 | 3.31 | 5/8 |
+| **B+C+D+E** | **9** | **2.30** | **2.89** | **2/8** |
 
 Work widths are calibrated rather than assumed: `kappa = sigma^2/(2 RT W)` measures
 **2.57** across the nine run/stage pairs, so the works are wider than linear response
-and overlap is easier than the textbook value. The stage count was checked at
-`kappa = 1` as well, the pessimistic case, where five still holds.
+and overlap is easier than the textbook value. Splitting does not spend that:
+`sigma` scales as `sqrt(W)`, so two halves of a stage carry the same summed BAR
+variance the whole one did, at better overlap.
 
-Two boundaries land on 0.306 and 0.494, i.e. on the u = 0.3 and u = 0.5 holds the
-earlier three-stage ramp already had. That coincidence survives pooling; it simply
-belongs at five stages rather than six.
+*What subdividing does not reach* is stage `I`, the last one. It carries 71% of the
+ramp's `dH/dlambda` free energy, because a harmonic restraint switched linearly in
+lambda has `dF/dlambda` diverging at the endpoint, measured here as
+`(1-lambda)^-0.44` with half of the stage's dhdl dissipation beyond `lambda = 0.94`.
+That is a shape problem rather than a size one: in test27 both of the stage's work
+histograms were skewed the same way, so their tails pointed away from each other and
+met nowhere. The fix is to let lambda run on its own schedule instead of tracking
+`u`, which costs nothing structurally — `delta-lambda` and `pull-coordN-rate` are
+already separate mdp fields — but is a redesign and is not bundled here.
 
 #### Why the bound legs are 3.75 ns each, and split
 

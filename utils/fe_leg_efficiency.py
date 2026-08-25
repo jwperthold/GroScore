@@ -149,7 +149,7 @@ def two_cols(path):
 # SHIPPED under an earlier one, then the old rule as the last fallback. Kept in
 # step with groscore_fe.read_works by tests/test_leg_efficiency_layout.py.
 _CUR = {_P.result_nf(): (_P.n_bound(), _P.n_stages())}
-_PAST = {31: (2, 6)}
+_PAST = {31: (2, 6), 27: (2, 5)}   # six-stage ramp 08-17..08-18, five-stage ..08-25
 
 
 def _layout(nf):

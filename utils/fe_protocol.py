@@ -45,49 +45,37 @@ equal sqrt(du * int zeta du), and the times follow the same quantity. Equalising
 dissipation makes the times come out equal too, which is why the stages are all the
 same length as each other.
 
-EVERY SWITCHING LEG IS NOW RUN AT HALF THE RATE it was calibrated at: the stages
-are 10400 ps rather than 5200 and the bound sub-legs 7500 rather than 3750, with
-the holds and npt_c untouched. This is a deliberate 2x arm, not a retune, and it is
-there to measure the one number the schedule argument turns on.
-
-WHAT IT IS FOR. Whether a slower ramp is worth its cost depends on p in
-diss ~ t^-p. p = 1 is the near-equilibrium ceiling; at p = 1 doubling a leg at fixed
-budget breaks even on variance, and below it loses (SE x 1.19 at p = 0.5, x 1.30 at
-p = 0.25). The linear-response check in fe_leg_efficiency.py says p is nowhere near
-1 here: the friction measured along the trajectories predicts 0.1 to 4.3% of the
-hysteresis each stage actually shows, so the dissipation is carried by modes slower
-than the averaging window. That is an argument, not a measurement OF p, and the
-measurement is this: run at half the rate and read the dissipation off the works.
+TIME BUYS ALMOST NOTHING, AND THAT IS MEASURED. Whether a slower ramp is worth its
+cost depends on p in diss ~ t^-p. p = 1 is the near-equilibrium ceiling; at p = 1
+doubling a leg at fixed budget breaks even on variance, and below it loses (SE x
+1.19 at p = 0.5, x 1.30 at p = 0.25). test16/17/18 ran the whole protocol at half
+rate against the 1x arm and read the dissipation off the works:
 
     diss(2t) / diss(t) = 2^-p     ->  p = -log2( diss_2x / diss_1x )
 
-against test13/14/15, which are the 1x arm, per leg:
+Re-measured against all eight 1x runs (test13/14/15 + test24-28) rather than the
+three it was first taken on:
 
-    bound1 4.13   bound2 1.34
-    stageA 6.87   stageB 12.96   stageC 9.21   stageD 13.16   stageE 13.95
+    stage      A      B      C      D      E
+    1x      6.46  10.93  10.72  14.00  16.03
+    2x      5.34   9.75   8.40   9.59  11.69
+    p       0.27   0.16   0.35   0.55   0.46      mean 0.36
 
-Equal times across stages were an equal-DISSIPATION choice. If p differs between
-stages, and the tail is the place it is most suspected to, doubling everything
-uniformly will pull the dissipation out of balance again -- which is itself part of
-the measurement. Re-derive the boundaries from this arm before keeping it.
+The 2x arm was reverted. What survives it is the number: **at p = 0.36, more time
+is not a lever, and neither is moving time between stages.** Equalising the
+dissipation by reallocating time at p = 0.36 wants stage times differing 18-fold to
+buy 20%, which is inside the draw-to-draw noise. The only lever left that acts on
+the dissipation of the stage that binds is PARTITIONING it, and that is what the
+nine-stage table below does.
 
-WHAT IT COSTS. 167 ns per cycle rather than 100, so 50 cycles is 8.4 us per
-structure rather than 5.0. At cost parity that is 30 cycles, which is above the ~20
-where BAR resolves at all on these works but well below the 40 where the estimate
-settled, so a 50-cycle arm is the one that answers the question cleanly and a
-30-cycle arm is the one that fits the old budget.
-
-RE-PLACED AND RE-TIMED ON A MEASURED RATE RESPONSE, 2026-08-20. The boundaries
-above came from a model in which dissipation scales as 1/t, i.e. p = 1 in
-W ~ t^-p. p has since been MEASURED, by running the whole protocol at half rate
-(test16/17/18 against test13/14/15) and reading the dissipation off the works:
-
-    p = -log2( W(2x) / W(1x) ) = 0.33, 95% CI +-0.09, fourteen sigma below 1
-
-so the old model both mis-placed the boundaries and mis-priced what more time buys.
-The equal-dissipation target it was aiming for was not hit: measured, the stages
-came out 6.87 / 12.96 / 9.21 / 13.16 / 13.95, a factor 2.03 between best and worst,
-with stage E the worst and the leg that produced test16's 8.91 kJ/mol interval.
+RE-PLACED AND RE-TIMED ON A MEASURED RATE RESPONSE, 2026-08-20, AND REVERTED. The
+boundaries above came from a model in which dissipation scales as 1/t, i.e. p = 1,
+so once p was measured (0.33 against test13/14/15 alone, 0.36 against all eight; see
+the section above for the per-stage table) the old model was known to have both
+mis-placed the boundaries and mis-priced what more time buys. The equal-dissipation
+target it was aiming for was not hit either: measured, the stages came out
+6.87 / 12.96 / 9.21 / 13.16 / 13.95, a factor 2.03 between best and worst, with
+stage E the worst and the leg that produced test16's 8.91 kJ/mol interval.
 
 PLACEMENT IS NOT OPTIMISABLE ON THIS DATA, and the table above is deliberately the
 plain one: five equal stages on the boundaries that three clean runs were measured
@@ -135,32 +123,76 @@ Worst stage 13.95 -> 11.23, a 19% cut, at the same 26 ns and the same total
 dissipation. Stage E's window narrows 12% and it gives back 0.4 ns, because at
 p = 0.25 there time buys it less than a shorter window does.
 
-STILL FIVE. At the new placement the worst stage sits at n_sigma 0.93, so overlap is
-no longer the binding constraint and more stages would optimise something that is
-not limiting. Six would reach 9.37 and eight 7.10, but each costs a hold, another
-summed BAR estimate and another boundary fitted to three setups. Revisit only if a
-future complex puts a leg back near the cliff.
+NINE STAGES, BY SUBDIVISION RATHER THAN REPLACEMENT (2026-08-25). The five
+boundaries above are UNCHANGED. Four of the five stages are cut in half at a point
+measured inside each of them, so the table below still contains 0.12 / 0.20 / 0.31 /
+0.49 and adds 0.166 / 0.25 / 0.379 / 0.622.
 
-WHY FIVE RATHER THAN SIX, on the pricing that first chose it. Every boundary costs a
-hold in each direction out of a fixed 80 ns of legs, so the ramp shrinks by 1 ns per
-boundary added. Priced at that fixed budget on the pooled friction:
+WHY SUBDIVISION IS MEASURABLE WHERE PLACEMENT WAS NOT. This is the whole reason the
+2026-08-20 attempt failed and this one should not. Cutting a stage at x, with the
+two halves given time in proportion to their spans, leaves the pulling RATE
+unchanged on both sides of x. The cumulative dissipation curve measured on a run
+that has already been done therefore applies to the split unmodified, and the split
+point is a MEASUREMENT. Moving a boundary between two stages changes the rate on
+both sides of it, so predicting the result needs the friction density, which has to
+be differentiated out of the works and refitted -- and that fit is what chased
+sampling error. Measured over three independent setup draws:
 
-  N   ramp ns  D total  W/stage  n_sig  sd_sum  P(fail)  LOO penalty
-  3      27.0     63.3     21.1   1.26    4.12       0%        13.6%
-  4      26.5     61.2     15.3   1.07    3.75       0%        20.0%
-  5      26.0     60.3     12.1   0.95    3.50       0%        23.6%
-  6      25.5     62.0     10.3   0.88    3.54       0%        27.4%
-  7      25.0     63.0      9.0   0.82    3.58       0%        28.6%
+    stage   window       split point x        spread   (fitted boundaries: sd .035-.061)
+    A     0.00-0.12   0.076 0.072 0.079        0.007
+    B     0.12-0.20   0.160 0.174 0.165        0.014
+    C     0.20-0.31   0.256 0.245 0.250        0.011
+    D     0.31-0.49   0.374 0.377 0.387        0.013
+    E     0.49-1.00   0.612 0.615 0.641        0.029
 
-Total dissipation and summed BAR variance both bottom out at N = 5 and get worse
-after, because past that the holds cost more ramp time than the finer partition
-saves. The LOO column is the price of transfer: boundaries fitted on two runs,
-scored on the worst stage of the third, against boundaries fitted on the third
-itself. It climbs monotonically, so each added boundary generalises less well than
-the last. Six stages cost 1 ns of ramp, 2.8% more dissipation and one more boundary
-to overfit, and returned nothing. Widths are calibrated rather than assumed:
-kappa = sigma^2/(2 RT W) measures 2.57 over the nine run/stage pairs, so the works
-are wider than linear response and overlap is easier than it would otherwise be.
+Three to four times more reproducible than the quantity the reverted table was
+fitted to, on the same runs.
+
+WHICH STAGES, AND WHY NOT THE OBVIOUS ONE. n_sigma = 2*diss/sigma predicts the
+overlap count at r = -0.85 over all 60 ramp-stage instances run so far, and NO stage
+below n_sigma 2.5 has ever lost BAR (0 of 39) against 3 of 21 above it. Per run, the
+stage that binds is:
+
+    test13 B 3.11   test14 D 2.53   test15 B 3.24   test24 B 2.76
+    test25 C 3.48   test26 C 3.97   test27 C 3.08   test28 D 3.13
+
+B three times, C three times, D twice, and stage E never, although E is the one that
+lost BAR in test27. THE BOTTLENECK ROTATES BETWEEN DRAWS, which is the same fact that
+made placement unfittable, seen from the other side: a table tuned to relieve one
+stage does not help the run where a different one binds. So B, C, D and E are all
+subdivided and A, at n_sigma 1.51, is left alone. Predicted worst n_sigma per run:
+
+    splits          stages   mean worst   max    runs over 2.5
+    none               5        3.16      3.97       8/8
+    E only             6        3.19      4.00       8/8   <- E is not the bottleneck
+    D+E                7        3.11      4.02       6/8
+    C+D+E              8        2.72      3.31       5/8
+    B+C+D+E            9        2.30      2.89       2/8
+
+WHY IT COSTS NOTHING. Each new boundary buys a hold in each direction out of a fixed
+80 ns of legs. Eight internal holds at RAMP_HOLD_PS = 350 cost 2.8 ns per direction
+against the four at 500 they replace costing 2.0, so the switching budget goes 26.0
+to 25.2 ns and the cycle stays at 100.1 ns. See RAMP_HOLD_PS for why 350 is still
+ample. What it does cost is legs: 43 per cycle rather than 27, and a 43-field result
+row rather than 27.
+
+Widths are calibrated rather than assumed: kappa = sigma^2/(2 RT W) measures 2.57
+over the nine run/stage pairs, so the works are wider than linear response and
+overlap is easier than it would otherwise be. Splitting does not spend that: sigma
+scales as sqrt(W), so two halves of a stage carry the same summed BAR variance as
+the whole did, at better overlap.
+
+WHAT SUBDIVISION DOES NOT REACH is stage I, the last one. It carries 71% of the
+ramp's dH/dlambda free energy because a harmonic restraint switched linearly in
+lambda has dF/dlambda diverging at the endpoint -- measured here as
+(1-lambda)^-0.44, with half of the stage's dhdl dissipation beyond lambda = 0.94.
+That is a shape problem, not a size one: in test27 both of stage E's work histograms
+were skewed the same way (+1.27 and +1.26), so their tails pointed away from each
+other and met nowhere. The fix for that is to let lambda run on its own schedule
+instead of tracking u, which costs nothing structurally (delta-lambda and
+pull-coordN-rate are already separate mdp fields; only legs() ties them) but is a
+redesign and is deliberately NOT bundled here. The same singularity is why bound
+sub-leg 1, which spans the lambda -> 0 end, has sd_fwd/sd_rev = 4.78.
 
 WHY NOT JUST RETIME. Because that is exhausted. The previous 17/3.5/3.5 split was
 already within 5% of optimal against the measured friction, and reallocating between
@@ -178,9 +210,16 @@ THE PROBE IS REPLICATED. N_PROBES independent equilibrations, everything measure
 the pooled second half of all of them. This is the only part of the design that
 touches the between-run scatter; see N_PROBES.
 
-167 ns per cycle, plus the 0.1 ns NVT ladder job_fe.run runs ahead of it. It was
-100 before the switching legs were doubled; the holds and npt_c are unchanged, so
-the fixed 33 ns is the same and only the 67 ns of switching became 134.
+WHAT IS LEFT AFTER ALL OF IT. Eight runs of one protocol give dG_bind = -35.6 under
+BAR with a between-run sd of 4.17 against a mean reported interval of 4.62, so the
+interval is finally honest (it was 14.4 against 4.4 before the probe was
+replicated). 4.17 is a floor set by the setup draw and no number of cycles reduces
+it; three replicate setups per structure would. The per-CHANNEL intervals are still
+1.2 to 5.1 times too small, and the total's is right only because dG_intro and
+dG_unbind anticorrelate at r = -0.89.
+
+100.1 ns per cycle: 20 npt_c, 80 of legs, plus the 0.1 ns NVT ladder job_fe.run runs
+ahead of it.
 """
 import sys
 
@@ -190,12 +229,34 @@ PULL_DIST = 1.0          # nm of COM-COM separation added over the whole ramp
 
 # (stage letter, u_from, u_to, ps). Must be contiguous, start at 0 and end at
 # PULL_DIST. Adding or moving a boundary is an edit to THIS LIST and nothing else.
+#
+# The five stages of the 2026-08-20 table, four of them cut in half at the point
+# measured to halve their own dissipation. The parents are recorded because the
+# times are derived from them rather than chosen: each pair shares its parent's
+# time in proportion to its span, which is what keeps the rate constant across the
+# cut and makes the split point a measurement rather than a fit. Every parent total
+# is then scaled by 25.2/26.0 to pay for the four new holds.
+#
+#   parent  window       ps      ->  halves                         ps
+#   A     0.000-0.120   5200         A  0.000-0.120                5040
+#   B     0.120-0.200   5200         B  0.120-0.166   C 0.166-0.200  2898 / 2142
+#   C     0.200-0.310   5200         D  0.200-0.250   E 0.250-0.310  2291 / 2749
+#   D     0.310-0.490   5200         F  0.310-0.379   G 0.379-0.490  1932 / 3108
+#   E     0.490-1.000   5200         H  0.490-0.622   I 0.622-1.000  1304 / 3736
+#
+# Single letters, not B1/B2, so every downstream name stays one character: the leg
+# files (bindfwdG_*), the scores columns (dG_unbG_bar) and the diagnostic's
+# --leg unbindG all read the letter straight off this table.
 RAMP = [
-    ("A", 0.0,  0.12, 5200.0),
-    ("B", 0.12, 0.20, 5200.0),
-    ("C", 0.20, 0.31, 5200.0),
-    ("D", 0.31, 0.49, 5200.0),
-    ("E", 0.49, 1.00, 5200.0),
+    ("A", 0.0,   0.120, 5040.0),
+    ("B", 0.120, 0.166, 2898.0),
+    ("C", 0.166, 0.200, 2142.0),
+    ("D", 0.200, 0.250, 2291.0),
+    ("E", 0.250, 0.310, 2749.0),
+    ("F", 0.310, 0.379, 1932.0),
+    ("G", 0.379, 0.490, 3108.0),
+    ("H", 0.490, 0.622, 1304.0),
+    ("I", 0.622, 1.000, 3736.0),
 ]
 
 # THE BOUND LEG IS STAGED TOO, but NOT because it needs the overlap. Pooled over the
@@ -233,7 +294,20 @@ BOUND = [
 # and 700 ps, about 40 tau, where the purely mid-ramp holds settle in 0-300. They
 # cross a change of restraint regime rather than a lambda step, so they keep 1 ns.
 # The bound leg's own internal hold is a handoff of the same kind and keeps 1 ns too.
-RAMP_HOLD_PS    = 500.0    # holds between ramp stages, both directions
+#
+# 500 -> 350 with the nine-stage table, and this is what pays for it. Eight internal
+# holds at 350 cost 2.8 ns per direction against the four at 500 they replace costing
+# 2.0, so the switching budget goes 26.0 to 25.2 ns and four extra boundaries cost
+# 0.8 ns of switching rather than 2.0.
+#
+# 350 and not 300, which is where the arithmetic came out first: tau is 11-16 ps, so
+# 300 is 18.75 tau against the slowest of those and 350 is 21.9. The 20 tau floor is
+# tests/test_staged.py's, and it is the only thing standing between "the holds are
+# measured" and "the holds are whatever was left over after the stages were paid
+# for". Moving the threshold to fit the table would have removed the check that the
+# table is honest, so the table moved instead; the 50 ps costs 1.6 ns of switching
+# per cycle out of 50.4 and the cycle length does not change either way.
+RAMP_HOLD_PS    = 350.0    # holds between ramp stages, both directions
 HANDOFF_HOLD_PS = 1000.0   # holdfwd0 / holdrev0, and the bound leg's internal hold
 UNBOUND_HOLD_PS = 5000.0   # the hold at u = PULL_DIST, between the two directions
 NPT_PS          = 20000.0  # per-cycle equilibration of the bound state

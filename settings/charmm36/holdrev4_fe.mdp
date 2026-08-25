@@ -1,4 +1,4 @@
-; holdrev4_fe.mdp - 0.5 ns equilibrium hold at u = 0.49, lambda = 0.49.
+; holdrev4_fe.mdp - 0.35 ns equilibrium hold at u = 0.25, lambda = 0.25.
 ; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage
 ; works still sum exactly to the work of the whole ramp. It exists so the
 ; stages either side of it can be estimated SEPARATELY and their estimates
@@ -6,10 +6,10 @@
 ; summing their per-cycle works instead would reproduce the unstaged
 ; distribution exactly and gain nothing.
 ;
-; nsteps 125000 * dt 0.004 = 500 ps.
+; nsteps 87500 * dt 0.004 = 350 ps.
 
 integrator               = md
-nsteps                   = 125000
+nsteps                   = 87500
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -63,7 +63,7 @@ gen_vel                  = no
 
 ; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
 free-energy              = yes
-init-lambda              = 0.49
+init-lambda              = 0.25
 delta-lambda             = 0
 dhdl-derivatives         = yes
 nstdhdl                  = 500

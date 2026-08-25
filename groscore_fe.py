@@ -1047,7 +1047,9 @@ def read_works(filepath, workdir="results_fe.d"):
   # and still scores. Each width listed is unique to one (nbound, nstages) pair, so
   # the order matters only for widths more than one rule could claim.
   _CUR = {P.result_nf(): (P.n_bound(), P.n_stages())}
-  _PAST = {31: (2, 6)}          # the six-stage ramp, shipped 2026-08-17 to 08-18
+  # ONE LINE. Both _layout rules are lifted out by regex so the two copies of this
+  # arithmetic can be checked against each other, and that regex reads a line.
+  _PAST = {31: (2, 6), 27: (2, 5)}   # six-stage ramp 08-17..08-18, five-stage ..08-25
 
   def _layout(nf):
     if nf in _CUR:
@@ -1973,7 +1975,13 @@ def score(structids):
       # Physical stage works. Each stage's forward and reverse pair up directly:
       # read_works has already undone the protocol's storage order, in which the
       # reverse stages appear in the order they run rather than in stage order.
-      LETTERS = "ABCDEFGH"
+      # The letters come from the protocol, not from a string here. A literal
+      # "ABCDEFGH" survived the ramp going from three stages to five twice over and
+      # then silently ran out at nine, naming stage I as "9" in every column header
+      # and every plot while the arithmetic stayed right -- the same shape as the
+      # parallel hardcoded lists fe_protocol exists to remove. A row from a ramp
+      # LONGER than the current one still has to be named, so the fallback stays.
+      LETTERS = P.stage_letters()
       stage_w = []
       for i in range(nstages):
         f = [SIGN_PULL_FWD * c[4][i][0] + c[4][i][1] for c in cycles]
