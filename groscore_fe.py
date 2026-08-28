@@ -2037,6 +2037,34 @@ def score(structids):
     conv.append((sid, W_intro, W_remove, Wtot_f, Wtot_r, stage_w, dG_release,
                  staged, bound_w if len(bound_w) > 1 else None))
 
+    # WORK OVERLAP, the variable that says when to distrust BAR on this row.
+    #
+    # BAR is the headline and it is the estimator with a measured overlap bias:
+    # over three protocols on 2KTF the BAR-minus-avg gap ran +5.52 / +3.56 / +1.55
+    # at mean overlaps of 35 / 44 / 43%, r = -0.82, always in the same direction
+    # (BAR reads LESS negative when the histograms barely meet). Regressed per run
+    # over sixteen runs, BAR carries a dissipation slope of +0.201 +- 0.122 where
+    # avg and cgi are flat. None of that is visible in the free energies or in
+    # their intervals, and at validation scale nobody is going to read setup logs
+    # for hundreds of structures, so the two numbers that predict it go in the row.
+    #
+    # Both run over EVERY BAR channel, bound sub-legs included, because that is
+    # what the dG_bind in the same row is a sum over and a channel left out of the
+    # summary is a channel that can fail unwatched. The consequence to know when
+    # reading them: the bound legs are near-reversible by construction and sit at
+    # 90-98%, so they compress the MEAN towards the middle. **The MIN is the
+    # discriminating one** -- it is what goes to zero when a structure loses BAR,
+    # and on test27 it reads exactly 0.00 against a mean of 47%.
+    #
+    # Diagnostic only. A low-overlap structure still reports its free energies,
+    # exactly as a high-RMSD one does; this says which rows to believe.
+    ov = []
+    for _n, _f, _v in (list(bound_w) + list(stage_w)):
+      c = est.overlap_count(_f, _v)
+      ov.append(100.0 * c / (2 * len(_f)) if len(_f) else float('nan'))
+    r['ovl_mean'] = float(np.mean(ov)) if ov else float('nan')
+    r['ovl_min'] = float(np.min(ov)) if ov else float('nan')
+
     # Rebinding sanity check: the thermodynamic cycle only closes if the
     # rebinding leg put the partners back into the pose the bound leg started
     # from. Diagnostic only -- the free energies are reported either way.
@@ -2112,7 +2140,7 @@ def score(structids):
           + (stage_cols + "  " if stage_cols else "")
           + "dG_intro_1s_bar  dG_intro_1s_bar_CI  "
             "dG_unbind_1s_bar  dG_unbind_1s_bar_CI  "
-            "dG_release  RMSD_mean_A  RMSD_max_A  Ncycles  Note")
+            "dG_release  Overlap_mean_pct  Overlap_min_pct  RMSD_mean_A  RMSD_max_A  Ncycles  Note")
   N_NUMERIC = len(cols.split()) - 2          # every column but Ncycles and Note
   with open("scores_fe.gs", "w") as f:
     f.write("# GroScore-FE absolute binding free energies (kJ/mol; pKD dimensionless, T=%.1f K)\n" % args.temp)
@@ -2164,7 +2192,8 @@ def score(structids):
                    cell(r.get("unb%s_bar_ci" % L, float('nan')))]
         vals += [cell(r['intro1s_bar']), cell(r['intro1s_bar_ci']),
                  cell(r['unb1s_bar']), cell(r['unb1s_bar_ci']),
-                 cell(gr), cell(r['rmsd_mean']), cell(r['rmsd_max'])]
+                 cell(gr), cell(r['ovl_mean']), cell(r['ovl_min']),
+                 cell(r['rmsd_mean']), cell(r['rmsd_max'])]
         f.write("\t".join([sid] + vals + [str(n), note]) + "\n")
 
   done = len(rows_valid)
