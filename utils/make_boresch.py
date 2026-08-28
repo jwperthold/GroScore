@@ -185,26 +185,37 @@ interfacecutoff = 0.6
 # it is why the per-channel intervals are 4-5x too small and it fed the stage that
 # loses BAR.
 #
-# 0.9 nm is chosen so the pass is NON-BINDING rather than merely wider. The
-# frame-to-mean shift measured over those eight runs is +1.1 to +2.0 A on average
-# with an rms of 1.6 to 2.7 A, and the pairs the mean cutoff already rejects reach
-# 0.906 nm from inside 0.6, i.e. shifts of +0.3 nm; 0.9 covers the mirror image of
-# that. Whether it actually was non-binding is not assumed: finalise_interface
-# reports the margin between the widest RESTRAINED pair's frame distance and this
-# cut, and a margin near zero means 0.9 is too tight for that interface.
+# The cut must be wide enough that it is NON-BINDING, not merely wider. That is a
+# claim about each interface, not a general one, so finalise_interface reports the
+# margin between the widest RESTRAINED pair's frame distance and this cut, and warns
+# when there is none.
 #
-# MEASURED, by re-running this on test27's own five probe replicas. Candidates go
-# 672 -> 3786 and the spring set goes 228 at k = 54.82 to 281 at k = 44.48, of which
-# 53 -- 19% of the final set -- sat beyond 0.6 nm in the reference frame and could
-# not have been candidates at all before. The widest restrained pair sat at
-# 0.793 nm, so 0.9 was not binding, but with 0.107 nm to spare rather than a lot:
-# that number is what to watch on a new interface, not this comment. The anchor
-# search is untouched by any of it and reproduced test27's triad exactly, down to
-# r 1.4407 -> 1.4602 nm and 4.9 deg of frame rotation.
+# 0.9 -> 1.2 AFTER THAT DIAGNOSTIC FIRED. 0.9 came from the frame-to-mean shift over
+# eight runs (+1.1 to +2.0 A on average, rms 1.6 to 2.7 A) plus the +0.3 nm reach of
+# the pairs the mean cutoff already rejects. It held on test27 with 0.107 nm to
+# spare, and then, on the five runs at that setting:
 #
-# Cost, on the same run: 2m22s and 1.6 GB peak, against a trajectory pass that is
-# chunked precisely so this cut can be chosen on physics (see CHUNK_BYTES).
-CANDIDATE_CUT = 0.9
+#     test29  margin 0.205      test31  margin 0.013   <- binding
+#     test30  margin 0.155      test32  margin 0.019   <- binding
+#     test33  margin 0.097
+#
+# Two of five had restrained pairs at 0.887 and 0.881 nm against a 0.9 cut, so for
+# those the frame was deciding the spring set again -- exactly what the wide pass
+# exists to stop. test32 also came out with the fewest springs of the five (289) and
+# the stiffest set (43.25), which is what a binding cut looks like downstream.
+#
+# 1.2 gives 0.6 nm of headroom against an rms shift of 0.16 to 0.27 nm, i.e. well
+# past anything measured, and costs roughly double the candidates. That is affordable
+# only because the trajectory pass is chunked (see CHUNK_BYTES); without it the cut
+# would be chosen on what fits in memory rather than on the physics.
+#
+# WHAT THE WIDE PASS BUYS, measured. At 0.9 on test27's own probes the spring set
+# went from 228 at k = 54.82 to 281 at k = 44.48, of which 53 -- 19% of the final
+# set -- could not have been candidates before. Over test29-33 the sets are 344 +- 38
+# springs at k = 36.7 against 268 +- 33 at k = 47.2 for the eight runs before it. The
+# anchor search is untouched by any of it and reproduced test27's triad exactly, down
+# to r 1.4407 -> 1.4602 nm and 4.9 deg of frame rotation.
+CANDIDATE_CUT = 1.2
 
 en_min = 0.4
 en_max = 0.9
@@ -1848,6 +1859,15 @@ if _ens:
   ref_r, ref_thA, ref_thB = _ens["r"], _ens["thA"], _ens["thB"]
   ref_phA, ref_phB, ref_phC = _ens["phA"], _ens["phB"], _ens["phC"]
   REF_SOURCE = "mean over %d frames from %d replica(s)" % (_enf, len(TRAJ_PAIRS))
+  # The three dihedral shifts are DIFFERENCES OF ANGLES and have to be wrapped to
+  # (-180, 180] like everything else about a dihedral. Unwrapped, test32 reported
+  # phi_A as having "moved 353.6 deg" when it moved -6.4, which reads as the
+  # reference having been thrown away and is the same wrap the circular mean exists
+  # to handle. Diagnostic only, but a diagnostic nobody can believe is worse than
+  # none: this line is what a reader checks before trusting dG_release.
+  def _wrap(x):
+    return (x + 180.0) % 360.0 - 180.0
+
   sys.stderr.write(
       "make_boresch: Boresch geometry averaged over %d pooled frames from %d "
       "replica(s). r %.4f -> %.4f nm (sd %.4f); angles/dihedrals moved "
@@ -1856,7 +1876,8 @@ if _ens:
       "orientation and the mean is not a pose.\n"
       % (_enf, len(TRAJ_PAIRS), _snap["r"], ref_r, _esd["r"],
          ref_thA - _snap["thA"], ref_thB - _snap["thB"],
-         ref_phA - _snap["phA"], ref_phB - _snap["phB"], ref_phC - _snap["phC"],
+         _wrap(ref_phA - _snap["phA"]), _wrap(ref_phB - _snap["phB"]),
+         _wrap(ref_phC - _snap["phC"]),
          _esd["phA"], _esd["phB"], _esd["phC"]))
 else:
   sys.stderr.write("make_boresch: Boresch geometry NOT averaged (%d usable frames); "
@@ -1960,12 +1981,19 @@ def finalise_interface(cands):
            args.sum_k / max(len(keep), 1), args.sum_k / max(len(pairs), 1),
            args.sum_k))
 
-  # WAS THE CANDIDATE PASS NON-BINDING? The whole point of enumerating at
-  # CANDIDATE_CUT is that the frame stops deciding which pairs are restrained, and
-  # that is a claim about THIS interface, not a general one. Two numbers settle it:
-  # how many springs the old 0.6 nm pass would have missed, and how much room is
-  # left between the widest restrained pair's frame distance and the cut. A margin
-  # near zero means 0.9 nm is too tight here and the frame is deciding again.
+  # HOW CLOSE DID THE CANDIDATE PASS COME TO BINDING? Two numbers: how many springs
+  # the old 0.6 nm pass would have missed, and how much room is left between the
+  # widest RESTRAINED pair's frame distance and the cut.
+  #
+  # READ THE MARGIN AS PROXIMITY, NOT AS LOSS. It says how near the widest spring
+  # sat to the edge, which is not the same as pairs having fallen off it: a narrow
+  # margin only means a slightly different draw might have lost some. This wording
+  # is second-hand experience. At CANDIDATE_CUT = 0.9 test31 and test32 reported
+  # 0.013 and 0.019 nm and the line here said, flatly, to raise the cut. Raising it
+  # to 1.2 and re-running both on their own five probe replicas returned spring sets
+  # IDENTICAL to the 0.9 ones -- 321 at k = 38.94 and 289 at k = 43.25, to the pair.
+  # Nothing had been lost; only the headroom was thin. The direct test is to widen
+  # and compare the spring count, and that is what the line now asks for.
   gained = [p for p in keep if _snap_of.get((p[0], p[1]), 0.0) > interfacecutoff]
   widest = max((_snap_of.get((p[0], p[1]), 0.0) for p in keep), default=0.0)
   sys.stderr.write(
@@ -1976,8 +2004,9 @@ def finalise_interface(cands):
       % (len(gained), len(keep), 100.0 * len(gained) / max(len(keep), 1),
          interfacecutoff, widest, CANDIDATE_CUT - widest, CANDIDATE_CUT,
          "" if CANDIDATE_CUT - widest > 0.05 else
-         " -- WHICH IS NOT MARGIN. Raise CANDIDATE_CUT: this frame is still "
-         "deciding which pairs the ensemble gets to rule on."))
+         " -- thin enough to check rather than trust. Re-run with a wider "
+         "CANDIDATE_CUT and compare the spring count: unchanged means nothing was "
+         "being lost off the edge and only the headroom was small."))
   if not keep:
     abort("NO_INTERFACE_CONTACTS",
           "all %d candidate pairs have a mean distance beyond %.2f nm, so the "

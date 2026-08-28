@@ -20,7 +20,10 @@ hold for that to be true rather than merely intended, and each is checked here:
   * the pass must be WIDER than the cutoff, and the enumeration must use the wide
     number while the cutoff still applies to the mean
   * the run must SAY whether the pass was actually non-binding on this interface,
-    since 0.9 nm is a measurement on 2KTF and not a law
+    since the cut is a measurement on 2KTF and not a law. This is not decoration:
+    the first value chosen, 0.9 nm, was non-binding on the run it was tuned against
+    and then bound on two of the next five, and the only reason that is known is
+    that the margin is printed every time.
   * the width-ceiling floor must count SPRINGS, not candidates. This one is the
     trap: the two counts were identical while candidates were enumerated at the
     cutoff, and widening the pass silently inflates the candidate count, so a floor
@@ -55,8 +58,13 @@ check("CANDIDATE_CUT exists", CAND is not None)
 check("interfacecutoff is still %.2f nm" % (CUT or -1), CUT == 0.6, str(CUT))
 check("and the candidate pass is wider (%.2f > %.2f)" % (CAND or -1, CUT or -1),
       CAND is not None and CAND > CUT, "%s vs %s" % (CAND, CUT))
-check("wide enough to cover the +0.3 nm frame-to-mean shifts already observed",
-      CAND is not None and CAND - CUT >= 0.25, str(CAND))
+# 0.3 nm of headroom was the first answer and it was not enough: two of the five
+# runs at CANDIDATE_CUT = 0.9 came back with restrained pairs at 0.887 and 0.881 nm,
+# i.e. margins of 0.013 and 0.019, so the frame was choosing the spring set again on
+# 40% of draws. The floor is now 0.5, which is past every frame-to-mean shift
+# measured (rms 0.16 to 0.27 nm).
+check("with at least 0.5 nm of headroom, since 0.3 was measured to be too little",
+      CAND is not None and CAND - CUT >= 0.5, str(CAND))
 
 print("\n[2] the enumeration uses the wide cut, the cutoff still uses the mean")
 enum = src[src.index("interdis = []"):]
@@ -76,8 +84,15 @@ check("it counts the springs the old 0.6 nm pass would have missed",
       "would not have been candidates at all" in fin)
 check("it reports the margin to the candidate cut",
       "CANDIDATE_CUT - widest" in fin)
-check("and warns when that margin is gone",
-      "WHICH IS NOT MARGIN" in fin and "Raise CANDIDATE_CUT" in fin)
+# The margin is PROXIMITY, not loss. When it fired on test31 and test32 at 0.9,
+# widening to 1.2 returned spring sets identical to the pair, so nothing had been
+# falling off the edge. The note must therefore ask for the direct test rather than
+# assert a conclusion the number cannot support.
+check("and flags a thin margin without claiming pairs were lost",
+      "thin enough to check rather than trust" in fin
+      and "compare the spring count" in fin)
+check("the earlier wording, which did claim it, is gone",
+      "WHICH IS NOT MARGIN" not in src)
 
 print("\n[4] the width-ceiling floor counts SPRINGS, not candidates")
 m = re.search(r"^\s*n_left = (.*)$", src, re.M)
