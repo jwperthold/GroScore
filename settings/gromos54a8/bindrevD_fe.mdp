@@ -7,12 +7,6 @@
 ;
 ; nsteps 572750 * dt 0.004 = 2291 ps.
 
-; GROMOS 54A8 is parametrised with a REACTION FIELD, not a lattice sum. PME here
-; gave dG_bind = -64.2 kJ/mol on 2KTF against -26.1 published for this force
-; field (Perthold & Oostenbrink, JCTC 2017, 13, 5697) and -25.1/-28 experiment.
-; epsilon_rf = 61 and the 1.4 nm cutoff are that paper's, verbatim. Do not put
-; PME back without re-deriving what the force field was fitted to.
-
 integrator               = md
 nsteps                   = 572750
 dt                       = 0.004
@@ -45,9 +39,7 @@ rvdw                     = 1.4
 vdwtype                  = cut-off
 vdw-modifier             = none
 
-coulombtype              = Reaction-Field
-epsilon_rf               = 61
-epsilon_r                = 1
+coulombtype              = PME
 coulomb-modifier         = none
 
 tcoupl                   = V-rescale

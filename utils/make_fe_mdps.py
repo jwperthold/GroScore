@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fe_protocol as P
 
 SET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings")
-FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8"]
+FFS = ["amber19sb_opc3", "amber19sb_opc", "charmm36", "gromos54a8",
+       "gromos54a8_rf"]
 
 # Which base mdp each kind of leg inherits its physics from.
 BASE = {"stage_fwd": "bind.mdp", "stage_rev": "bindrev.mdp",

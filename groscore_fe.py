@@ -102,7 +102,7 @@ parser.add_argument('--sd-max', dest='sd_max', type=float, default=None,
                          "remembered value, or DEFAULT_SD_MAX for a fresh directory).")
 parser.add_argument('-s', '--structparams', type=str, default="sp.gs", help="Structure parameter file (default: sp.gs).")
 parser.add_argument('-ff', '--forcefield', type=str, default=None,
-                    choices=["gromos54a8", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
+                    choices=["gromos54a8", "gromos54a8_rf", "charmm36", "amber19sb_opc", "amber19sb_opc3"],
                     help="Force field (default: amber19sb_opc3). Remembered in "
                          "run_config.gs: a directory whose cycles were built under "
                          "one force field cannot have the rest built under another.")

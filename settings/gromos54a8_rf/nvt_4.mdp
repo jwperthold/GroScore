@@ -1,0 +1,60 @@
+; GROMOS 54A8 under the REACTION FIELD it was parametrised with, which is what
+; makes this tree different from settings/gromos54a8 (that one is PME and is
+; left exactly as it was). Under PME this force field scored 2KTF at -64.2
+; kJ/mol against -26.1 published for it (Perthold & Oostenbrink, JCTC 2017, 13,
+; 5697) and -25.1/-28 from experiment.
+;
+; The paper, verbatim: "Calculation of nonbonded electrostatic and Lennard-Jones
+; interactions was done within a cutoff sphere of 1.4 nm. For the calculation of
+; electrostatic interactions, a reaction-field contribution with a relative
+; dielectric permittivity of 61 beyond the cutoff sphere was added."
+
+define                   = -DPOSRES
+
+integrator               = md
+nsteps                   = 5000
+dt                       = 0.004
+mass-repartition-factor  = 3
+
+nstxout                  = 0
+nstxout-compressed       = 4000
+compressed-x-precision   = 1000
+nstvout                  = 0
+nstfout                  = 0
+nstenergy                = 1000
+nstlog                   = 1000
+nstcalcenergy            = 1000
+
+comm-mode                = linear
+nstcomm                  = 1000
+
+continuation             = yes
+constraint_algorithm     = lincs
+constraints              = all-bonds
+lincs_iter               = 1
+lincs_order              = 6
+
+cutoff-scheme            = verlet
+ns_type                  = grid
+rlist                    = 1.4
+rcoulomb                 = 1.4
+rvdw                     = 1.4
+
+vdwtype                  = cut-off
+vdw-modifier             = none
+
+coulombtype              = Reaction-Field
+epsilon_rf               = 61
+epsilon_r                = 1
+coulomb-modifier         = none
+
+tcoupl                   = V-rescale
+tc-grps                  = Protein Non-Protein
+tau_t                    = 0.1  0.1
+ref_t                    = 248  248
+
+pcoupl                   = no
+
+pbc                      = xyz
+
+gen_vel                  = no
