@@ -143,16 +143,16 @@ python ../groscore.py
 - `-n, --numruns` - Number of independent pull/push cycles (default: 5)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, or `charmm36`
-- `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
+- `--no-cutout` - Simulate the full protein structure (slower; the interface cutout is the default)
 - `--no-ligand-param` - Skip OpenFF small molecule parametrization (AMBER forcefields).
 - `--slurm` - SLURM template name from `slurm/` directory (default: `workstation`). Templates are plain `#SBATCH`-prefixed shell scripts; ship with `slurm/workstation.sh` (single workstation) and `slurm/vsc5.sh` (VSC-5 cluster). To target a different system, drop a new `<name>.sh` template into `slurm/` and pass `--slurm <name>`.
-- `--run-local` - Run on this machine instead of submitting to SLURM, spreading jobs over the local GPUs. Requires `--ngpus`. See [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation)
+- `--run-local` - Run the jobs on this machine, spread over the local GPUs. Requires `--ngpus`. See [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation)
 - `--ngpus N` - Number of GPUs to distribute local jobs over (mandatory with `--run-local`)
 - `--jobs-per-gpu N` - Concurrent jobs per GPU in local mode (default: 8; `0` starts every job at once)
 - `--threads-per-job N` - CPU threads per local job, i.e. `gmx mdrun -nt` (default: 1)
 - `--restart` - Resubmit jobs (useful for continuing interrupted runs)
 - `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures (skipped by default)
-- `--rmsd-warn` - Threshold in Å for the [rebinding QC](#rebinding-sanity-check-qc) (default: 10.0). Only flags structures, never changes a score
+- `--rmsd-warn` - Threshold in Å for the [rebinding QC](#rebinding-sanity-check-qc) (default: 10.0). Flags structures; scores are unaffected
 
 This will:
 - Generate `struct_map.gs` (maps SLURM array indices to structure IDs)
@@ -183,7 +183,7 @@ Results are written to two output files ranked by binding affinity:
 
 Note that CGI requires at least 20 cycles to fit forward and reverse work distributions; with the default `--numruns 5` only `scores_avg.gs` is produced. Increase `-n` if you want CGI estimates.
 
-Both files also carry `BAR`, `BAR_CI95` and `BAR_note` as **appended** columns. BAR is a comparison column here and not the classic score, which stays the average. On the classic protocol it will read `nan ... BAR_NO_OVERLAP` on essentially every structure, and that is the informative part: forward and reverse works are separated by roughly 132 RT at the current pull rate, so no sampled work lies in the region a bidirectional estimator reads ΔG from. BAR leads the FE scores for the same reason it cannot lead these: there the works are split into stages that each overlap, and here they are not.
+Both files also carry `BAR`, `BAR_CI95` and `BAR_note` as **appended** columns. BAR is a comparison column here; the classic score remains the average. On the classic protocol it will read `nan ... BAR_NO_OVERLAP` on essentially every structure, and that is the informative part: forward and reverse works are separated by roughly 132 RT at the current pull rate, so no sampled work lies in the region a bidirectional estimator reads ΔG from. On the FE protocol the works are split into stages that each overlap, which is why BAR leads those scores.
 
 #### Interpreting the score
 
@@ -203,7 +203,7 @@ python ../groscore.py -n 5 --run-local --ngpus 8
 
 Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate: GroScore systems are small enough to run essentially GPU-resident (nonbonded, PME and the update/constraints all offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor.
 
-**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default 8 jobs share each GPU (`--jobs-per-gpu 8`), as a single cutout-sized system leaves the GPU idle during CPU-side work, so stacking jobs raises *aggregate* throughput well past what one job per device achieves. Anything beyond `--ngpus × --jobs-per-gpu` waits in a queue and starts as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically rather than pre-assigned, so a slow structure cannot leave its GPU idle at the end of the run.
+**How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default 8 jobs share each GPU (`--jobs-per-gpu 8`), as a single cutout-sized system leaves the GPU idle during CPU-side work, so stacking jobs raises *aggregate* throughput well past what one job per device achieves. Anything beyond `--ngpus × --jobs-per-gpu` waits in a queue and starts as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically, so a slow structure cannot leave its GPU idle at the end of the run.
 
 | Option | Effect |
 |---|---|
@@ -228,7 +228,7 @@ To stop a run, `kill` the pid in `local_runner.pid`; the runner terminates its r
 
 ## Rebinding Sanity Check (QC)
 
-A cycle's work only describes the intended binding event if the push leg actually put the complex back together. If the partners re-associate in a different pose, or drift apart and never return, the integrated force curve is still a number, just not the number you wanted. Every cycle of both engines is therefore checked automatically; no extra command is needed.
+A cycle's work only describes the intended binding event if the push leg actually put the complex back together. If the partners re-associate in a different pose, or drift apart and stay apart, the integrated force curve still yields a number, and that number describes a different event. Every cycle of both engines is therefore checked automatically; no extra command is needed.
 
 `utils/rebound_rmsd.py` measures the **backbone RMSD between the bound state the cycle was equilibrated in and the state the rebinding leg ended in**:
 
@@ -239,7 +239,7 @@ A cycle's work only describes the intended binding event if the push leg actuall
 
 ### Reading the result
 
-`groscore.py` adds three columns to `scores_avg.gs` / `scores_cgi.gs` (and to the per-cycle `scores_*_c<N>.gs`), summarising exactly the cycles that entered the score:
+`groscore.py` adds three columns to `scores_avg.gs` / `scores_cgi.gs` (and to the per-cycle `scores_*_c<N>.gs`), summarizing exactly the cycles that entered the score:
 
 ```
 # Structure_ID  Score  CI95  Cycles_Used  RMSD_mean_A  RMSD_max_A  RMSD_flag
@@ -259,7 +259,7 @@ Rebinding sanity check (backbone RMSD of the re-bound structure, warn > 10.0 A):
     2OOB                 c1=18.7, c4=12.3
 ```
 
-The console stays short whatever the screen size: one aggregate line, then the ten worst structures (five bad cycles each) and a count of the rest. `grep HIGH_RMSD scores_avg.gs` gives the complete list. Individual per-cycle values are printed once each into the structure's own SLURM log, not into the summary.
+The console stays short whatever the screen size: one aggregate line, then the ten worst structures (five bad cycles each) and a count of the rest. `grep HIGH_RMSD scores_avg.gs` gives the complete list. Individual per-cycle values are printed once each into the structure's own SLURM log, whereas the summary keeps the aggregate.
 
 `groscore_fe.py` behaves the same way, with `RMSD_mean_A` / `RMSD_max_A` columns and a `HIGH_RMSD` entry in the `Note` column of `scores_fe.gs`. There the check has a second meaning: the thermodynamic cycle is only closed if the rebinding leg returned the system to the state the bound leg started from.
 
@@ -270,9 +270,9 @@ The console stays short whatever the screen size: one aggregate line, then the t
 | 1–5 Å | Normal. Thermal fluctuation plus whatever the interface relaxed into during the cycle. |
 | 5–10 Å | Worth a look. Partial rebinding, a shifted interface, or a flexible loop that did not recover. |
 | > 10 Å | `HIGH_RMSD`. The partners did not return to the original pose. |
-| `nan` | Not measured: a run that predates the check, or a failed measurement. Never an error. |
+| `nan` | Not measured: a run that predates the check, or a failed measurement. Benign in either case. |
 
-The threshold is `--rmsd-warn` (default 10.0 Å) on both engines. **Scores and free energies are always computed and reported**: the check never aborts a simulation, never drops a cycle and never changes a number. It tells you which results to distrust: with a handful of flagged cycles, the usual response is to add cycles (`-n` plus `--restart`) and see whether the structure's score is dominated by them.
+The threshold is `--rmsd-warn` (default 10.0 Å) on both engines. **Scores and free energies are always computed and reported**: the check runs alongside the pipeline and leaves every simulation, every cycle and every number in place. It marks which results warrant distrust: with a handful of flagged cycles, the usual response is to add cycles (`-n` plus `--restart`) and see whether the structure's score is dominated by them.
 
 A single measurement can also be taken by hand from inside a structure directory (`<project>/<structure_id>/`):
 
@@ -319,7 +319,7 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 
 All force fields use:
 - **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
-- **Constraints**: h-bonds, which with `mass-repartition-factor = 3` is what justifies the 4 fs timestep. Constraining heavy-atom bonds as well builds coupled constraint chains longer than GPU LINCS supports, which disables the GPU-resident update and cost 1.29× in throughput on the real 2KTF system. GROMOS 54A8 keeps **all-bonds**: it is united-atom, so hydrogen mass repartitioning has almost nothing to act on, and all bonds constrained is its native validated protocol rather than a workaround
+- **Constraints**: h-bonds, which with `mass-repartition-factor = 3` is what justifies the 4 fs timestep. Constraining heavy-atom bonds as well builds coupled constraint chains longer than GPU LINCS supports, which disables the GPU-resident update and cost 1.29× in throughput on the real 2KTF system. GROMOS 54A8 keeps **all-bonds**: it is united-atom, so hydrogen mass repartitioning has almost nothing to act on, and all bonds constrained is its native validated protocol
 - **Heavy hydrogens**: `mass-repartition-factor = 3` for stable 4 fs timesteps
 - **Timestep**: 4 fs (`dt = 0.004` ps) for all production stages
 - **SMD pulling per leg**: 1.25 × 10⁶ steps × 4 fs = 5 ns; one cycle = pull + push = 10 ns of SMD plus ~120 ps NVT/NPT equilibration
@@ -512,7 +512,7 @@ For NCAAs not in the GROMOS RTP (no native parameters), GroScore falls back to p
 GroScore automatically handles complex protein structures with multiple chains and chain breaks:
 
 - **Chain Break Detection** - Gaps in residue numbering within a chain are detected and marked with TER records
-- **Small Gap Filling** - Gaps < 4 residues introduced by interface filtering are automatically filled to avoid introducing artificial chain breaks, while respecting TER positions (never merges different chains)
+- **Small Gap Filling** - Gaps < 4 residues introduced by interface filtering are automatically filled to avoid introducing artificial chain breaks, while respecting TER positions (chains are kept separate)
 - **Minimum Fragment Size** - Fragments smaller than 5 residues are automatically extended by adding neighboring residues for improved stability
 - **Isolated Cap Removal** - ACE/NME caps that lost their partners during interface filtering are removed to prevent orphaned caps
 - **Fragment Merging** - Fragments from the same original PDB chain are merged into a single moleculetype for GROMACS
@@ -598,7 +598,7 @@ GroScore/
 
 **HIGH_RMSD flag**: The [rebinding QC](#rebinding-sanity-check-qc) found at least one cycle whose complex did not return to the bound pose. The score is still reported; inspect the flagged cycles (`RMSD_max_A` in the score files, per-cycle values in the third column of `results_<even>.gs`), add cycles with `-n <more> --restart` and check whether the score moves.
 
-**RMSD reported as `nan`**: The measurement was not made: either the run predates the check, or `gmx trjconv`/`gmx rms` failed for that cycle. It never affects the score. Reproduce the failure with `python3 ../../utils/rebound_rmsd.py --ref npt_c<N>.gro --query bindrev_<2N>.gro -v` inside the structure directory; the reason is printed to stderr.
+**RMSD reported as `nan`**: The measurement was not made: either the run predates the check, or `gmx trjconv`/`gmx rms` failed for that cycle. The score is unaffected. Reproduce the failure with `python3 ../../utils/rebound_rmsd.py --ref npt_c<N>.gro --query bindrev_<2N>.gro -v` inside the structure directory; the reason is printed to stderr.
 
 **Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment.
 
