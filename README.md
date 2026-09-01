@@ -380,65 +380,76 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 ## Absolute Binding Free Energies (GroScore-FE)
 
-> **Under active development.** The protocol changes often and output from one
-> revision is not comparable with another. Not ready for production use.
+> **Under active development.** The protocol is revised frequently, and output from
+> one revision is incomparable with output from another.
 
-`groscore_fe.py` (with `job_fe.run`) computes an *absolute* binding free energy,
-where the classic engine's score is biased by empirical interface restraints whose
-free-energy contribution is never removed. During unbinding those restraints are
-switched off while **Boresch orientational restraints** (one distance, two angles,
-three dihedrals on backbone COM anchor groups) are switched on; the Boresch
-contribution in the separated state has a closed form (Boresch et al. 2003) and is
-computed analytically rather than simulated. Every leg runs forward and reverse and
-the works are combined with BAR, with the average and CGI estimators reported
-alongside as a convergence check.
+`groscore_fe.py`, together with `job_fe.run`, computes an absolute binding free
+energy. The classic engine's score carries the free-energy contribution of the
+empirical interface restraints, which biases it; here that contribution is
+accounted for explicitly.
+
+Over the unbinding leg the atom-atom interface restraints are switched off while a
+set of Boresch orientational restraints (one distance, two angles and three
+dihedrals, defined on backbone center-of-mass anchor groups) is switched on. The
+standard-state free energy of the Boresch restraint has a closed form (Boresch et
+al. 2003), hence its contribution in the separated state is obtained analytically.
+Every leg is run in both directions, and the works are combined with BAR, with the
+average and CGI estimators reported alongside as a convergence check.
 
 ```
 dG_bind = -( dG_intro + dG_unbind + dG_release )
    dG_intro     interface restraints introduced in the bound state   (dhdl)
-   dG_unbind    interface -> Boresch handoff + separation to 1.0 nm  (pull + dhdl)
+   dG_unbind    interface to Boresch handoff, separation to 1.0 nm   (pull + dhdl)
    dG_release   analytical Boresch standard-state term               (closed form)
 ```
 
-Run it like the classic engine, same inputs and directory layout:
+Since GROMACS provides no lambda-dependent pull reference, the switching work is
+captured in two channels which add without double-counting: the pull force, i.e.
+mechanical separation via the moving reference, and dH/dlambda, i.e. force-constant
+switching.
+
+Invocation follows the classic engine, with the same inputs and directory layout:
 
 ```bash
 python3 /path/to/GroScore/groscore_fe.py -ff amber19sb_opc3
 ```
 
-Results land in `scores_fe.gs`: `dG_bind` in kJ/mol and as pKD under each of the
-three estimators, the three cycle components, one column pair per leg, and the
-per-row diagnostics `Overlap_mean_pct`, `Overlap_min_pct` (work overlap; **sort on
-the minimum** to find rows whose BAR should not be trusted) and `RMSD_mean_A` /
-`RMSD_max_A` (the [rebinding sanity check](#rebinding-sanity-check-qc)).
+Results are written to `scores_fe.gs`: dG_bind in kJ/mol and as pKD under each of
+the three estimators, the three cycle components, one column pair per leg, and two
+per-row diagnostics. `Overlap_mean_pct` and `Overlap_min_pct` give the forward and
+reverse work overlap across every BAR channel, as a percentage of 2n; sorting on
+the minimum identifies the rows whose BAR values warrant caution, since a single
+channel without overlap withholds the whole estimate. `RMSD_mean_A` and
+`RMSD_max_A` carry the [rebinding sanity check](#rebinding-sanity-check-qc).
 
-**The protocol is defined in exactly one place, `utils/fe_protocol.py`.** The leg
-mdps, the pull blocks and per-stage rates, the leg sequence, the result-row layout
-and the leg diagnostic are all derived from the table at the top of that file, and
-it is the only thing to edit when the cycle changes:
+The protocol is defined in one place, `utils/fe_protocol.py`. The leg mdps, the
+pull blocks and per-stage rates, the leg sequence, the result-row layout and the
+leg diagnostic are all derived from the table at the top of that file, which is
+therefore the only place to edit when the cycle changes:
 
 ```bash
 python3 utils/fe_protocol.py        # the current cycle, leg by leg
 python3 utils/make_fe_mdps.py       # regenerate every force field's mdps from it
 ```
 
-Why the cycle looks the way it does, what has been measured and what has not, lives
-in the comments of `fe_protocol.py` and `make_boresch.py` next to the code it
-constrains, and in the commit history. It is deliberately not kept here, because it
-changes faster than a README can honestly track.
+The reasoning behind the cycle, i.e. what has been measured and what remains open,
+is kept in the comments of `fe_protocol.py` and `make_boresch.py`, alongside the
+code it constrains, and in the commit history.
 
 ### Caveats
 
-- **Output from before 2026-08-14 should be regenerated.** `dihedral_deg` returned
-  the negated dihedral, so all three Boresch phi references were written as mirror
-  images. `make_boresch.py` now reads its own pull block back through a zero-step
-  grompp and aborts if GROMACS does not reproduce the references it was given.
-- **Match the electrostatics to the force field.** `settings/gromos54a8` uses PME;
-  `settings/gromos54a8_rf` is the same force field under the reaction field GROMOS
-  was parametrised with. Pick the tree deliberately.
-- **The reported interval is a bootstrap over the cycles of one run.** It does not
-  cover variation between independent setups of the same structure, which have
-  their own probe equilibration, anchor triad and interface restraint set.
+- **Output produced before 2026-08-14 should be regenerated.** `dihedral_deg`
+  returned the negated dihedral, hence all three Boresch phi references were
+  written to the leg mdps as mirror images. `make_boresch.py` now reads its own
+  pull block back through a zero-step grompp and aborts on any discrepancy.
+- **The electrostatics must match the force field.** `settings/gromos54a8` uses
+  PME, whereas `settings/gromos54a8_rf` applies the reaction field GROMOS 54A8 was
+  parametrized with (`epsilon_rf` 61, 1.4 nm cutoff sphere). The tree is selected
+  with `-ff`.
+- **The reported interval is a bootstrap over the cycles of one run.** It covers
+  the cycle-to-cycle spread within a single setup, whose probe equilibration,
+  anchor triad and interface restraint set are drawn once and then held fixed for
+  every cycle of that run.
 
 ## Heteroatom Support
 
