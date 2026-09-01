@@ -183,7 +183,7 @@ Results are written to two output files ranked by binding affinity:
 
 Note that CGI requires at least 20 cycles to fit forward and reverse work distributions; with the default `--numruns 5` only `scores_avg.gs` is produced. Increase `-n` if you want CGI estimates.
 
-Both files also carry `BAR`, `BAR_CI95` and `BAR_note` as **appended** columns. BAR is a comparison column here and not the classic score, which stays the average. On the classic protocol it will read `nan ... BAR_NO_OVERLAP` on essentially every structure, and that is the informative part: forward and reverse works are separated by roughly 132 RT at the current pull rate, so no sampled work lies in the region a bidirectional estimator reads ΔG from. See [why BAR leads the FE scores but not these](#why-bar-is-the-fe-headline-and-not-the-classic-one).
+Both files also carry `BAR`, `BAR_CI95` and `BAR_note` as **appended** columns. BAR is a comparison column here and not the classic score, which stays the average. On the classic protocol it will read `nan ... BAR_NO_OVERLAP` on essentially every structure, and that is the informative part: forward and reverse works are separated by roughly 132 RT at the current pull rate, so no sampled work lies in the region a bidirectional estimator reads ΔG from. BAR leads the FE scores for the same reason it cannot lead these: there the works are split into stages that each overlap, and here they are not.
 
 #### Interpreting the score
 
@@ -380,461 +380,67 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 ## Absolute Binding Free Energies (GroScore-FE)
 
-> **Experimental / in development.** A sign error in the Boresch dihedral references was found and fixed on 2026-08-14; every free-energy result produced before that is void. Convergence of the unbinding leg is still unresolved. See [Caveats](#caveats) at the end of this section.
+> **Under active development.** The protocol changes often, results are not yet
+> validated against experiment, and numbers from one revision are not comparable
+> with another. Do not use it for production work yet.
 
-The classic pipeline already produces an *absolute* free-energy estimate from the pulling work, but it is **biased**: the empirical interface distance restraints are present throughout and their free-energy contribution is never removed, hence the scores are not directly comparable to experiment. `groscore_fe.py` (with `job_fe.run`) removes that bias by accounting for the restraint free energies explicitly, i.e. by replacing the many empirical interface restraints with a rigorous, analytically correctable restraint scheme, so that the result approaches an experimentally comparable absolute binding free energy.
-
-During unbinding, the atom-atom interface restraints are gradually switched off while a set of **Boresch orientational restraints** (one distance, two angles and three dihedrals, defined on backbone center-of-mass anchor groups) is switched on. As the Boresch restraint has a closed-form standard-state free energy (Boresch et al. 2003), its contribution in the separated state is computed analytically rather than simulated. Every leg is run forward and reverse, and the resulting works are combined with the Crooks-Gaussian-Intersection estimator as in the classic engine.
-
-The absolute binding free energy is assembled from a thermodynamic cycle:
+`groscore_fe.py` (with `job_fe.run`) computes an *absolute* binding free energy,
+where the classic engine's score is biased by empirical interface restraints whose
+free-energy contribution is never removed. During unbinding those restraints are
+switched off while **Boresch orientational restraints** (one distance, two angles,
+three dihedrals on backbone COM anchor groups) are switched on; the Boresch
+contribution in the separated state has a closed form (Boresch et al. 2003) and is
+computed analytically rather than simulated. Every leg runs forward and reverse and
+the works are combined with BAR, with the average and CGI estimators reported
+alongside as a convergence check.
 
 ```
 dG_bind = -( dG_intro + dG_unbind + dG_release )
-   dG_intro    interface restraints introduced in the bound state   (dhdl)
-   dG_unbind    interface -> Boresch handoff + separation to 1.0 nm  (pull work + dhdl)
+   dG_intro     interface restraints introduced in the bound state   (dhdl)
+   dG_unbind    interface -> Boresch handoff + separation to 1.0 nm  (pull + dhdl)
    dG_release   analytical Boresch standard-state term               (closed form)
 ```
 
-As GROMACS provides no lambda-dependent pull reference, the switching work is captured in two channels which add without double-counting: the **pull force** (mechanical separation via the moving reference) and **dH/dλ** (force-constant switching). Relative to the classic protocol, each cycle uses 20 ns of bound-state equilibration and a 1.0 nm separation, and adds the bound-state restraint legs (see [Compute cost](#compute-cost) below).
-
-Run it like the classic engine (same inputs and working-directory layout), substituting the script name:
+Run it like the classic engine, same inputs and directory layout:
 
 ```bash
-python3 ../groscore_fe.py -s sp.gs -n 5 -ff amber19sb_opc3 --slurm workstation
+python3 /path/to/GroScore/groscore_fe.py -ff amber19sb_opc3
 ```
 
-All four force fields are supported (`amber19sb_opc3`, `amber19sb_opc`, `charmm36`, `gromos54a8`). Each one's FE `.mdp` files are derived from its own `bind.mdp` / `npt.mdp` / `nptrev.mdp`, so its nonbonded treatment (cutoffs, vdw modifier, dispersion correction) carries over unchanged and only the free-energy settings are added. If you edit a force field's base mdps, regenerate the FE set with:
+Results land in `scores_fe.gs`: `dG_bind` in kJ/mol and as pKD under each of the
+three estimators, the three cycle components, one column pair per leg, and the
+per-row diagnostics `Overlap_mean_pct`, `Overlap_min_pct` (work overlap; **sort on
+the minimum** to find rows whose BAR should not be trusted) and `RMSD_mean_A` /
+`RMSD_max_A` (the [rebinding sanity check](#rebinding-sanity-check-qc)).
+
+**The protocol is defined in exactly one place, `utils/fe_protocol.py`.** The leg
+mdps, the pull blocks and per-stage rates, the leg sequence, the result-row layout
+and the leg diagnostic are all derived from the table at the top of that file, and
+it is the only thing to edit when the cycle changes:
 
 ```bash
-python3 utils/make_fe_mdps.py
+python3 utils/fe_protocol.py        # the current cycle, leg by leg
+python3 utils/make_fe_mdps.py       # regenerate every force field's mdps from it
 ```
 
-Results are written to `scores_fe.gs` (absolute dG_bind in kJ/mol and as pKD, together with the three cycle components), fed by the per-cycle works in `results_fe.d/`. **`dG_bind` and `pKD` are BAR**; the average and CGI values are retained beside them, so the file leads with `dGbind_bar` and then repeats the block for `_avg` and `_cgi`. Three estimators over the same works are the cheapest convergence check there is: where they agree the leg has converged, and where they disagree it has not, whichever number you would rather believe. `dG_unbind_*` is the [staged](#why-these-boundaries) sum over the ramp stages, and the columns after it are its audit trail: one `dG_unb<L>_bar` pair per stage, then `dG_unbind_1s_bar`, the same free energy taken from the whole ramp in one shot. The stage columns follow the protocol, so the current nine-stage ramp writes `dG_unbA_bar` through `dG_unbI_bar`. `dG_intro_*` is staged the same way, with one `dG_intro<N>_bar` pair per bound sub-leg and `dG_intro_1s_bar` as its one-shot cross-check. Two columns say when to distrust the BAR in the same row: `Overlap_mean_pct` and `Overlap_min_pct`, the mean and worst forward/reverse work overlap over every BAR channel. BAR is the estimator with a measured overlap bias -- over three protocols on 2KTF the BAR-minus-avg gap ran +5.52 / +3.56 / +1.55 at mean ramp overlaps of 35 / 44 / 43% (`r = -0.82`), always reading less negative when the histograms barely meet, while `avg` and `cgi` are flat in dissipation. The **min** is the discriminating one: it goes to zero on exactly the runs that lose BAR, where the mean stays near 47% and flags nothing. Each cycle also carries the [rebinding sanity check](#rebinding-sanity-check-qc): the thermodynamic cycle only closes if the rebinding leg returned the complex to the pose the bound leg started from, hence `RMSD_mean_A` / `RMSD_max_A` and a `HIGH_RMSD` note flag the structures whose numbers should not be trusted.
-
-Every scoring pass also writes **`fe_works.png`**, the work distributions of every leg with one row per structure: bound-state legs on the left, then one panel per ramp stage. No second command is needed; the figure appears alongside `scores_fe.gs` whenever any cycle has finished, including part-way through a run. The undivided ramp is not drawn, since its stages already are, but it does appear in the consistency table below, as `unbind A+B+C+D+E`, the baseline the split is measured against. That row is arithmetic, not a leg: no simulation of that name runs.
-
-Every structure is plotted, in `sp.gs` order, **16 rows to a file**. Beyond that the figure is paginated into `fe_works_01.png`, `fe_works_02.png` and so on (a run needing only one page keeps the plain `fe_works.png`, and pages left over from an earlier, longer run are removed). Sixteen rows correspond to 1980 × 9792 px and roughly 2 MB. Matplotlib will write a considerably taller image, but GPU textures and most viewers cap a dimension near 16384 px and PIL rejects anything above 89 Mpx as a decompression bomb, hence a single 200-structure sheet would be unopenable as well as costing about 80 s and 1.8 GB to render.
-
-The reverse distribution is drawn sign-aligned (`−W`), so that the forward and reverse histograms should **overlap and cross at ΔG**. Well-separated histograms indicate that the leg is being driven too fast: the estimate is then dominated by dissipated work, and both the average and the CGI value fall in a region where neither distribution has samples. A third consequence is that such a leg gets **no BAR value at all**, so its rule is absent from the panel and `scores_fe.gs` carries `nan` with the reason in `Note`. The per-panel `dissipation` annotation is half the gap between the two means, i.e. `(⟨W_f⟩ + ⟨W_r⟩)/2`; the free energy cancels from that sum, hence it measures hysteresis without assuming any ΔG estimate.
-
-Scoring then prints a **Gaussian consistency table**, one row per leg, which decides whether the CGI number is a measured crossing or an extrapolation:
-
-```
-  structure  leg              n      diss   ratio   sf/sr   p_fwd   p_rev      ovl    sep  sep_max  diss/RT   verdict
-  T30        restraints      60      4.12    1.15    1.05   0.618   0.412  104/120    1.9      4.3      1.6   OK
-  T30        unbind/rebind   60    148.49    8.89    0.94 3.3e-05   0.089    0/120   32.0      4.3     57.6   FD+OVL+SEP
-```
-
-CGI fits **one Gaussian to each distribution** and reads ΔG from the crossing of the two curves, hence three conditions must hold. Each is tested where the assumption is actually made:
-
-- **FD**: a **Shapiro-Wilk test of each work distribution alone**, reported as `p_fwd` and `p_rev`. The leg is flagged if either falls below `α/2`, the factor of two being a Bonferroni correction for the two tests per leg, so that a leg of genuinely Gaussian works misfires only 5 % of the time. A leg switched too fast breaks normality from the tail inward: the rare low-dissipation cycles which carry ΔG are exponentially unlikely and `n` cycles never reach that far, hence the sampled distribution is skewed and the fitted Gaussian comes out too narrow and too far out.
-- **OVL**: of the `2n` sampled works, the number which land inside the **other direction's observed min…max range** (`ovl` column). Flagged at exactly zero, which means that no estimator has data in the crossing region and that whatever number is reported is the fitted model extrapolated into empty space. The gap is given in RT and states how far into an exponentially unlikely tail a cycle would have to reach, which is why additional cycles are usually futile once it is large.
-- **SEP**: the crossing lies `sep/2` σ into either tail, and the most extreme of `n` samples reaches `z_n = Φ⁻¹(1 − 1/n)`, hence the limit is `sep_max = 2·z_n`, i.e. 2.3 at n=8, 3.1 at n=16, 3.7 at n=32 and 4.7 at n=100. More cycles reach further and more separation is therefore tolerable. The limit follows `n` without a ceiling, as a run long enough to place samples at 5 σ has genuinely measured a 5 σ crossing.
-
-**OVL and SEP address the same question, but only OVL survives an outlier.** `sep` divides by a pooled σ which is quadratic in deviations, hence a single extreme work inflates the denominator and drags `sep` down; a leg can pass purely because one trajectory went badly, with the distributions exactly as far apart as before. A count moves by at most one per outlier out of `2n`. `OVL` should therefore be read first, and `sep` treated as the graded measure once `OVL` is non-zero. Only exact zero is flagged, as that is the statement requiring no assumption about shape, but a handful of works is little better than none, so the printed count should be read rather than the verdict alone.
-
-`ratio = diss / ((σ_f² + σ_r²)/4RT)` is the linear-response consistency, as `W_diss = σ²/2RT` holds near equilibrium and 1 is therefore the ideal value. It is reported for information and **is not a flag**: it moves for reasons other than the shape of either distribution, and testing it conflated the Gaussian assumption with Crooks and with linear response, so that a failure never indicated which of the three had broken. `sf/sr` is likewise descriptive.
-
-A check which the cycle count cannot answer reports **n/a** rather than failing. `FD` requires `n ≥ 3` (the Shapiro-Wilk minimum) and both distributions non-degenerate, `OVL` requires `n ≥ 3` for a min…max range, and `SEP` requires `n ≥ 4` for a tail. Whichever flags fired are followed by an explanation and a per-leg breakdown.
-
-> **A passing FD is weak evidence.** At these sample sizes Shapiro-Wilk has little power; at n = 16 only gross departures are detected, hence `OK` means *not detectably non-Gaussian at n cycles* rather than *Gaussian*. `OVL` and the figure carry more information at low cycle counts.
-
-Pass `--temp` to match a run performed at a non-default temperature. Both the figure and the table are diagnostic and change no result.
-
-When a leg **fails**, the table reports that it failed but not why. `utils/fe_leg_efficiency.py` answers this from files which a finished cycle already leaves behind, without any new simulation:
-
-```bash
-python3 ../utils/fe_leg_efficiency.py -s 2KTF          # from the project dir
-```
-
-It reports whether the forward and reverse works overlap *at all* (a blunter question than `sep`, as an empty gap means that every estimator is reporting its fitted model rather than the run), where along the pull the hysteresis is generated, whether the dissipation obeys the near-equilibrium `1/t` law (measured by comparing the friction along the existing trajectories against the observed hysteresis), and what lengthening the leg or adding cycles would each cost. At a fixed budget the average estimator has `SE ∝ t^((1−p)/2)` for `diss ∝ t^−p`; as `p = 1` is the ceiling, doubling the leg can at best break even on variance, whereas the bias contribution points the other way. Both options are therefore priced rather than one being recommended.
-
-### Job layout (parallel cycles)
-
-Convergence needs many cycles, and cycles are independent, as each restarts from `emin_solv.gro` with fresh velocities. So each structure is submitted as **two jobs**:
-
-1. a one-off **setup** job (stage 0 + initial equilibration + restraint definition), and
-2. a **cycle job array** (`--array=1-N`), submitted with `--dependency=afterany` on the setup job.
-
-Because all cycles share the restraints (elastic network, interface, Boresch) that only the setup defines, a cycle task that SLURM starts early does **not** terminate; `job_fe.run --cycle N` waits for the setup's `setup.done` marker (polling every 30 s, 6 h cap; override with `GROSCORE_SETUP_WAIT`/`GROSCORE_SETUP_POLL`). If the setup reports a failure, the waiting tasks exit cleanly rather than hanging. Each cycle writes its own `results_fe.d/<id>_c<n>.gs` (no concurrent appends to a shared file), and whichever task finishes last archives the structure, elected atomically via `mkdir`, so two tasks can never tar/delete the same directory.
-
-Useful options:
-
-- `--array-throttle N`: cap concurrent cycle tasks per structure (SLURM `%N`). Rarely needed: several GROMACS processes sharing one GPU give higher *aggregate* throughput than one at a time, because a single small-system run leaves the GPU idle during CPU-side work. Leave it unset unless you run out of GPU memory.
-- `--sequential`: legacy layout: one job per structure running all cycles in sequence.
-- `--run-local --ngpus N`: run on this machine instead of SLURM, see [Running Without SLURM](#running-without-slurm-single-multi-gpu-workstation). The same two-stage layout applies: the setup job runs first and its cycles only start once it has finished, on whichever GPU frees up. `--array-throttle` has no effect locally; `--jobs-per-gpu` is the concurrency limit there.
-
-Re-running the command later re-submits only what is missing (a structure whose `setup.done` exists gets no new setup job) and re-scores whatever has completed.
-
-### Adding cycles later
-
-`-n` is the **total** number of cycles wanted, so convergence can be extended at any time by asking for more:
-
-```bash
-python3 ../groscore_fe.py -s sp.gs -n 200 --restart      # was -n 50
-```
-
-Only cycles without a complete result are queued: the array is submitted as an explicit index list (e.g. `--array=51-200`), so topping up costs one task per missing cycle instead of re-walking the finished ones. A cycle whose stored result contains `NaN` counts as missing and is recomputed; if its simulation legs are still present this is just re-integration (seconds, no MD).
-
-This works for **archived** structures too: the setup job unpacks the tarball, the new cycles run, and the structure is re-archived once the new total is reached. The requested total is passed to the jobs via `GROSCORE_NUMCYCLES`, since `run.gs` inside a tarball cannot be rewritten. Lower `-n` values are not destructive; they simply queue nothing new.
-
-### Compute cost
-
-Each cycle runs forty-three switching/hold legs plus one equilibration. **Both
-halves of the cycle are staged**: the bound-state restraint switch runs as two
-sub-legs and the unbinding ramp as nine, with an equilibrium hold at every internal
-boundary in both directions.
-
-**The nine stages are five measured boundaries, four of them subdivided.** The
-stages are unequal in both span and time, and neither was fitted. An attempt to
-place and time them against a fitted dissipation density was reverted, because the
-per-stage dissipation varies 17-26% between setup draws, which is the same size as
-the gain the fit was chasing. Subdividing is a different operation: cutting a stage
-in two with the time split in proportion to the span leaves the pulling rate
-unchanged on both sides, so the cut point is read off a run that has already been
-done rather than modelled, and it reproduces to ±0.014 in u across independent
-setups against ±0.035-0.061 for the boundary the fit was moving. See
-[Why these boundaries](#why-these-boundaries-and-why-five).
-
-| Leg | Purpose | lambda | Length |
-|---|---|---|---|
-| `npt_c` | equilibrate the bound state | - | 20 ns |
-| `boundfwd1` | bound restraints on (dhdl) | 0 -> 0.25 | 3.75 ns |
-| `holdbfwd1` | hold | 0.25 | 1 ns |
-| `boundfwd2` | bound restraints on (dhdl) | 0.25 -> 1 | 3.75 ns |
-| `holdfwd0` | hold, bound | 0 | 1 ns |
-| `bindfwdA` | unbind | 0 -> 0.12 | 5.04 ns |
-| `bindfwdB` | unbind | 0.12 -> 0.166 | 2.90 ns |
-| `bindfwdC` | unbind | 0.166 -> 0.2 | 2.14 ns |
-| `bindfwdD` | unbind | 0.2 -> 0.25 | 2.29 ns |
-| `bindfwdE` | unbind | 0.25 -> 0.31 | 2.75 ns |
-| `bindfwdF` | unbind | 0.31 -> 0.379 | 1.93 ns |
-| `bindfwdG` | unbind | 0.379 -> 0.49 | 3.11 ns |
-| `bindfwdH` | unbind | 0.49 -> 0.622 | 1.30 ns |
-| `bindfwdI` | unbind | 0.622 -> 1 | 3.74 ns |
-| `holdfwd1` .. `holdfwd8` | holds, one before each stage after the first | | 8 × 0.35 ns |
-| `nptrev_fe` | hold unbound | 1 | 5 ns |
-| `bindrevI` .. `bindrevA` | rebind, the exact mirror | 1 -> 0 | the same, reversed |
-| `holdrev8` .. `holdrev1` | holds | | 8 × 0.35 ns |
-| `holdrev0` | hold, bound | 0 | 1 ns |
-| `boundrev2` | bound restraints off (dhdl) | 1 -> 0.25 | 3.75 ns |
-| `holdbrev1` | hold | 0.25 | 1 ns |
-| `boundrev1` | bound restraints off (dhdl) | 0.25 -> 0 | 3.75 ns |
-| **per cycle** | | | **100 ns** (+0.1 NVT ladder) |
-
-The four extra boundaries are free in wall time. Each buys a hold in each direction
-out of a fixed 80 ns of legs, and the mid-ramp holds went from 500 to 300 ps to pay
-for it: eight at 350 cost 2.8 ns per direction against the four at 500 they replace
-costing 2.0. The holds are still 22-32 times the 11-16 ps autocorrelation of
-`dH/dlambda` that set their length.
-
-At the default 50 cycles this is **~5.0 µs/structure**, plus a setup pass of
-5 × 20 ns of probe equilibration. The default is 50 rather than the classic
-engine's 5 because BAR returns nothing without forward/reverse work overlap, and on
-a real run no shorter prefix has ever produced it: five, ten, twenty and forty
-cycles all came back `BAR_NO_OVERLAP` where the full 47 scored.
-
-#### The protocol is defined in one place
-
-`utils/fe_protocol.py` holds the whole cycle as a table, and everything else
-derives from it: the mdps (`make_fe_mdps.py`), the pull blocks and per-stage
-rates (`make_boresch.py`), the leg sequence and work extraction (`job_fe.run`,
-via `--shell`), the result-row width and the staged estimator (`groscore_fe.py`),
-and the leg diagnostic. Moving a boundary or adding a hold is an edit to
-`fe_protocol.RAMP` followed by a re-run of `make_fe_mdps.py`; nothing else
-changes, and nothing else *can* disagree with it.
-
-```bash
-python3 utils/fe_protocol.py        # the cycle, leg by leg
-```
-
-#### Why these boundaries, and why five
-
-As one 20 ns process the ramp had **zero forward/reverse overlap**, so BAR was
-refused on every structure. A leg whose dissipation exceeds its own work width has
-histograms that do not meet, and no amount of sampling repairs that. Splitting
-partitions the dissipation into pieces each estimator can handle, and because each
-stage runs at **constant rate** it also lowers the total, since a slow region can
-then be crossed slowly and a fast one quickly.
-
-The boundaries come from the friction profile, recovered as `zeta = g/v` from the
-excess mean force, per stage, because the stages ran at rates differing 8x and the
-raw dissipation density is not `zeta`. It is measured on **all three repeats and
-pooled**, not on one of them, because the profile turned out to be a property of the
-setup draw rather than of the sampling:
-
-| | b1 | b2 | b3 | b4 | b5 |
-|---|---|---|---|---|---|
-| test10 | 0.164 | 0.218 | 0.295 | 0.419 | 0.630 |
-| test11 | 0.094 | 0.160 | 0.241 | 0.355 | 0.535 |
-| test12 | 0.088 | 0.156 | 0.230 | 0.330 | 0.518 |
-| sd, cycle bootstrap **within** a run | 0.005 | 0.005 | 0.008 | 0.009 | 0.016 |
-| sd **between** runs | 0.042 | 0.035 | 0.035 | 0.046 | 0.061 |
-
-A bootstrap inside one run understates the boundary uncertainty by four to nine
-times, so a single run can neither locate a boundary nor reveal that it cannot.
-Boundaries then sit at **equal dissipation per stage**, which for constant-rate
-stages means equal `sqrt(du × int zeta du)`; equalising the dissipation makes the
-Sivak-Crooks times equal too, which is why all five stages were the same 5.2 ns
-as each other. That equality is what the subdivision below inherits and breaks:
-the nine stages are unequal in time because each pair splits its parent's 5.2 ns
-in proportion to span, which is precisely what holds the rate fixed across a cut.
-
-**Then nine, by subdividing those five rather than replacing them.** The five
-boundaries above are unchanged; four of the five stages are cut in half at a point
-measured inside each of them.
-
-*Why subdividing is measurable where moving a boundary was not.* Cutting a stage at
-`x`, with the two halves given time in proportion to their spans, leaves the pulling
-**rate** unchanged on both sides of `x`, so the cumulative dissipation curve measured
-on a run that has already been done applies to the split unmodified and the cut point
-is a measurement. Moving a boundary changes the rate on both sides, so predicting the
-result needs the friction density differentiated back out of the works and refitted,
-which is the fit that chased sampling error. Over three independent setup draws:
-
-| parent | window | measured cut point | spread |
-|---|---|---|---|
-| A | 0.00-0.12 | 0.076 / 0.072 / 0.079 | 0.007 |
-| B | 0.12-0.20 | 0.160 / 0.174 / 0.165 | 0.014 |
-| C | 0.20-0.31 | 0.256 / 0.245 / 0.250 | 0.011 |
-| D | 0.31-0.49 | 0.374 / 0.377 / 0.387 | 0.013 |
-| E | 0.49-1.00 | 0.612 / 0.615 / 0.641 | 0.029 |
-
-Three to four times more reproducible than the boundary the reverted table moved, on
-the same runs.
-
-*Which stages, and why not the obvious one.* `n_sigma = 2 * diss / sigma` predicts the
-overlap count at `r = -0.85` over all sixty ramp-stage instances run so far, and no
-stage below `n_sigma` 2.5 has ever lost BAR (0 of 39) against 3 of 21 above it. Per
-run the stage that binds is B, D, B, B, C, C, C, D across test13/14/15 and
-test24-28 — **B three times, C three times, D twice, and stage E never**, although E
-is the stage that lost BAR in test27. The bottleneck rotates between draws, which is
-the same fact that made placement unfittable seen from the other side: a table tuned
-to relieve one stage does not help the run where a different one binds. So B, C, D
-and E are all subdivided and A, at `n_sigma` 1.51, is left alone.
-
-| splits | stages | mean worst `n_sigma` | max | runs over 2.5 |
-|---|---|---|---|---|
-| none | 5 | 3.16 | 3.97 | 8/8 |
-| E only | 6 | 3.19 | 4.00 | 8/8 |
-| D+E | 7 | 3.11 | 4.02 | 6/8 |
-| C+D+E | 8 | 2.72 | 3.31 | 5/8 |
-| **B+C+D+E** | **9** | **2.30** | **2.89** | **2/8** |
-
-Work widths are calibrated rather than assumed: `kappa = sigma^2/(2 RT W)` measures
-**2.57** across the nine run/stage pairs, so the works are wider than linear response
-and overlap is easier than the textbook value. Splitting does not spend that:
-`sigma` scales as `sqrt(W)`, so two halves of a stage carry the same summed BAR
-variance the whole one did, at better overlap.
-
-*What subdividing does not reach* is stage `I`, the last one. It carries 71% of the
-ramp's `dH/dlambda` free energy, because a harmonic restraint switched linearly in
-lambda has `dF/dlambda` diverging at the endpoint, measured here as
-`(1-lambda)^-0.44` with half of the stage's dhdl dissipation beyond `lambda = 0.94`.
-That is a shape problem rather than a size one: in test27 both of the stage's work
-histograms were skewed the same way, so their tails pointed away from each other and
-met nowhere. The fix is to let lambda run on its own schedule instead of tracking
-`u`, which costs nothing structurally — `delta-lambda` and `pull-coordN-rate` are
-already separate mdp fields — but is a redesign and is not bundled here.
-
-#### Why the bound legs are 3.75 ns each, and split
-
-The interface restraints are harmonic umbrellas switched `k_A = 0 -> k_B`, so the
-free-energy integrand is exactly
-
-    dH/dlambda = 0.5 * k_B * S,   S = sum over pairs of (d - d_ref)^2
-
-i.e. the strain against the reference IS the work. Raising `npt_c` to 10 ns
-doubled the strain handed to `boundfwd` (S 12.7 -> 27.7 nm^2, rms deviation per
-restrained pair 1.65 -> 2.45 A) without rescaling the 2 ns switch, and the leg
-stopped finishing what it started: at the end of `boundfwd`, `dH/dlambda` sat
-**71% above** the restrained-equilibrium value, where the same quantity was 6%
-*below* it when `npt_c` was 1 ns. That leg carries 12.7% of the dG_bind variance,
-and its BAR overlap rested on exactly two cycles out of 47.
-
-The fix is not to shorten `npt_c`: a long bound equilibration is what makes each
-cycle an independent draw from the ensemble the Crooks analysis assumes. It is to
-let the switch keep up with it. `npt_c` has since gone to 20 ns, which sharpens the
-same argument.
-
-The leg is also **split at lambda = 0.25**, but not for overlap. Pooled over the
-three repeats it dissipates 10.8 kJ/mol unsplit against a work width of 23, i.e.
-0.46 sigma, nowhere near the cliff the ramp was at. What the split buys is variance:
-about 10% off the summed BAR error, and a third sub-leg buys nothing further while
-costing 2 ns. The boundary stays at 0.25 rather than the pooled optimum of 0.277
-because the per-run estimates are 0.186 / 0.226 / 0.388, three times noisier than
-any ramp boundary and not resolvable.
-
-Its **width is not a rate effect**. At the same leg length and the same interface
-stiffness, the three repeats give dissipation 15.7 / 17.8 / 21.4 against work widths
-of 19.9 / 42.4 / 58.9: a threefold range in width across a 1.4-fold range in
-dissipation. No leg time, boundary or sub-leg count reaches that. The replicated
-probe below is the only part of the design that does, and this is where it should
-show up first, since the interface reference geometry is exactly what the probe
-measures. Splitting the leg budget between the bound leg and the ramp is likewise
-flat anywhere from 5 to 13 ns per direction, so it is not a knob worth turning.
-
-#### The holds, and what they are for
-
-There is now an equilibrium hold at every boundary the ramp crosses, including
-the two where the ramp meets the bound legs, plus the unbound hold. All carry
-`delta-lambda = 0` and pull rate 0, so they do **no work**: the stage works still
-sum exactly to the work of the whole ramp, and `dG_unbind_1s` remains an
-assumption-free cross-check on the staged sum.
-
-They exist because the staged estimate is only unbiased if the system is at
-equilibrium where the stages meet. The per-cycle bound equilibration went
-1 ns -> 10 ns -> 20 ns for the same reason: it is what the Crooks analysis assumes
-the cycle starts from.
-
-**Hold lengths are measured, not assumed.** `dH/dlambda` is written during a hold,
-so how long one needs is a question the data answers directly: its autocorrelation
-time is 11-16 ps on the ramp and 39 ps at u = 1, the relaxation profiles are flat
-after the first tenth, and the state at the end of a hold does not predict the next
-stage's work (r = +0.06 over 49 cycles). The 1 ns holds were therefore 60-90 tau and
-the mid-ramp ones are now **0.35 ns**, which is 22-32 tau. They went 500 -> 350 ps to
-pay for the four extra boundaries of the nine-stage ramp; 300 ps would have paid for
-them outright but is 18.75 tau against the slowest measured relaxation, under the
-20 tau floor `tests/test_staged.py` enforces.
-
-The exception is the **bound/ramp handoff**. `holdfwd0` and `holdrev0` settle at 500
-and 700 ps, about 40 tau, where the purely mid-ramp holds settle within 0-300 ps.
-They cross a change of restraint regime rather than a lambda step, so they keep 1 ns,
-and the bound leg's own internal hold is a handoff of the same kind and keeps 1 ns
-too.
-
-### Setup: the box is measured, not assumed
-
-The FE legs need a bigger box than the classic protocol, because GROMACS checks every pull coordinate against `0.49 ×` the shortest box **vector** and the interface restraints separate as the partners come apart. That demand cannot be predicted from the minimised structure, so it used to be a constant (`-d 1.5`, then `-d 1.8`) measured once on 2KTF and applied to everything.
-
-Setup now measures it per structure:
-
-```
-emin_vac.gro
-  ├── probe pass    small box (-d = rvdw/2 + 0.5), N_PROBES = 5 INDEPENDENT
-  │                 replicas, each a full NVT ladder + 20 ns NPT
-  │                 the bound complex never needs the production box: its largest
-  │                 checked pull pair is 1.18 nm against a 3.29 nm limit at -d 1.00
-  ├── measure_box.py  running max solute atom-atom distance over ALL replicas
-  │                 -> boxpad.gs  (L = D_max + 2 × 1.5 nm)
-  └── production    box from boxpad.gs, solvate, minimise, ladder, 1 ns NPT
-                    -> emin_solv.gro, which every cycle starts from
-  every restraint and every anchor is measured on the POOLED last half of all
-  five replicas: the production system is deliberately NOT equilibrated here,
-  because each cycle runs its own ladder from emin_solv.gro with fresh
-  velocities and that is what generates the bound-state ensemble
-```
-
-**Why five replicas.** Three repeats of one protocol scattered `dG_bind` by
-14.4 kJ/mol between runs against a within-run bootstrap of 4.4. The reason is
-structural rather than statistical: all 50 cycles of a run shared one probe, one
-Boresch triad and one spring set, so resampling cycles holds every one of those
-fixed and the reported interval is conditional on a setup draw that is itself
-random. Replicating the probe is the only part of the design that attacks that
-term. The ladder is re-run per replica rather than branching five copies off one
-equilibrated state, since branching late would leave them sharing the history this
-is meant to break.
-
-Pooling the references needs two things that are each silently wrong if skipped: the
-ligand triad is minimum-imaged before any angle is taken, because `trjconv -pbc
-whole` can leave the two proteins in different images; and the three dihedrals are
-averaged **circularly**, since +179 and -179 are two degrees apart and average to
-180, where an arithmetic mean gives 0 and a reference pointing the other way.
-
-#### Which interface pairs get a spring
-
-A pair is a contact if it is inside 0.6 nm, and with the references now averaged
-over the pooled replicas that test is applied to the **mean** distance.
-
-**Candidates are enumerated at 1.2 nm so that the frame decides only what gets
-measured.** The cutoff has been applied to the ensemble mean since test7, but the
-pairs it was applied to used to be enumerated at 0.6 nm in a single snapshot, so a
-pair at 0.62 nm in that frame whose mean was 0.55 never got considered. That frame
-is a draw: across eight runs of one structure it produced 556-918 candidates and
-228-322 springs, and because `k = sum_k/N` the spring count sets both `dG_intro`
-(`r = +0.91`) and, through the stiffness, stage E's dissipation (`r = -0.73`). It
-cancels in `dG_bind` at `r = -0.10`, so it was never a bias — it is why the
-per-channel intervals are four to five times too small, and why the stiffness of
-the whole set was being drawn at random. Re-run on test27's own probes, the wider
-pass takes the set from 228 springs at `k = 54.8` to 281 at `k = 44.5`, and 19% of
-the final set consists of pairs the old pass could not have seen. Whether the cut is
-wide enough is reported rather than assumed: the setup prints the margin between the
-widest restrained pair's frame distance and the cut. Read that margin as proximity
-rather than loss. At 0.9 nm two of five runs came back with margins of 0.013 and
-0.019 nm, and re-running both at 1.2 on their own probes returned spring sets
-identical to the pair, so nothing had been falling off the edge and only the
-headroom was thin. The cut is 1.2 for the headroom; the direct test, when the
-margin is small, is to widen it and compare the spring count.
-
-A mean cannot see how much of the time a pair is actually in contact, and pooling five
-replicas is what makes the difference visible: measured across three runs, 27-40%
-of the springs that survive the mean cutoff sit outside it in more than a quarter
-of the frames, and `r(mean, sd)` is only +0.27 to +0.32, so filtering on the mean
-does not remove them. They hide at short mean distance and swing.
-
-They are not free. A harmonic spring referenced to `r0 = <d>` costs `var(d)`, so
-
-    <W_intro> = 0.5 * sum_k * mean_i(sd_i^2)
-
-which does **not** depend on the number of springs: dropping the widest lowers the
-bound leg's work and its fluctuation even though `k = sum_k/N` rises to compensate.
-The widest 10% of pairs carry 33-48% of `sum(sd^2)`.
-
-So a second criterion applies, `--sd-max`, defaulting to **0.15 nm**. On the three
-runs it takes the final spring count down only 5-8% (322/272/239 to 295/257/227),
-because most wide pairs also sit far out and the two filters overlap, while
-removing 26-40% of the `sum(sd^2)` of the springs the cutoff would have kept
-anyway. Pass `--sd-max 0` to keep every pair; the spread is reported either way,
-and the value is recorded in `boresch_analytical.gs` beside `sum_k`, since it
-selects which springs exist and two directories built at different values do not
-have comparable bound legs.
-
-It refuses to strip the interface bare: if the ceiling would leave fewer than 60
-springs it is not applied at all and says so, because an interface pinned at a
-handful of points is a worse failure than one pinned at some mobile ones.
-
-`make_boresch.py` then takes its geometry from the production reference (`-f`) and its backbone RMSF from the probe trajectories (`--traj`, which takes the whole list of replicas); solute atom numbering is identical between the two systems, only the solvent count differs. On 2KTF the measurement returns `-d 1.844`, within 0.05 nm of the constant it replaces, but it will move on the next complex instead of staying put.
-
-All pressure coupling is **C-rescale** (stochastic cell rescaling, Bernetti and Bussi 2020) at `tau_p` 2.0 ps, with V-rescale for temperature. Berendsen generates no strictly correct ensemble, which matters most for the per-cycle `npt_fe`: its output is the bound-state configuration `boundfwd` starts from, and Crooks assumes those initial states are drawn from the true equilibrium distribution.
-
-The effort is deliberately concentrated where the uncertainty is. The unbinding/rebinding legs dominate the error and are given 50.4 ns across the two directions against the bound switch's 15. **Each stage's pull rate is tied to its own length**: `rate x stage_time = stage_span`, hence 2.38e-5, 1.59e-5, 1.59e-5, 2.18e-5, 2.18e-5, 3.57e-5, 3.57e-5, 1.01e-4 and 1.01e-4 nm/ps for stages A to I. **Nine stages but only five distinct rates**, because each subdivided pair splits its parent's time in proportion to its span and therefore inherits its parent's rate; that repetition is the invariant the whole subdivision argument rests on, and `tests/test_subdivision.py` fails if it is broken. `delta-lambda` is written at `%.12e` for the same reason the pull rate is written at `%.10g`: the endpoint drifts by `nsteps` times whatever the last digit rounds away, so a format wide enough for a short leg silently stops being wide enough for a long one. Nothing sets a rate by hand: `make_boresch.py` reads each stage's own mdp and derives it, then records all of them in `boresch_analytical.gs` as `stage_rate_nm_ps`, because `integrate.py` turns the time integral of the pull force into work by multiplying by the rate and a stage integrated at another stage's rate is silently rescaled. The lambda spans are read back from the mdps for the same reason on the dhdl side.
-
-The **5 ns unbound hold** (1 ns before 2026-08-11, then 5, 3, 6 and back to 5) exists because the rebinding leg is the one which starts from the Boresch-restrained separated state, and an under-equilibrated starting ensemble inflates the reverse width and breaks the forward/reverse pairing Crooks requires, which neither longer switching legs nor additional cycles can repair. Over 40 cycles of 2KTF the rebinding works were 2.4× wider than the unbinding works (σ 51.5 vs 21.6). Raising the hold to 5 ns did not fix that: the next run came back with `sf/sr` 0.32 against 0.42, i.e. moved the wrong way. That run also carried the dihedral sign fix, so the two changes are confounded and the hold is not convicted on it, but nothing supported 5 ns either. It is 5 ns (`UNBOUND_HOLD_PS`), and the measurement that matters is a different one: on the two-stage run it was fully plateaued after 800 ps, where the earlier 5 ns hold never settled at all. Whether a hold is long enough can be checked with `utils/fe_leg_efficiency.py`: the width ratio `sf/sr` should move toward 1.
-
-`fe_leg_efficiency.py` takes `--leg unbind<L>` for each stage and `--leg unbind` for the ramp as a whole; the choices are generated from `fe_protocol.py`, so they follow the ramp. The stages are the real switching processes and are what the friction and cost model apply to; the whole ramp has no trace files of its own, so for it the tool reports the work distributions only.
-
-### Why BAR is the FE headline and not the classic one
-
-BAR (Bennett Acceptance Ratio) is the maximum-likelihood estimator for bidirectional work data and, unlike CGI, assumes nothing about the shape of either distribution. It is therefore the headline for `scores_fe.gs`. It is deliberately *not* the classic engine's score.
-
-Every bidirectional estimator, BAR included, reads ΔG off the region where the forward and sign-aligned reverse works both have samples. The classic protocol has no such region: forward and reverse are separated by a median of 132 RT, with 0 of 46 structures in `bm_amber` overlapping at all and 1 of 2431 in `bm_ppb_amber`. With nothing in the crossing region BAR collapses toward the Jarzynski limit, dominated by the single most extreme work, and a synthetic benchmark at that dissipation puts its error at 3.97 kT against 1.56 for the average. The classic score is also a relative pull work calibrated against experiment downstream by regression rather than an absolute ΔG, so swapping in a tail-dominated estimator would trade a calibrated number for a worse one.
-
-So the classic engine keeps the average and carries BAR as an appended column that mostly reads `nan BAR_NO_OVERLAP`. That suppression is the point: it puts the reason the classic score is not a free energy into the output rather than leaving it in prose.
-
-**A `nan` in a BAR column never means the solver failed.** It means the leg had no overlap and the estimate was refused, with the reason in `Note`. BAR is suppressed rather than flagged because a flagged number still gets plotted and regressed by anything that does not read the flag, and on separated data the solver returns a confident finite value, with the wrong sign at the dissipation the unbinding leg currently runs at. The average and CGI are still reported there, because they are model extrapolations by construction and never claimed otherwise.
-
-The solver lives in `utils/estimators.py` and is shared by both engines. It is implemented in-repo rather than calling pymbar because pymbar's `bar()` cannot be vectorised over bootstrap rows, which would have cost about 73 s per structure against 0.66 s; `tests/test_bar.py` cross-checks against pymbar when it is importable and agrees to ten decimal places.
-
-### Choosing the Boresch anchors
-
-The six Boresch coordinates fix the relative placement of two anchor triads but say nothing about the shape of either triad, and those edges are intramolecular. If the anchor groups are not themselves rigid the frame wanders, and eq.32, which assumes anchor points fixed in rigid bodies, stops describing what is actually restrained.
-
-Anchors are therefore selected from **measured** backbone rigidity rather than from a static heuristic. Each protein is fitted onto itself frame by frame over the probe trajectory, which removes rigid-body motion and leaves flexibility; candidate groups are compact backbone clusters (0.70 nm about a seed CA, at least 18 atoms) kept only if their measured COM RMSF is below a ceiling, thinned to 0.5 nm COM separation, and ranked on `eps / (arm × conditioning)`. Selecting on measured COM RMSF rather than on size is the point: averaging suppresses only uncorrelated motion, as `1/√N`, so a loop that moves collectively averages to nothing however many atoms it has.
-
-Two refinements matter enough to state:
-
-**The chosen triad is rebuilt with disjoint membership.** Candidate groups are seed neighbourhoods, so a residue near two seeds belongs to both, and the 0.5 nm thinning constrains COM separation only. Shared atoms pull the two COMs together, which shortens the lever arm just as the frame error `eps/L` wants it long, and it leaves the six coordinates correlated in a way the factorised eq.32 does not model. Each residue is reassigned to its nearest of the three seeds and the arms, conditioning and RMSF are all re-tested on the split geometry.
-
-**The rigidity ceiling escalates serially**, `EPS_LADDER = (0.045, 0.060, 0.080)` nm, first success wins. The ceiling is a physical requirement rather than a tuning knob, so the tightest one that yields an anchor set is the right one and later entries are concessions to a structure that cannot supply groups that quiet. The burial heuristic is reached only when every ceiling fails. Note the split starves the candidate pool, which is why the ladder exists: on 2KTF the ligand drops from 3 ranked triads to 1 surviving at 0.045.
-
-The selection is then **validated**: the relative rotation of the two frames is recomputed over the trajectory and reported, with a warning above 8°. The predecessor heuristic, which chose single-residue N/CA/C triads by burial, let the partners rotate 22-52° with every Boresch coordinate satisfied; the measured path reaches 4.5-6.6° on 2KTF.
+Why the cycle looks the way it does, what has been measured and what has not, lives
+in the comments of `fe_protocol.py` and `make_boresch.py` next to the code it
+constrains, and in the commit history. It is deliberately not kept here, because it
+changes faster than a README can honestly track.
 
 ### Caveats
 
-- **All free-energy results predating 2026-08-14 are void.** `dihedral_deg` returned the negated dihedral, so all three φ references were written to every leg mdp as mirror images. On 2KTF this put 3145 kJ/mol into `dH/dλ` at t=0 and drove θ_B toward the pull-frame singularity, where the `1/sin(θ_B)` lever tore anchor residues apart. `make_boresch.py` now reads its own pull block back through a zero-step grompp and aborts if GROMACS does not reproduce the references it was given.
-- **Convergence of the unbinding leg is unresolved.** The forward and reverse work distributions of the whole ramp had zero overlap at 20 ns both before and after the dihedral sign fix, so the mirror-orientation strain was not the explanation. Splitting the ramp at u = 0.3 resolved the first stage on a real run (`dG_A` = 76.17 +- 3.89 kJ/mol, the first BAR value this channel has produced) but left the second blocked by 2.14 RT, so `dG_unbind` is still refused. The ramp is now split again at u = 0.5, where the measurement says the time is worth most. **Whether three stages resolve has not been measured.** The thing to watch is every `dG_unb<L>_bar` column, `dG_unbind_bar` against `dG_unbind_1s_bar` where the latter resolves at all, and the stage panels of `fe_works.png`.
-- **The holds are an assumption, not a measurement.** The staged sum is only unbiased if the system is at equilibrium where the stages meet. On the two-stage run the arrival mismatch decayed with a time constant of about 1.19 ns, so a 1 ns hold was 0.84 tau and two thirds of the cycles were still drifting when it ended; two routes then sized the resulting bias anywhere between 0.9 and 24 kJ/mol. The holds are still 1 ns. Lengthening them and watching the answer stand still is the outstanding test.
-- **The classic and FE protocols changed barostat on 2026-08-14.** Results from before are not strictly comparable with results from after.
+- **Not validated.** The 2KTF reference case does not yet reproduce experiment, and
+  the discrepancy is under investigation.
+- **Free-energy results predating 2026-08-14 are void**: `dihedral_deg` returned the
+  negated dihedral, so all three Boresch phi references were written as mirror
+  images. `make_boresch.py` now reads its own pull block back through a zero-step
+  grompp and aborts if GROMACS does not reproduce the references it was given.
+- **A force field must run with the electrostatics it was parametrised with.**
+  `settings/gromos54a8` is PME; `settings/gromos54a8_rf` is the same force field
+  under the reaction field GROMOS was fitted to. These give very different answers.
+- **Reported intervals are per-run.** The between-run scatter over repeated setups
+  is larger than the interval any single run reports, and no cycle count reduces it.
 
 ## Heteroatom Support
 
