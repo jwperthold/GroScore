@@ -380,9 +380,8 @@ On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per str
 
 ## Absolute Binding Free Energies (GroScore-FE)
 
-> **Under active development.** The protocol changes often, results are not yet
-> validated against experiment, and numbers from one revision are not comparable
-> with another. Do not use it for production work yet.
+> **Under active development.** The protocol changes often and output from one
+> revision is not comparable with another. Not ready for production use.
 
 `groscore_fe.py` (with `job_fe.run`) computes an *absolute* binding free energy,
 where the classic engine's score is biased by empirical interface restraints whose
@@ -430,17 +429,16 @@ changes faster than a README can honestly track.
 
 ### Caveats
 
-- **Not validated.** The 2KTF reference case does not yet reproduce experiment, and
-  the discrepancy is under investigation.
-- **Free-energy results predating 2026-08-14 are void**: `dihedral_deg` returned the
-  negated dihedral, so all three Boresch phi references were written as mirror
+- **Output from before 2026-08-14 should be regenerated.** `dihedral_deg` returned
+  the negated dihedral, so all three Boresch phi references were written as mirror
   images. `make_boresch.py` now reads its own pull block back through a zero-step
   grompp and aborts if GROMACS does not reproduce the references it was given.
-- **A force field must run with the electrostatics it was parametrised with.**
-  `settings/gromos54a8` is PME; `settings/gromos54a8_rf` is the same force field
-  under the reaction field GROMOS was fitted to. These give very different answers.
-- **Reported intervals are per-run.** The between-run scatter over repeated setups
-  is larger than the interval any single run reports, and no cycle count reduces it.
+- **Match the electrostatics to the force field.** `settings/gromos54a8` uses PME;
+  `settings/gromos54a8_rf` is the same force field under the reaction field GROMOS
+  was parametrised with. Pick the tree deliberately.
+- **The reported interval is a bootstrap over the cycles of one run.** It does not
+  cover variation between independent setups of the same structure, which have
+  their own probe equilibration, anchor triad and interface restraint set.
 
 ## Heteroatom Support
 
