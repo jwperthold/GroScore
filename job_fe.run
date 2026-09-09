@@ -102,6 +102,52 @@ fe_xvgs() {
   done
 }
 
+# WHY A LEG IS RETRIED IN PLACE. On VSC5 the dominant failure is not the
+# protocol and not a timeout, it is the hardware: over test13/14/15, 10 of 149
+# cycles died, 5 to CUDA "illegal memory access", 3 to a segfault in mdrun and 2
+# to a SLURM node failure. At ~7% per cycle the chance that all 50 cycles of a
+# submission survive is about 3%, which is why a run has never finished without
+# a --restart. No leg is anywhere near its timeout: the longest switching leg
+# measured 20.4 min against 60, and npt_c 76.8 against 600.
+#
+# A transient fault is not a property of the system being simulated, so the same
+# leg started again usually completes. Abandoning the whole cycle and waiting for
+# a human to resubmit costs a day per fault and, worse, loses the cycle entirely
+# if nobody does. Retrying here costs one leg.
+#
+# It resumes from the leg's own checkpoint when there is one, which is also what
+# makes a retry cheap rather than a restart. GROMACS validates the checkpoint
+# against the tpr and falls back to _prev.cpt if the crash corrupted it.
+#
+# Deliberately bounded: a leg that fails for a REAL reason (an exploding system,
+# a bad restraint) fails identically every time, and retrying it forever would
+# turn a fast failure into a silent stall. Two attempts by default;
+# GROSCORE_LEG_RETRIES overrides.
+#
+# TOP LEVEL, NOT INSIDE THE CYCLE SECTION, because the probe replicas in Stage 0
+# need it as much as the legs do. On the 46-structure HADDOCK pass of 2026-09-09
+# the blow-up rate under AMBER19SB/OPC3 at 4 fs was 4.4 per us across every leg
+# type (0.5 to 14 per us by structure); the cycle legs shrugged it off through
+# this function (202 retries, 166 rescued), while the probe ran five 20 ns
+# replicas with no retry and lost the whole structure whenever ONE of them died:
+# 20 of the 22 PROBE_FAILs, 1 - exp(-4.4 x 0.1) = 36% expected, 48% observed.
+run_leg_mdrun() {
+  local out="$1" tmo="$2"; shift 2
+  local tries=${GROSCORE_LEG_RETRIES:-2}
+  local i=1
+  while [[ $i -le $tries ]]; do
+    local cpi=()
+    [[ -f "${out}.cpt" ]] && cpi=(-cpi "${out}.cpt")
+    timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@" "${cpi[@]}"
+    [[ -f "${out}.gro" ]] && return 0
+    if [[ $i -lt $tries ]]; then
+      echo "  leg $out did not finish (attempt $i of $tries); retrying$([[ -f ${out}.cpt ]] && echo " from its checkpoint")."
+    fi
+    i=$((i+1))
+  done
+  return 1
+}
+
 # Restart recovery: detect and clean up stale intermediate files from failed runs.
 # If conf.gro exists but emin_solv.gro doesn't, a previous setup attempt failed
 # partway through. Clean up ALL setup files and start from scratch to avoid
@@ -748,9 +794,9 @@ with open('$CUTOUT_PDB', 'w') as f:
             gmx grompp -r emin_probe.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_probe${rep}.tpr -t nvt_5_probe${rep}.cpt -p topol_probe.top -o npt_probe${rep} -n index_probe.ndx -maxwarn 10
           fi
           if [[ ! -f npt_probe${rep}.gro ]]; then
-            CPI=""
-            [[ -f npt_probe${rep}.cpt ]] && CPI="-cpi npt_probe${rep}.cpt"
-            timeout -s 9 600m gmx mdrun -nt $nt $GPUOPT -deffnm npt_probe${rep} $CPI
+            # Two attempts from the checkpoint, like every cycle leg. See
+            # run_leg_mdrun for what one lost replica used to cost.
+            run_leg_mdrun npt_probe${rep} 600m || true
           fi
           if [[ ! -f npt_probe${rep}.gro ]]; then
             echo "Stage 0 failed: probe replica $rep did not finish (no npt_probe${rep}.gro)."
@@ -1192,43 +1238,6 @@ fi
     return 1
   }
 
-  # WHY A LEG IS RETRIED IN PLACE. On VSC5 the dominant failure is not the
-  # protocol and not a timeout, it is the hardware: over test13/14/15, 10 of 149
-  # cycles died, 5 to CUDA "illegal memory access", 3 to a segfault in mdrun and 2
-  # to a SLURM node failure. At ~7% per cycle the chance that all 50 cycles of a
-  # submission survive is about 3%, which is why a run has never finished without
-  # a --restart. No leg is anywhere near its timeout: the longest switching leg
-  # measured 20.4 min against 60, and npt_c 76.8 against 600.
-  #
-  # A transient fault is not a property of the system being simulated, so the same
-  # leg started again usually completes. Abandoning the whole cycle and waiting for
-  # a human to resubmit costs a day per fault and, worse, loses the cycle entirely
-  # if nobody does. Retrying here costs one leg.
-  #
-  # It resumes from the leg's own checkpoint when there is one, which is also what
-  # makes a retry cheap rather than a restart. GROMACS validates the checkpoint
-  # against the tpr and falls back to _prev.cpt if the crash corrupted it.
-  #
-  # Deliberately bounded: a leg that fails for a REAL reason (an exploding system,
-  # a bad restraint) fails identically every time, and retrying it forever would
-  # turn a fast failure into a silent stall. Two attempts by default;
-  # GROSCORE_LEG_RETRIES overrides.
-  run_leg_mdrun() {
-    local out="$1" tmo="$2"; shift 2
-    local tries=${GROSCORE_LEG_RETRIES:-2}
-    local i=1
-    while [[ $i -le $tries ]]; do
-      local cpi=()
-      [[ -f "${out}.cpt" ]] && cpi=(-cpi "${out}.cpt")
-      timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@" "${cpi[@]}"
-      [[ -f "${out}.gro" ]] && return 0
-      if [[ $i -lt $tries ]]; then
-        echo "  leg $out did not finish (attempt $i of $tries); retrying$([[ -f ${out}.cpt ]] && echo " from its checkpoint")."
-      fi
-      i=$((i+1))
-    done
-    return 1
-  }
 
   CYCLE_FAILED=0
   cycle=$CYCLE_START

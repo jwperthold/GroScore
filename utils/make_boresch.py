@@ -789,6 +789,35 @@ TOP_PER_SIDE = 30       # triads kept per protein before the cross-protein searc
 RMSF_SPLIT = 1.0        # nm, per-atom RMSF above which a side is PBC-split
 MIN_FRAMES = 20         # frames needed before the measurement means anything
 
+def write_ndx_group(path, name, atoms):
+  """One index group, 15 atom numbers per line, which is the layout gmx itself
+  writes. NOT one line: a single line of a few thousand numbers takes trjconv down
+  with a glibc malloc assertion (GROMACS 2026.0, measured 2026-09-09: 3800 atoms on
+  one line is fine, 4000 aborts, the same 4000 wrapped is fine). Every reader below
+  used to write one line and swallow the abort, so on six HADDOCK setups the whole
+  ensemble pass silently returned nothing and 20,000-40,000 candidates became
+  springs at k = 0.3-0.6. The backbone selection never crossed the limit; the
+  interface selection on a big interface does."""
+  atoms = list(atoms)
+  with open(path, "w") as f:
+    f.write("[ %s ]\n" % name)
+    for i in range(0, len(atoms), 15):
+      f.write(" ".join(str(a) for a in atoms[i:i + 15]) + "\n")
+
+
+def trjconv_failed(r, traj, gro, what):
+  """True when a trjconv pass produced nothing -- and SAYS SO on stderr, with the
+  last line trjconv wrote. The callers fall back when this is True, which is right;
+  falling back without a word is what hid the index bug above for a whole run."""
+  if r.returncode == 0 and os.path.isfile(gro):
+    return False
+  err = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+  sys.stderr.write("make_boresch: trjconv (%s) on %s exited %d%s; this replica is "
+                   "skipped\n" % (what, traj, r.returncode,
+                                  (": " + err[-1].strip()[:200]) if err else ""))
+  return True
+
+
 
 def kabsch(P, Q):
   """Rotation and translation taking P onto Q."""
@@ -877,15 +906,14 @@ def load_backbone_trajectory(atom_numbers):
   ndx, gro = ".bb_sel.ndx", ".bb_traj.gro"
   out = []
   try:
-    with open(ndx, "w") as f:
-      f.write("[ bbsel ]\n" + " ".join(str(a) for a in atom_numbers) + "\n")
+    write_ndx_group(ndx, "bbsel", atom_numbers)
     for traj, tpr in TRAJ_PAIRS:
       if os.path.isfile(gro):
         os.remove(gro)
       cmd = ["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", ndx,
              "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"]
       r = subprocess.run(cmd, input="bbsel\n", capture_output=True, text=True)
-      if r.returncode != 0 or not os.path.isfile(gro):
+      if trjconv_failed(r, traj, gro, "backbone"):
         continue
       part = read_multi_gro(gro, len(atom_numbers))
       if part is not None:
@@ -941,8 +969,7 @@ def reference_on_ensemble(pairs):
   ndx, gro = ".if_sel.ndx", ".if_traj.gro"
   Xs, Ms, nrep = [], [], 0
   try:
-    with open(ndx, "w") as f:
-      f.write("[ ifsel ]\n" + " ".join(str(a) for a in anums) + "\n")
+    write_ndx_group(ndx, "ifsel", anums)
     for traj, tpr in TRAJ_PAIRS:
       if os.path.isfile(gro):
         os.remove(gro)
@@ -950,7 +977,7 @@ def reference_on_ensemble(pairs):
                           "-n", ndx, "-o", gro, "-b", "%g" % TRAJ_SKIP_PS,
                           "-pbc", "whole"],
                          input="ifsel\n", capture_output=True, text=True)
-      if r.returncode != 0 or not os.path.isfile(gro):
+      if trjconv_failed(r, traj, gro, "interface"):
         continue
       Xp, Mp = read_multi_gro(gro, len(anums), with_box=True)
       if Xp is not None:
@@ -1288,15 +1315,14 @@ def ensemble_cross_r(cand):
   ndx, gro = ".xr_sel.ndx", ".xr_traj.gro"
   Xs, Ms = [], []
   try:
-    with open(ndx, "w") as f:
-      f.write("[ xrsel ]\n" + " ".join(str(a) for a in anums) + "\n")
+    write_ndx_group(ndx, "xrsel", anums)
     for traj, tpr in TRAJ_PAIRS:
       if os.path.isfile(gro):
         os.remove(gro)
       r = subprocess.run(["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", ndx,
                           "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"],
                          input="xrsel\n", capture_output=True, text=True)
-      if r.returncode != 0 or not os.path.isfile(gro):
+      if trjconv_failed(r, traj, gro, "anchor candidates"):
         continue
       Xp, Mp = read_multi_gro(gro, len(anums), with_box=True)
       if Xp is not None:
@@ -1754,15 +1780,14 @@ def ensemble_boresch_geometry(groups):
   ndx, gro = ".bor_sel.ndx", ".bor_traj.gro"
   Xs, Ms = [], []
   try:
-    with open(ndx, "w") as f:
-      f.write("[ borsel ]\n" + " ".join(str(a) for a in anums) + "\n")
+    write_ndx_group(ndx, "borsel", anums)
     for traj, tpr in TRAJ_PAIRS:
       if os.path.isfile(gro):
         os.remove(gro)
       r = subprocess.run(["gmx", "trjconv", "-s", tpr, "-f", traj, "-n", ndx,
                           "-o", gro, "-b", "%g" % TRAJ_SKIP_PS, "-pbc", "whole"],
                          input="borsel\n", capture_output=True, text=True)
-      if r.returncode != 0 or not os.path.isfile(gro):
+      if trjconv_failed(r, traj, gro, "Boresch groups"):
         continue
       Xp, Mp = read_multi_gro(gro, len(anums), with_box=True)
       if Xp is not None:
@@ -1961,13 +1986,24 @@ def finalise_interface(cands):
   see what the one before it decided."""
   pairs, note = reference_on_ensemble(cands)
   if not note.startswith("mean over"):
-    # No trajectory: the references are still the frame distances the cutoff
-    # already accepted, so there is nothing to re-apply and nothing to drop.
+    # No trajectory: the references are the frame distances. Those were accepted
+    # at CANDIDATE_CUT, which is WIDER than the contact cutoff, so the cutoff has
+    # to be applied here or every candidate becomes a spring. The old comment
+    # said "the cutoff already accepted them"; that was true when candidates
+    # were enumerated at 0.6 nm and stopped being true when the pass widened,
+    # and nothing noticed until six HADDOCK setups ran with 20,000-40,000
+    # springs (2026-09-09). Same trap as SD_MIN_KEEP: widen a filter's input
+    # and every guard downstream of it silently loosens.
+    keep = [p for p in pairs if p[2] <= interfacecutoff]
     sys.stderr.write("make_boresch: interface references NOT re-measured (%s); "
-                     "the selection cutoff therefore still applies to the frame "
-                     "distances, which is self-consistent but is the test7 "
-                     "geometry\n" % note)
-    return pairs, "single reference frame"
+                     "applying the %.2f nm contact cutoff to the frame distances "
+                     "instead, %d of %d candidates kept -- the test7 geometry, "
+                     "self-consistent but unmeasured\n"
+                     % (note, interfacecutoff, len(keep), len(pairs)))
+    if not keep:
+      abort("NO_INTERFACE_CONTACTS",
+            "no candidate pair inside %.2f nm in the reference frame" % interfacecutoff)
+    return keep, "single reference frame"
 
   keep = [p for p in pairs if p[2] <= interfacecutoff]
   dropped = len(pairs) - len(keep)
