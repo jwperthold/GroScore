@@ -201,7 +201,7 @@ GPU cloud providers typically rent out one fat machine (4 or 8 GPUs in a single 
 python ../groscore.py -n 5 --run-local --ngpus 8
 ```
 
-Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate: GroScore systems are small enough to run essentially GPU-resident (nonbonded, PME and the update/constraints all offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor.
+Every job gets `gmx mdrun -nt 1 -gpu_id <n> -pin off`: one CPU thread, one GPU. That is deliberate: GroScore systems are small enough to run essentially GPU-resident (nonbonded and PME offloaded), so a job's CPU thread mostly feeds the device, and 8 single-threaded jobs on 8 GPUs beat one 8-threaded job on one GPU by close to the full factor. That was measured with the update on the GPU as well; since v1.3 all bonds are constrained, which puts the update and LINCS on the CPU thread, so `--threads-per-job 2` may now pay on a workstation. Measure before assuming.
 
 **How work is distributed.** `--ngpus` is mandatory and defines the round-robin: job 1 → GPU 0, job 2 → GPU 1, …, job 9 → GPU 0 again. By default 8 jobs share each GPU (`--jobs-per-gpu 8`), as a single cutout-sized system leaves the GPU idle during CPU-side work, so stacking jobs raises *aggregate* throughput well past what one job per device achieves. Anything beyond `--ngpus × --jobs-per-gpu` waits in a queue and starts as slots free up, so a 500-structure screen does not try to open 500 GROMACS processes at once. Jobs are handed out dynamically, so a slow structure cannot leave its GPU idle at the end of the run.
 
@@ -312,14 +312,14 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 
 | Force Field | Type | Water Model | Constraints | Cutoffs | Terminal Capping |
 |-------------|------|-------------|-------------|---------|------------------|
-| **AMBER19SB OPC3** (default) | All-atom | OPC3 (3-point) | h-bonds | 1.0 nm | ACE/NME  |
-| **AMBER19SB OPC** | All-atom | OPC (4-point) | h-bonds | 1.0 nm | ACE/NME |
-| **CHARMM36m** | All-atom | TIP3P | h-bonds | 1.2 nm | ACE/COOH |
+| **AMBER19SB OPC3** (default) | All-atom | OPC3 (3-point) | all-bonds | 1.0 nm | ACE/NME  |
+| **AMBER19SB OPC** | All-atom | OPC (4-point) | all-bonds | 1.0 nm | ACE/NME |
+| **CHARMM36m** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
 All force fields use:
 - **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
-- **Constraints**: h-bonds, which with `mass-repartition-factor = 3` is what justifies the 4 fs timestep. Constraining heavy-atom bonds as well builds coupled constraint chains longer than GPU LINCS supports, which disables the GPU-resident update and cost 1.29× in throughput on the real 2KTF system. GROMOS 54A8 keeps **all-bonds**: it is united-atom, so hydrogen mass repartitioning has almost nothing to act on, and all bonds constrained is its native validated protocol
+- **Constraints**: all-bonds, with `mass-repartition-factor = 3`, in every force field since v1.3. Up to v1.2 the all-atom force fields constrained h-bonds only, which keeps the constraint chains short enough for GPU LINCS and the update GPU-resident, 1.29× faster on 2KTF. At 4 fs that leaves the heavy-atom stretches integrated at five steps per period, and on the 46-structure HADDOCK set it blew up at 0.5 to 14 crashes per µs depending on the structure, scaling with protein size, while GROMOS 54A8 on all-bonds had none in 25 µs. All-bonds is the Feenstra recipe for 4 fs with heavy hydrogens; it moves the update and constraints to the CPU and costs that 1.29×, and it turns a blow-up into a LINCS warning that names the atom instead of a CUDA illegal-address crash
 - **Heavy hydrogens**: `mass-repartition-factor = 3` for stable 4 fs timesteps
 - **Timestep**: 4 fs (`dt = 0.004` ps) for all production stages
 - **SMD pulling per leg**: 1.25 × 10⁶ steps × 4 fs = 5 ns; one cycle = pull + push = 10 ns of SMD plus ~120 ps NVT/NPT equilibration
@@ -376,7 +376,7 @@ Each cycle draws fresh velocities from a Maxwell-Boltzmann distribution at `gen_
 
 ### Throughput
 
-On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per structure for 5 cycles** (including all equilibration legs and 5 × 10 ns of SMD). Cost scales linearly with cycle count and roughly linearly with system size; the interface-cutout mode (default) keeps system size near-constant across most complexes, so per-structure walltimes are tightly clustered. The benchmark directory contains `compute_walltime.py`, which extracts realised walltimes and PFLOP counts from completed SLURM logs.
+On a single GPU (consumer-grade RTX-class), expect roughly **8 GPU-hours per structure for 5 cycles** (including all equilibration legs and 5 × 10 ns of SMD), measured under h-bonds constraints up to v1.2; all-bonds (v1.3) adds about 1.3× on top. Cost scales linearly with cycle count and roughly linearly with system size; the interface-cutout mode (default) keeps system size near-constant across most complexes, so per-structure walltimes are tightly clustered. The benchmark directory contains `compute_walltime.py`, which extracts realised walltimes and PFLOP counts from completed SLURM logs.
 
 ## Absolute Binding Free Energies (GroScore-FE)
 
