@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use GroScore in your research, please cite the software (Zenodo DOI of the release you used) and the paper below."
+title: GroScore
+type: software
+authors:
+  - family-names: Perthold
+    given-names: Jan Walther
+    orcid: https://orcid.org/0000-0002-8575-0278
+license: MIT
+repository-code: https://github.com/jwperthold/GroScore
+keywords:
+  - molecular dynamics
+  - GROMACS
+  - protein-protein binding
+  - binding free energy
+  - steered molecular dynamics
+preferred-citation:
+  type: article
+  title: "GroScore: Automated Scoring of Protein-Protein Interactions Using Bidirectional Steered Molecular Dynamics"
+  authors:
+    - family-names: Perthold
+      given-names: Jan Walther
+    - family-names: Petrov
+      given-names: Dražen
+    - family-names: Oostenbrink
+      given-names: Chris
+  journal: Journal of Chemical Information and Modeling
+  year: 2026
+  doi: 10.1021/acs.jcim.6c01771
+references:
+  - type: article
+    title: "GroScore: Accurate Scoring of Protein-Protein Binding Poses Using Explicit-Solvent Free-Energy Calculations"
+    authors:
+      - family-names: Perthold
+        given-names: Jan Walther
+      - family-names: Oostenbrink
+        given-names: Chris
+    journal: Journal of Chemical Information and Modeling
+    year: 2019
+    volume: 59
+    issue: 12
+    start: 5074
+    end: 5085
+    doi: 10.1021/acs.jcim.9b00687

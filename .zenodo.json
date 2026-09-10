@@ -1,0 +1,37 @@
+{
+  "title": "GroScore",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Perthold, Jan Walther",
+      "orcid": "0000-0002-8575-0278"
+    }
+  ],
+  "description": "Computational chemistry toolkit for protein-protein affinity scoring with molecular dynamics. GroScore estimates binding affinities between protein pairs from short steered molecular dynamics simulations in explicit solvent, orchestrating GROMACS through SLURM job arrays or a local GPU pool. GroScore-FE computes absolute binding free energies with Boresch restraints and bidirectional non-equilibrium switching, combined with BAR, CGI and average-work estimators.",
+  "keywords": [
+    "molecular dynamics",
+    "GROMACS",
+    "protein-protein binding",
+    "binding affinity",
+    "binding free energy",
+    "steered molecular dynamics",
+    "non-equilibrium work",
+    "Boresch restraints"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.1021/acs.jcim.6c01771",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-article",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.1021/acs.jcim.9b00687",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-article",
+      "scheme": "doi"
+    }
+  ]
+}

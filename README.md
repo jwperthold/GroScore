@@ -625,9 +625,13 @@ python ../../groscore.py
 
 If you use GroScore in your research, please cite:
 
+> Perthold, J. W.; Petrov, D.; Oostenbrink, C. GroScore: Automated Scoring of Protein–Protein Interactions Using Bidirectional Steered Molecular Dynamics. *J. Chem. Inf. Model.* **2026**, Application Note. https://doi.org/10.1021/acs.jcim.6c01771
+
+The original, unidirectional method:
+
 > Perthold, J. W.; Oostenbrink, C. GroScore: Accurate Scoring of Protein–Protein Binding Poses Using Explicit-Solvent Free-Energy Calculations. *J. Chem. Inf. Model.* **2019**, *59* (12), 5074–5085. https://doi.org/10.1021/acs.jcim.9b00687
 
-For the improved method (Chapter 3 included as [theory/thesis_chapter_3.pdf](theory/thesis_chapter_3.pdf)), see:
+The bidirectional scheme is derived in Chapter 3 of the thesis (included as [theory/thesis_chapter_3.pdf](theory/thesis_chapter_3.pdf)):
 
 > Perthold, J. W. New developments and critical views on binding free-energy calculations using molecular mechanics. *Doctoral Dissertation*, University of Natural Resources and Life Sciences, Vienna (BOKU), **2023**. [Library catalog](https://litsearch.boku.ac.at/primo-explore/fulldisplay?docid=BOK_alma2198734100003345&vid=BOK)
 
