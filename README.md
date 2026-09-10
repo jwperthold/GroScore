@@ -8,6 +8,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10-green.svg)](https://www.python.org/)
 [![GROMACS](https://img.shields.io/badge/GROMACS-2026-orange.svg)](https://www.gromacs.org/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22686986.svg)](https://doi.org/10.5281/zenodo.22686986)
 
 GroScore estimates binding affinities between protein pairs using short steered molecular dynamics (SMD) simulations. It orchestrates GROMACS simulations via SLURM job arrays to perform repeated pulling/pushing cycles and calculates binding affinity scores using multiple statistical methods.
 
@@ -626,6 +627,8 @@ python ../../groscore.py
 If you use GroScore in your research, please cite:
 
 > Perthold, J. W.; Petrov, D.; Oostenbrink, C. GroScore: Automated Scoring of Protein–Protein Interactions Using Bidirectional Steered Molecular Dynamics. *J. Chem. Inf. Model.* **2026**, Application Note. https://doi.org/10.1021/acs.jcim.6c01771
+
+The software itself is archived on Zenodo with one DOI per release from v1.4 on; the concept DOI https://doi.org/10.5281/zenodo.22686986 resolves to the latest release.
 
 The original, unidirectional method:
 
