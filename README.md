@@ -318,6 +318,8 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 | **CHARMM36m** | All-atom | TIP3P | all-bonds | 1.2 nm | ACE/COOH |
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
+PTM parameters for GROMOS 54A8 are taken from the Vienna-PTM parameter set, https://github.com/viennaptm/ptm_parameters (Petrov et al., *PLoS Comput. Biol.* **2013**, *9*, e1003154, https://doi.org/10.1371/journal.pcbi.1003154; Margreitter et al., *J. Comput. Chem.* **2017**, *38*, 714, https://doi.org/10.1002/jcc.24733).
+
 All force fields use:
 - **Electrostatics**: PME (Particle Mesh Ewald) for long-range electrostatic interactions
 - **Constraints**: all-bonds, with `mass-repartition-factor = 3`, in every force field since v1.3. Up to v1.2 the all-atom force fields constrained h-bonds only, which keeps the constraint chains short enough for GPU LINCS and the update GPU-resident, 1.29× faster on 2KTF. At 4 fs that leaves the heavy-atom stretches integrated at five steps per period, and on the 46-structure HADDOCK set it blew up at 0.5 to 14 crashes per µs depending on the structure, scaling with protein size, while GROMOS 54A8 on all-bonds had none in 25 µs. All-bonds is the Feenstra recipe for 4 fs with heavy hydrogens; it moves the update and constraints to the CPU and costs that 1.29×, and it turns a blow-up into a LINCS warning that names the atom instead of a CUDA illegal-address crash
@@ -493,7 +495,7 @@ This is active with AMBER19SB force fields and ligand parametrization enabled (d
 
 #### GROMOS 54A8
 
-GROMOS 54A8 ships with ~80 PTM NCAAs pre-parametrized in its residue topology files, so no OpenFF is required. pdb2gmx handles them natively after renaming:
+The GROMOS 54A8 tree in `forcefield/` carries ~80 PTM NCAAs from the [Vienna-PTM parameter set](https://github.com/viennaptm/ptm_parameters) (references under [Force Fields](#force-fields)) pre-parametrized in its residue topology files, so no OpenFF is required. pdb2gmx handles them natively after renaming:
 
 | PDB CCD | GROMOS name | Notes |
 |---------|-------------|-------|
