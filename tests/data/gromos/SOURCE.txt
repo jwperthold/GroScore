@@ -1,0 +1,7 @@
+A segment of a deposited structure for tests/test_gromos_rename.py. PDB data are
+released by the wwPDB under CC0 1.0 (https://www.wwpdb.org/about/usage-policies). Cut on
+2026-10-04; its REMARK 250 says what was kept and changed.
+
+  1GRM_segment.pdb  1GRM (gramicidin A), first model, chain A residues 3-9 with the
+                    D-amino acids DLE and DVA; the test renames ALA 1 to DAL, a
+                    D-alanine, which GROMOS 54A8 calls DALA

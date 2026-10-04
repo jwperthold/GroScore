@@ -261,7 +261,14 @@ class Runner:
 
   def _extract(self, job, workdir):
     """Unpack an archived structure. Serialised: several cycles of the same
-    structure can become runnable at the same instant."""
+    structure can become runnable at the same instant.
+
+    Unpacked into a private directory and renamed into place, so the structure
+    directory appears complete or not at all. Unpacked in place, a failed
+    extraction (a damaged tarball, a full disk) left a partial directory, which the
+    next start took for the structure and ran job.run on, and a job of the same
+    structure started meanwhile found the directory half written. On failure the
+    archive is kept, nothing is left behind, and the job fails with the reason."""
     with self.extract:
       if os.path.isdir(workdir):
         return
@@ -269,11 +276,25 @@ class Runner:
       if not os.path.isfile(arc):
         return
       self.say("%s: unpacking %s" % (job.name, job.archive))
-      with tarfile.open(arc, "r:gz") as tar:
-        try:
-          tar.extractall(self.rundir, filter="data")   # Python >= 3.12
-        except TypeError:
-          tar.extractall(self.rundir)
+      stage = os.path.join(self.rundir, ".unpack_%s.%d" % (os.path.basename(workdir), os.getpid()))
+      shutil.rmtree(stage, ignore_errors=True)
+      try:
+        os.makedirs(stage)
+        with tarfile.open(arc, "r:gz") as tar:
+          try:
+            tar.extractall(stage, filter="data")   # Python >= 3.12
+          except TypeError:
+            tar.extractall(stage)
+        unpacked = os.path.join(stage, os.path.relpath(workdir, self.rundir))
+        if not os.path.isdir(unpacked):
+          raise OSError("%s holds no %s/" % (job.archive, os.path.relpath(workdir, self.rundir)))
+        os.rename(unpacked, workdir)
+      except (OSError, EOFError, tarfile.TarError) as e:
+        self.say("%s: could not unpack %s (%s); the archive is kept and nothing is run"
+                 % (job.name, job.archive, e))
+        return
+      finally:
+        shutil.rmtree(stage, ignore_errors=True)
       os.remove(arc)
       # .archive.lock is the election marker job.run uses to decide who archives
       # the structure; it lives inside the tarball, so a re-opened structure must

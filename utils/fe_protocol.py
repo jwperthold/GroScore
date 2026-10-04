@@ -5,21 +5,44 @@ Everything downstream derives from the table at the top of this file: the leg
 mdps (utils/make_fe_mdps.py), the pull blocks and per-stage rates
 (utils/make_boresch.py), the leg sequence and work extraction (job_fe.run, via
 --shell), the result-row layout and the staged estimator (groscore_fe.py), and
-the leg diagnostic (utils/fe_leg_efficiency.py).
+the leg diagnostic (utils/fe_leg_efficiency.py). Which pull block each leg runs
+and which leg's end state it starts from are part of the definition too: the
+"block" and "start_from" keys of legs().
 
 It exists because the ramp has been reshaped three times in two days, and each
 time the shape lived as four parallel hardcoded lists that had to be kept in
 step by hand. Every one of those lists is now computed from RAMP.
 
     python3 utils/fe_protocol.py            human-readable summary of the cycle
-    python3 utils/fe_protocol.py --shell    the same as shell arrays, for job_fe.run
+    python3 utils/fe_protocol.py --shell    the same as shell arrays, for job_fe.run;
+                                            evaluated without FE_RUNNER_HONOURS_START_FROM=1
+                                            its first line exits 1 (see _shell)
+
+PROTOCOL_ID names this cycle (see the identity section below); job_fe.run and
+groscore_fe.py record it so that cycles and rows of different protocols are never
+run on one setup or pooled in one run directory.
 
 THE CYCLE IS STAGED IN BOTH HALVES. The bound-state restraint switch runs in BOUND
 sub-legs and the unbinding pull in RAMP stages, with an equilibrium hold at every
-internal boundary in both directions. Each sub-leg is its own Crooks process; the
-holds do zero work, so the sub-leg works still sum exactly to the work of the whole
-switch, and each sum is scored alongside the staged one as the assumption-free
-cross-check.
+internal boundary in both directions. Each sub-leg is its own Crooks process.
+
+EVERY HOLD RUNS THE HAMILTONIAN OF ITS NEIGHBOURS, and that is what makes a hold do
+zero work. A hold runs at pull rate 0 and delta-lambda 0 under the pull block of
+the legs on either side of it: the holds inside the bound lambda schedule
+(holdbfwd*, holdbrev*) carry the bound block, the ramp holds and nptrev the unbind
+block (the "block" key of legs(), which make_boresch.py follows). Entering or
+leaving a hold then changes nothing in H. Two things rest on that. The sub-leg works
+sum exactly to the work of the whole switch, so each sum can be scored alongside the
+staged one as the assumption-free cross-check. And the leg after a hold starts from
+a state relaxed under the Hamiltonian it actually runs, which is what its own Crooks
+pair assumes. Through v1.4 the two bound holds ran the UNBIND block at lambda 0.25:
+interface springs at 0.75 k_inter plus the Boresch restraints at 25%, where the bound
+sub-legs on either side run springs at 0.25 k_inter and no Boresch. Every entry and
+exit switched the Hamiltonian without recording it, a work of 6.4 kJ/mol forward and
+7.3 reverse on average over the 39 sound pass-2 structures (0.2 to 27 per
+structure). It was structure dependent and correlated with experiment, so no
+constant could take it out afterwards (bm_fe_amber_2/_ana/digest/fu3.txt F1-F4,
+F13).
 
 WHY STAGE AT ALL. A leg whose dissipation exceeds its own work width has forward and
 reverse histograms that do not meet, and then BAR returns nothing whatever the
@@ -172,9 +195,9 @@ subdivided and A, at n_sigma 1.51, is left alone. Predicted worst n_sigma per ru
 WHY IT COSTS NOTHING. Each new boundary buys a hold in each direction out of a fixed
 80 ns of legs. Eight internal holds at RAMP_HOLD_PS = 350 cost 2.8 ns per direction
 against the four at 500 they replace costing 2.0, so the switching budget goes 26.0
-to 25.2 ns and the cycle stays at 100.1 ns. See RAMP_HOLD_PS for why 350 is still
-ample. What it does cost is legs: 43 per cycle rather than 27, and a 43-field result
-row rather than 27.
+to 25.2 ns and the cycle stayed at 100.1 ns (99.1 since v1.5 removed holdrev0). See
+RAMP_HOLD_PS for why 350 is still ample. What it does cost is legs: 43 per cycle
+rather than 27 (42 since v1.5), and a 43-field result row rather than 27.
 
 Widths are calibrated rather than assumed: kappa = sigma^2/(2 RT W) measures 2.57
 over the nine run/stage pairs, so the works are wider than linear response and
@@ -200,11 +223,14 @@ the bound leg and the ramp is flat from 5 to 13 ns per direction against a Monte
 Carlo noise of 0.1, so the shipped 7.5 sits inside the flat region. Crooks also
 forbids the obvious response to noisy rebinding -- more time in reverse than
 forward -- since the reverse protocol must be the exact time-reverse of the
-forward one.
+forward one. What Crooks does leave free is WHERE a reverse leg starts, as long as
+that is an equilibrium sample of its own end state; v1.5 uses exactly that freedom
+for the reverse bound legs (see legs()).
 
 HOLD LENGTHS ARE MEASURED. See RAMP_HOLD_PS below: dH/dlambda is written during a
 hold, so its autocorrelation time and its residual drift are both observable, and
-1000 ps was 60-90 tau everywhere except the two bound<->ramp handoffs.
+1000 ps was 60-90 tau everywhere except the two bound<->ramp handoffs. What that
+measurement does not cover, the interface itself, is stated there too.
 
 THE PROBE IS REPLICATED. N_PROBES independent equilibrations, everything measured on
 the pooled second half of all of them. This is the only part of the design that
@@ -218,8 +244,9 @@ it; three replicate setups per structure would. The per-CHANNEL intervals are st
 1.2 to 5.1 times too small, and the total's is right only because dG_intro and
 dG_unbind anticorrelate at r = -0.89.
 
-100.1 ns per cycle: 20 npt_c, 80 of legs, plus the 0.1 ns NVT ladder job_fe.run runs
-ahead of it.
+99.1 ns per cycle: 20 npt_c, 79 of legs, plus the 0.1 ns NVT ladder job_fe.run runs
+ahead of it. It was 100.1 until v1.5 removed holdrev0, the 1 ns hold the reverse
+bound legs used to start from; they now branch from the end of holdfwd0 instead.
 """
 import sys
 
@@ -290,10 +317,17 @@ BOUND = [
 # first tenth, and the end-of-hold state does not predict the next stage's work
 # (r = +0.06 over 49 cycles). The 1000 ps holds were 60-90 tau.
 #
-# The exception is the bound <-> ramp handoff. holdfwd0 and holdrev0 settle at 500
-# and 700 ps, about 40 tau, where the purely mid-ramp holds settle in 0-300. They
-# cross a change of restraint regime rather than a lambda step, so they keep 1 ns.
-# The bound leg's own internal hold is a handoff of the same kind and keeps 1 ns too.
+# The exception is the bound <-> ramp handoff. holdfwd0 settled at 500 ps (and
+# holdrev0, while it existed, at 700), about 40 tau, where the purely mid-ramp holds
+# settle in 0-300. holdfwd0 crosses a change of restraint regime rather than a
+# lambda step, so it keeps 1 ns, and since v1.5 its end state is also where the
+# reverse bound legs start (see legs()).
+#
+# The bound leg's internal holds keep 1 ns as well, for a weaker reason. Through
+# v1.4 they ran the unbind block and so were regime changes of the same kind, by
+# accident (see the module docstring). Under the bound block they are plain lambda
+# boundaries, but nothing has measured their relaxation under it, so they keep the
+# length they had rather than one no data supports.
 #
 # 500 -> 350 with the nine-stage table, and this is what pays for it. Eight internal
 # holds at 350 cost 2.8 ns per direction against the four at 500 they replace costing
@@ -307,8 +341,22 @@ BOUND = [
 # for". Moving the threshold to fit the table would have removed the check that the
 # table is honest, so the table moved instead; the 50 ps costs 1.6 ns of switching
 # per cycle out of 50.4 and the cycle length does not change either way.
+#
+# WHAT THE TAU ARGUMENT DOES NOT COVER. It is the relaxation of dH/dlambda. The
+# interface itself relaxes far more slowly: in pass 2 the forward and reverse states
+# at the same internal ramp boundary differ by a median 7-27 kJ/mol in full-strength
+# spring energy (39 sound structures), and the 350 ps holds close a median -6% to 49%
+# of that gap, mostly about a tenth. The two negative medians, at u = 0.20 and 0.31,
+# mean the reverse hold widened the gap there, and four of the fifteen medians rest
+# on 1 to 3 structures (bm_fe_amber_2/_ana/rlx_ramp.py). So the holds settle
+# dH/dlambda but do not equilibrate the interface. The staged estimate assumes they
+# do, since each per-stage pair needs both of its starts in equilibrium
+# (groscore_fe.py), and the gap between it and the one-shot whole-ramp estimate is
+# where a shortfall shows. The whole-ramp estimates need only the two ramp ends near
+# equilibrium: holdfwd0 at u = 0, where the forward state moves 0.4 kJ/mol over the
+# hold, and nptrev at u = PULL_DIST, which nothing has measured yet.
 RAMP_HOLD_PS    = 350.0    # holds between ramp stages, both directions
-HANDOFF_HOLD_PS = 1000.0   # holdfwd0 / holdrev0, and the bound leg's internal hold
+HANDOFF_HOLD_PS = 1000.0   # holdfwd0, and the bound leg's internal holds
 UNBOUND_HOLD_PS = 5000.0   # the hold at u = PULL_DIST, between the two directions
 NPT_PS          = 20000.0  # per-cycle equilibration of the bound state
 NPT_INIT_PS     = 20000.0  # ONE probe replica; N_PROBES of them run per structure
@@ -365,7 +413,7 @@ def legs():
     Each entry is a dict with:
       name      leg name, also the file prefix every output of that leg carries
       mdp       the mdp it runs with
-      kind      npt | bound | stage | hold
+      kind      bound | stage | hold  (npt_c is not a leg here; NPT_PS is its length)
       ps        simulated time
       u_from/u_to, lam_from/lam_to   lambda tracks u/PULL_DIST, so the force-constant
                 switching stays proportional to the distance travelled and the
@@ -374,9 +422,22 @@ def legs():
       dhdl      whether the leg writes a dhdl xvg
       stage     the stage letter for a switching stage, else None
       dirn      'fwd' | 'rev' | None
+      block     'bound' | 'unbind', the pull block make_boresch.py writes into the
+                leg's mdp. 'bound' for the bound sub-legs and for the holds inside
+                the bound lambda schedule (holdbfwd*, holdbrev*); 'unbind' for the
+                ramp stages, the ramp holds (holdfwd*, holdrev*) and nptrev. A hold
+                always carries the block of the legs on either side of it, so
+                entering or leaving it switches no Hamiltonian (module docstring).
+                make_boresch.py goes by this key and never by a leg's name.
+      start_from  None: the leg continues from the previous leg's checkpoint.
+                Otherwise the name of an EARLIER leg of the same cycle whose end
+                state the leg starts from instead. Only boundrev2 has one,
+                'holdfwd0'; see the reverse bound leg below. job_fe.run receives it
+                as FE_LEG_FROM.
     """
     out = []
-    def add(name, mdp, kind, ps, u0, u1, pull, dhdl, stage=None, dirn=None, lam=None):
+    def add(name, mdp, kind, ps, u0, u1, pull, dhdl, block, stage=None, dirn=None,
+            lam=None, start_from=None):
         # On the ramp, lambda tracks u so the force-constant switching stays
         # proportional to the distance travelled. The bound legs are the exception
         # and carry their own lambda, since they switch the restraints on and off
@@ -384,48 +445,92 @@ def legs():
         l0, l1 = lam if lam else (u0 / PULL_DIST, u1 / PULL_DIST)
         out.append(dict(name=name, mdp=mdp, kind=kind, ps=ps, u_from=u0, u_to=u1,
                         lam_from=l0, lam_to=l1,
-                        pull=pull, dhdl=dhdl, stage=stage, dirn=dirn))
+                        pull=pull, dhdl=dhdl, stage=stage, dirn=dirn,
+                        block=block, start_from=start_from))
 
     # Bound state: the interface restraints are switched on with the partners in
     # place. u is 0 throughout, and lambda runs the full 0 -> 1 in BOUND sub-legs,
     # with an equilibrium hold at each internal boundary exactly as on the ramp.
+    # The hold runs the bound block, the Hamiltonian of the sub-legs either side.
     for i, (name, l0, l1, ps) in enumerate(BOUND):
         if i:
             add("holdbfwd%d" % i, "holdbfwd%d_fe.mdp" % i, "hold", HANDOFF_HOLD_PS,
-                0.0, 0.0, False, False, lam=(l0, l0))
+                0.0, 0.0, False, False, "bound", lam=(l0, l0))
         add("boundfwd%s" % name, "boundfwd%s.mdp" % name, "bound", ps, 0.0, 0.0,
-            False, True, stage=name, dirn="fwd", lam=(l0, l1))
+            False, True, "bound", stage=name, dirn="fwd", lam=(l0, l1))
 
     # Forward: hold at every boundary the stage is about to leave, then the stage.
     # The first one is the bound -> ramp handoff and is longer; see HANDOFF_HOLD_PS.
+    # At u = 0 and lambda = 0 the unbind block IS the bound block at lambda = 1
+    # (full interface springs, the Boresch restraints at zero strength), so the
+    # handoff switches no Hamiltonian either.
     for i, (letter, u0, u1, ps) in enumerate(RAMP):
         add("holdfwd%d" % i, "holdfwd%d_fe.mdp" % i, "hold",
-            HANDOFF_HOLD_PS if i == 0 else RAMP_HOLD_PS, u0, u0, False, False)
+            HANDOFF_HOLD_PS if i == 0 else RAMP_HOLD_PS, u0, u0, False, False,
+            "unbind")
         add("bindfwd%s" % letter, "bindfwd%s_fe.mdp" % letter, "stage", ps, u0, u1,
-            True, True, stage=letter, dirn="fwd")
+            True, True, "unbind", stage=letter, dirn="fwd")
 
     # The unbound hold, at the far end.
-    add("nptrev", "nptrev_fe.mdp", "hold", UNBOUND_HOLD_PS, PULL_DIST, PULL_DIST, False, False)
+    add("nptrev", "nptrev_fe.mdp", "hold", UNBOUND_HOLD_PS, PULL_DIST, PULL_DIST,
+        False, False, "unbind")
 
-    # Reverse: mirror image, stages in the opposite order.
+    # Reverse: mirror image, stages in the opposite order. The reverse ramp ends
+    # with bindrevA; its end state is used only for the rebinding diagnostics
+    # (job_fe.run's LAST_STAGE), not as the start of anything.
     for i in range(len(RAMP) - 1, -1, -1):
         letter, u0, u1, ps = RAMP[i]
         if i < len(RAMP) - 1:
             add("holdrev%d" % (i + 1), "holdrev%d_fe.mdp" % (i + 1), "hold",
-                RAMP_HOLD_PS, u1, u1, False, False)
+                RAMP_HOLD_PS, u1, u1, False, False, "unbind")
         add("bindrev%s" % letter, "bindrev%s_fe.mdp" % letter, "stage", ps, u1, u0,
-            True, True, stage=letter, dirn="rev")
-    add("holdrev0", "holdrev0_fe.mdp", "hold", HANDOFF_HOLD_PS, 0.0, 0.0, False, False)
+            True, True, "unbind", stage=letter, dirn="rev")
 
-    # Reverse bound leg: the sub-legs run backwards, each retracing its own lambda
-    # span, so the whole cycle is the exact time-reverse Crooks requires.
+    # REVERSE BOUND LEG: IT BRANCHES FROM THE FORWARD HANDOFF (v1.5). The sub-legs
+    # still run backwards, each retracing its own lambda span, so each reverse
+    # sub-leg is the exact time reverse of its forward partner as a protocol. What
+    # changed is the state the first one starts from. Crooks needs each direction of
+    # each pair to start in equilibrium in its own end state. For the reverse bound
+    # legs that state is the bound block at lambda = 1: full interface springs, no
+    # Boresch, the elastic network on. holdfwd0 runs exactly that Hamiltonian (the
+    # unbind block at u = 0 and lambda = 0, see above) for 1 ns after the forward
+    # bound legs have reached it, and the state it hands on is the one the forward
+    # ramp already starts from. So boundrev2 starts there too (job_fe.run grompps
+    # it from holdfwd0_<cycle>.tpr/.cpt), and holdrev0 is gone from the cycle.
+    #
+    # Measured reason, pass 2, the 39 structures with a sound setup
+    # (bm_fe_amber_2/_ana/rlx_handoff.py and rlx_ramp.py). Through v1.4 boundrev2
+    # started from the end of the reverse ramp plus the 1 ns holdrev0. There, at
+    # u = 0, the rebound state's full-strength interface-spring energy sat a median
+    # 14 kJ/mol above the forward state's (83 kJ/mol in 1BJ1; >= 10 kJ/mol and
+    # > 2 se in 21 of 39). Where the gap exceeded 10 kJ/mol, holdrev0 removed a
+    # median 8% of it, while holdfwd0 moves the forward state by only 0.4 kJ/mol.
+    # The rebound interface is trapped rather than settling: an exponential fitted
+    # to the two ends of holdrev0 gives a median decay time of about 10 ns and a
+    # median hold of 36 ns to bring the gap under 1 kJ/mol. The strained start
+    # biased dG_intro by at least 4.35 kJ/mol on average and by up to 36.4 (1BJ1),
+    # in step with experiment (Spearman 0.50), so part of the pass-2 correlation
+    # came from the bias itself (digest/fu3.txt F6 and its extra findings).
+    #
+    # The reverse RAMP is not branched. It starts from the end of nptrev, the
+    # equilibrium of its own end state at u = PULL_DIST, as before.
     for i in range(len(BOUND) - 1, -1, -1):
         name, l0, l1, ps = BOUND[i]
         if i < len(BOUND) - 1:
             add("holdbrev%d" % (i + 1), "holdbrev%d_fe.mdp" % (i + 1), "hold",
-                HANDOFF_HOLD_PS, 0.0, 0.0, False, False, lam=(l1, l1))
+                HANDOFF_HOLD_PS, 0.0, 0.0, False, False, "bound", lam=(l1, l1))
         add("boundrev%s" % name, "boundrev%s.mdp" % name, "bound", ps, 0.0, 0.0,
-            False, True, stage=name, dirn="rev", lam=(l1, l0))
+            False, True, "bound", stage=name, dirn="rev", lam=(l1, l0),
+            start_from="holdfwd0" if i == len(BOUND) - 1 else None)
+
+    # A branch must name a leg that has already run in this cycle, or the runner
+    # would grompp from a checkpoint that does not exist yet.
+    seen = set()
+    for l in out:
+        if l["start_from"] is not None and l["start_from"] not in seen:
+            raise ValueError("%s starts from %s, which is not an earlier leg of the cycle"
+                             % (l["name"], l["start_from"]))
+        seen.add(l["name"])
     return out
 
 def cycle_ps():
@@ -473,26 +578,62 @@ def result_nf():
 def stage_letters():
     return [s[0] for s in RAMP]
 
+# ---------------------------------------------------------------- identity
+
+# WHICH PROTOCOL A SETUP, A CYCLE AND A ROW BELONG TO. v1.5 kept the leg names and
+# the 43-field row, so nothing in a structure directory or a results_fe.d row said
+# which protocol made it, and the review of 2026-10-04 found three ways to mix
+# protocols without a word: a pre-v1.5 directory set up again under v1.5 code went
+# on with its unfinished v1.4 cycles in v1.5 legs (CYC-1), an archived v1.4 job.run
+# ran this table as a plain chain (CYC-2), and v1.4 rows counted as finished v1.5
+# cycles in a reused run directory (CYC-4). PROTOCOL_ID names the cycle: a hash of
+# every key of every leg in legs() (name, mdp, kind, length, u and lambda spans,
+# pull and dhdl channels, stage, direction, pull block, branch source), of works()
+# (field, leg, channel, direction, in row order) and of NPT_PS, the npt_c every
+# cycle starts with. A change to any of them gives cycles that must not be pooled
+# with this protocol's, and a new id. The setup shape (N_PROBES, the probe length)
+# and the output intervals (XOUT_PS, PULL_NSTFOUT) are left out: they change how
+# the restraints are measured and how finely a leg is recorded, not what it runs.
+#
+# job_fe.run writes the id into protocol_id.gs when a setup completes and runs no
+# cycle under another one; groscore_fe.py records it in run_config.gs. The prefix
+# names the release the table came with; equality is tested on the whole string,
+# so a table edit without a new prefix still gives a new id.
+PROTOCOL_LABEL = "fe-1.5"
+
+def _protocol_id():
+    import hashlib, json
+    doc = {"legs": legs(), "works": [list(w) for w in works()], "npt_ps": NPT_PS}
+    # sort_keys and fixed separators: the text, and so the hash, depends on the
+    # table alone, not on dict order, the Python version or PYTHONHASHSEED.
+    blob = json.dumps(doc, sort_keys=True, separators=(",", ":"))
+    return "%s-%s" % (PROTOCOL_LABEL, hashlib.sha256(blob.encode("ascii")).hexdigest()[:8])
+
+PROTOCOL_ID = _protocol_id()
+
 # ---------------------------------------------------------------- reporting
 
 def _summary():
     b = boundaries()
     print("FE cycle: %d legs, %g ns per cycle (%g ns of ramp per direction)"
           % (len(legs()), cycle_ps() / 1000.0, RAMP_PS / 1000.0))
+    print("protocol id: %s" % PROTOCOL_ID)
     print("boundaries at u = %s nm" % ", ".join("%g" % x for x in b))
     print("")
-    print("  %-12s %-20s %-7s %8s %14s %14s %8s"
-          % ("leg", "mdp", "kind", "ps", "u", "lambda", "rate nm/ps"))
-    print("  " + "-" * 92)
-    print("  %-12s %-20s %-7s %8g %14s %14s %8s"
-          % ("npt_c", "npt_fe.mdp", "npt", NPT_PS, "0", "-", "-"))
+    print("  %-12s %-20s %-7s %-7s %8s %14s %14s %10s"
+          % ("leg", "mdp", "kind", "block", "ps", "u", "lambda", "rate nm/ps"))
+    print("  " + "-" * 102)
+    print("  %-12s %-20s %-7s %-7s %8g %14s %14s %10s"
+          % ("npt_c", "npt_c_fe.mdp", "npt", "EN", NPT_PS, "0", "-", "-"))
     for l in legs():
         rate = ((l["u_to"] - l["u_from"]) / l["ps"]) if l["ps"] else 0.0
-        print("  %-12s %-20s %-7s %8g %14s %14s %8s"
-              % (l["name"], l["mdp"], l["kind"], l["ps"],
+        print("  %-12s %-20s %-7s %-7s %8g %14s %14s %10s%s"
+              % (l["name"], l["mdp"], l["kind"], l["block"], l["ps"],
                  "%g -> %g" % (l["u_from"], l["u_to"]) if l["kind"] != "bound" else "0 (no pull)",
                  "%g -> %g" % (l["lam_from"], l["lam_to"]),
-                 ("%.3e" % rate) if l["kind"] == "stage" else "0"))
+                 ("%.3e" % rate) if l["kind"] == "stage" else "0",
+                 ("   starts from the end of %s" % l["start_from"])
+                 if l["start_from"] else ""))
     print("")
     print("  result row: %d fields" % result_nf())
     print("  " + " ".join(f for f, _, _, _ in works()))
@@ -501,6 +642,22 @@ def _shell():
     """Shell arrays for job_fe.run. Emitted rather than duplicated, so the runner
     cannot fall out of step with the protocol it is running."""
     L = legs()
+    # THE FIRST LINE REFUSES A RUNNER THAT PREDATES FE_LEG_FROM. v1.5 is the first
+    # protocol with a field the runner must honour: boundrev2 starts from the end of
+    # holdfwd0, not from the leg before it. A job.run from before that ignores the
+    # field and runs the table as a plain chain, boundrev2 straight after bindrevA,
+    # with npt_c from npt_fe.mdp and no network: a cycle nobody designed, which
+    # still writes a valid-looking 43-field row (review CYC-2, reproduced with the
+    # v1.4 job.run of an archived structure). Such a runner is only ever found in a
+    # structure set up before v1.5, so the advice is a fresh setup, not a new
+    # job.run alone. job_fe.run sets the variable just before it evaluates this.
+    print('[[ "${FE_RUNNER_HONOURS_START_FROM:-0}" == 1 ]] || { '
+          'echo "FATAL: FE protocol %s starts boundrev2 from the end of holdfwd0'
+          ' (FE_LEG_FROM), and this job.run predates that and would run every leg as'
+          ' a plain chain. The structure was set up for an older protocol: set it up'
+          ' again in a fresh run directory with the current job_fe.run." >&2; exit 1; }'
+          % PROTOCOL_ID)
+    print('FE_PROTOCOL_ID="%s"' % PROTOCOL_ID)
     print("FE_RESULT_NF=%d" % result_nf())
     # Setup shape, so job_fe.run cannot disagree with the protocol about how
     # many probe replicas to run or how much of each to discard.
@@ -512,6 +669,10 @@ def _shell():
     print("FE_LEG_MDP=(%s)" % " ".join(l["mdp"] for l in L))
     print("FE_LEG_PULL=(%s)" % " ".join("1" if l["pull"] else "0" for l in L))
     print("FE_LEG_DHDL=(%s)" % " ".join("1" if l["dhdl"] else "0" for l in L))
+    # The leg each one starts from: an empty element for the previous leg, else the
+    # earlier leg it branches from. Every element is quoted, because the empty
+    # ones are values and must keep their index.
+    print("FE_LEG_FROM=(%s)" % " ".join('"%s"' % (l["start_from"] or "") for l in L))
     # Every mdp a structure directory must hold, i.e. every one make_boresch.py
     # writes a pull block into.
     print("FE_LEG_MDPS=(%s)" % " ".join(sorted({l["mdp"] for l in L})))

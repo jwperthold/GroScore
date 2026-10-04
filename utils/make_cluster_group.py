@@ -3,7 +3,7 @@
 # make_cluster_group.py - Add Protein_Struct group to index.ndx
 #
 # Creates a custom index group containing Protein + structural ions + ligands
-# (excluding counterions from gmx genion) for PBC clustering.
+# (excluding counterions from gmx genion), the group assemble_frame.py assembles.
 #
 # Usage: python make_cluster_group.py -f emin_solv.gro -n index.ndx
 #
@@ -40,7 +40,10 @@ PROTEIN_RESNAMES = {
     'HISA', 'HISB', 'HISH', 'HISD', 'HISE', 'HISP',  # GROMOS variants
     'CYSH', 'CYS1', 'CYS2',  # GROMOS CYS variants
     'ASH', 'GLH', 'ASPH', 'GLUH', 'LYSH', 'ARGN',  # protonation variants
-    'ACE', 'NME', 'NHE',  # terminal caps
+    # The caps of pbc_tools.CAP_RESIDUES: assemble_frame.py moves only Protein_Struct
+    # residues, and make_boresch.py stops (INPUT_FRAME_SPLIT) on a polymer residue,
+    # caps included, that is left a box vector away from its chain.
+    'ACE', 'NME', 'NHE', 'NAC', 'CT3', 'NH2',  # terminal caps (GROMACS residuetypes.dat: Protein)
     'NALA', 'NARG', 'NASN', 'NASP', 'NCYS', 'NGLN', 'NGLU', 'NGLY', 'NHIS',
     'NILE', 'NLEU', 'NLYS', 'NMET', 'NPHE', 'NPRO', 'NSER', 'NTHR', 'NTRP',
     'NTYR', 'NVAL',  # GROMOS N-terminal

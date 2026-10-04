@@ -1,0 +1,16 @@
+wwPDB Chemical Component Dictionary (CCD) entries, one file per component (<ID>.cif),
+as served at https://files.rcsb.org/ligands/download/<ID>.cif. The CCD is released
+under CC0 1.0 (https://www.wwpdb.org/about/usage-policies).
+
+utils/parametrize_ligand.py reads a ligand's bond orders, formal charges and hydrogens
+from the entry of its residue name here before it asks files.rcsb.org, and names the
+entry, its file and its _chem_comp.pdbx_modified_date in the ligand's itp header.
+utils/fuse_glycans.py reads the entries of the sugars of a glycan and of the amino
+acid it hangs on (ASN, SER, THR) here first, so it needs no network on compute nodes.
+
+Fetched on 2026-10-04 for the ligands of the 46 HADDOCK benchmark inputs with
+    python3 utils/ccd_cache.py benchmark/haddock_benchmark/*/input.pdb
+which also fetches ASN, SER and THR whenever an input has a HETATM residue other than
+water and ions (they were added that way on 2026-10-04, entries modified 2024-09-27,
+2024-09-27 and 2023-11-03). Add the entries of other inputs the same way, on a machine
+with network access.

@@ -158,6 +158,20 @@ prot2_coords = np.array(prot2_coords, dtype=np.float64)
 len1 = len(prot1_resname)
 len2 = len(prot2_resname)
 
+def protein_residues(resnames, atomnames):
+  """Residue keys ('resnum:resname') carrying heavy atoms N, CA and C: amino acids
+  and NCAAs, not the caps (ACE, NME) and not the ions. A Ca2+ ion is residue CA
+  with an atom CA and passed the old name-only CA test: 1BVN's Ca2+ 572 became a
+  one-residue 'fragment' that the extension grew by LYS 496, LEU 497 (a dipeptide
+  4 nm from tendamistat), NME 498 and CL 573 (audit SH8)."""
+  names = {}
+  for rn, an in zip(resnames, atomnames):
+    names.setdefault(rn, set()).add(an)
+  return {rn for rn, s in names.items() if {"N", "CA", "C"} <= s}
+
+protein1 = protein_residues(prot1_resname, prot1_atomname)
+protein2 = protein_residues(prot2_resname, prot2_atomname)
+
 if len1 == 0 or len2 == 0:
   # No atoms in one or both proteins - write empty file
   open("cutout.pdb", "w").close()
@@ -193,9 +207,12 @@ keep2_mask = np.any(dist_to_interface2 <= keepcutoff, axis=1)
 keep2_indices = np.where(keep2_mask)[0]
 keep2_resnames = set(prot2_resname[i] for i in keep2_indices)
 
-# Get CA atoms from kept residues for elastic network check
-protkeep1_indices = [i for i in range(len1) if prot1_resname[i] in keep1_resnames and prot1_atomname[i] == "CA"]
-protkeep2_indices = [i for i in range(len2) if prot2_resname[i] in keep2_resnames and prot2_atomname[i] == "CA"]
+# Get CA atoms from kept protein residues for elastic network check (not Ca2+
+# ions, not the GROMOS ACE methyl that cap_termini.py names CA)
+protkeep1_indices = [i for i in range(len1) if prot1_resname[i] in keep1_resnames and prot1_atomname[i] == "CA"
+                     and prot1_resname[i] in protein1]
+protkeep2_indices = [i for i in range(len2) if prot2_resname[i] in keep2_resnames and prot2_atomname[i] == "CA"
+                     and prot2_resname[i] in protein2]
 
 # Check elastic network distances for CA atoms
 laterkeep1_resnames = set()
@@ -239,79 +256,77 @@ def get_res3(resname):
 # Minimum fragment length (residues)
 MIN_FRAGMENT_LEN = 5
 
-def extend_small_fragments(kept_resnames, all_resnames):
-  """Extend fragments smaller than MIN_FRAGMENT_LEN by adding neighboring residues."""
+def extend_small_fragments(kept_resnames, all_resnames, protein_resnames, ter_pos):
+  """Extend fragments of fewer than MIN_FRAGMENT_LEN protein residues by the
+  protein residues next to them, alternately before and after, never across a
+  cap, an ion or a TER (chain end or real break).
+
+  The v1.4 version walked up to 100 residue numbers away over anything the side
+  had: 1BVN's Ca2+ 572 'fragment' took LYS 496, LEU 497, NME 498 and CL 573; and
+  caps counted toward the five, so after their removal 4-residue fragments stayed
+  in 1AK4 (169-172), 1KXQ (2-5) and 7CEI (91-94) (audit SH8). A fragment stays
+  short only when its chain ends on both sides."""
   if len(kept_resnames) == 0:
     return kept_resnames
 
-  # Get unique residue numbers from kept resnames
-  kept_resnums = sorted(set(get_resnum(rn) for rn in kept_resnames))
-
-  # Get all available residue numbers from original protein
-  all_resnums = sorted(set(get_resnum(rn) for rn in all_resnames))
-  all_resnums_set = set(all_resnums)
-
-  # Build mapping from resnum to resname (for adding back)
-  resnum_to_resname = {}
+  protein_nums = {get_resnum(rn) for rn in protein_resnames}
+  res3 = {}
   for rn in all_resnames:
-    resnum = get_resnum(rn)
-    if resnum not in resnum_to_resname:
-      resnum_to_resname[resnum] = rn
+    res3.setdefault(get_resnum(rn), get_res3(rn))
+  ter_after = {r for r, r3 in ter_pos if res3.get(r) == r3}
 
-  # Identify fragments (contiguous residue groups)
+  def linked(a):
+    """Residues a and a + 1 are consecutive protein residues of one chain."""
+    return a in protein_nums and a + 1 in protein_nums and a not in ter_after
+
+  extended = set(get_resnum(rn) for rn in kept_resnames)
+
+  def run_of(lo, hi):
+    """The contiguous kept run containing lo..hi."""
+    while lo - 1 in extended and linked(lo - 1):
+      lo -= 1
+    while hi + 1 in extended and linked(hi):
+      hi += 1
+    return lo, hi
+
+  # Fragments: maximal runs of consecutive kept protein residues
   fragments = []
-  current_frag = [kept_resnums[0]]
-  for i in range(1, len(kept_resnums)):
-    if kept_resnums[i] == kept_resnums[i-1] + 1:
-      current_frag.append(kept_resnums[i])
+  for r in sorted(r for r in extended if r in protein_nums):
+    if fragments and r == fragments[-1][1] + 1 and linked(r - 1):
+      fragments[-1][1] = r
     else:
-      fragments.append(current_frag)
-      current_frag = [kept_resnums[i]]
-  fragments.append(current_frag)
+      fragments.append([r, r])
 
-  # Extend small fragments
-  extended_resnums = set(kept_resnums)
-  for frag in fragments:
-    if len(frag) < MIN_FRAGMENT_LEN:
-      needed = MIN_FRAGMENT_LEN - len(frag)
-      frag_start = frag[0]
-      frag_end = frag[-1]
-
-      # Try to extend in both directions alternately
-      added = 0
-      extend_before = 1
-      extend_after = 1
-      while added < needed:
-        # Try extending before
-        candidate = frag_start - extend_before
-        if candidate in all_resnums_set and candidate not in extended_resnums:
-          extended_resnums.add(candidate)
-          added += 1
-          extend_before += 1
-          if added >= needed:
-            break
-        else:
-          extend_before += 1
-
-        # Try extending after
-        candidate = frag_end + extend_after
-        if candidate in all_resnums_set and candidate not in extended_resnums:
-          extended_resnums.add(candidate)
-          added += 1
-          extend_after += 1
-          if added >= needed:
-            break
-        else:
-          extend_after += 1
-
-        # Prevent infinite loop if no more residues available
-        if extend_before > 100 and extend_after > 100:
+  # Extend small fragments, counting the residues added as v1.4 did (a fragment
+  # that merges with a kept neighbour still takes its full count), so wherever
+  # v1.4 extended correctly the result is the same: without the second fill below,
+  # two independent builds of the 46 benchmark cutouts change only in 1AK4, 1BVN,
+  # 1KXQ and (where its 91-94 fragment arose) 7CEI
+  for start, end in fragments:
+    needed = MIN_FRAGMENT_LEN - (end - start + 1)
+    lo, hi = run_of(start, end)
+    added = 0
+    while added < needed:
+      grew = False
+      if linked(lo - 1) and lo - 1 not in extended:
+        extended.add(lo - 1)
+        added += 1
+        grew = True
+        lo, hi = run_of(lo - 1, hi)
+        if added >= needed:
           break
+      if linked(hi) and hi + 1 not in extended:
+        extended.add(hi + 1)
+        added += 1
+        grew = True
+        lo, hi = run_of(lo, hi + 1)
+      if not grew:
+        break
 
   # Convert back to resnames
   extended_resnames = set()
   for rn in all_resnames:
-    if get_resnum(rn) in extended_resnums:
+    if get_resnum(rn) in extended:
       extended_resnames.add(rn)
 
   return extended_resnames
@@ -401,8 +416,18 @@ laterkeep1_resnames = fill_small_gaps(laterkeep1_resnames, prot1_resname, ter_po
 laterkeep2_resnames = fill_small_gaps(laterkeep2_resnames, prot2_resname, ter_positions, max_gap=3)
 
 # Extend small fragments by adding neighboring residues
-laterkeep1_resnames = extend_small_fragments(laterkeep1_resnames, prot1_resname)
-laterkeep2_resnames = extend_small_fragments(laterkeep2_resnames, prot2_resname)
+laterkeep1_resnames = extend_small_fragments(laterkeep1_resnames, prot1_resname, protein1, ter_positions)
+laterkeep2_resnames = extend_small_fragments(laterkeep2_resnames, prot2_resname, protein2, ter_positions)
+
+# Fill again: the extension can leave a gap of 1-3 residues between two kept
+# fragments. v1.4 filled only before extending, and cap_termini.py then built an
+# NME and an ACE into the space of a single missing residue (1BVN 413; also 1T6B
+# 336 and 2FD6 484, where the two caps ended 2.8 A apart) (audit SH8). On two
+# independent builds of the 46 benchmark cutouts this pass closes 10 and 13 such
+# gaps of 1-3 residues: 1AK4, 1BVN (3, 413 among them), 1GHQ, 1I4D (2), 1RLB,
+# 1T6B, 2B42 in both, 1KXQ, 2FD6 484 and 7CEI in the second.
+laterkeep1_resnames = fill_small_gaps(laterkeep1_resnames, prot1_resname, ter_positions, max_gap=3)
+laterkeep2_resnames = fill_small_gaps(laterkeep2_resnames, prot2_resname, ter_positions, max_gap=3)
 
 # Remove all ACE/NME caps - cap_termini.py will add fresh ones to the cutout
 laterkeep1_resnames = remove_caps(laterkeep1_resnames)
@@ -514,7 +539,19 @@ def fmt_pdb_atom(serial, atomname, res3, chain, resnum, x, y, z):
     return (f"ATOM  {serial:5d} {name_fmt} {res3:>4s}{chain}{resnum:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {atomname[0]:>2s}\n")
 
-# Write cutout PDB file
+# Write cutout PDB file.
+# Every fragment of a side is written as chain A or B, so job.run's merge answers
+# join all fragments of a side into one moleculetype, separate polypeptides
+# included. That is what put 1IJK's botrocetin chain C one box vector away:
+# trjconv -pbc cluster chains a moleculetype atom by atom, and the 7 nm step from
+# chain B's last fragment to chain C's first was longer than half the box, so
+# make_disres_en.py kept 378-477 of 1020-1213 interface restraints (audit SH2, R1).
+# The merged chains are safe now because nothing downstream trusts that chaining:
+# the restraint frames are assembled residue by residue in space
+# (utils/assemble_frame.py, pbc_tools.assemble), make_disres_en.py stops on a
+# frame in which a pair is close only by the minimum image, and make_boresch.py
+# on one with a fragment away from its minimum image about the root fragment
+# (INPUT_FRAME_SPLIT). The relabelling therefore stays as it is.
 with open("cutout.pdb", "w") as pdbfile:
   atom_num = 0
   prev_resnum = None

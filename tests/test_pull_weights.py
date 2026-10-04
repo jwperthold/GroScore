@@ -14,7 +14,7 @@ exactly -- otherwise every previously scored cycle silently changes meaning.
 
 Standalone, no pytest: python3 tests/test_pull_weights.py
 """
-import os, sys, subprocess, tempfile, math
+import os, shutil, sys, subprocess, tempfile, math
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,8 +30,10 @@ def check(name, ok, detail=""):
 
 
 def run(args):
+    # integrate.py writes <name>_DG.dat and <name>_dGdt.dat into its working
+    # directory: this test's own, removed at the end, not the shared temp directory.
     r = subprocess.run([sys.executable, INTEGRATE] + args,
-                       capture_output=True, text=True, cwd=tempfile.gettempdir())
+                       capture_output=True, text=True, cwd=tmp)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
@@ -164,6 +166,7 @@ for a, b in RAMP:
     check("stage %.1f-%.1f: forward and reverse weights agree" % (a, b),
           np.allclose(fwd, rev, atol=1e-12))
 
+shutil.rmtree(tmp, ignore_errors=True)
 print()
 if failures:
     print("FAILED (%d):" % len(failures))

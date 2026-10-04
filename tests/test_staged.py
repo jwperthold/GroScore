@@ -70,11 +70,13 @@ def write_xvg(path, lam, dt=2.0):
     for i, l in enumerate(lam):
       f.write("%.4f  %.6f\n" % (i * dt, dvdl(l)))
 
+# integrate_dhdl.py writes <name>_Wdhdl.dat into its working directory, so every call
+# runs in `work`: run from the repository root it rewrote seven files there.
 def integrate(path, direction, span=True, l0=None, l1=None):
   cmd = [sys.executable, INTEGRATE, "-f", path, "--direction", direction]
   if span:
     cmd += ["--lambda-start", str(l0), "--lambda-end", str(l1)]
-  out = subprocess.run(cmd, capture_output=True, text=True)
+  out = subprocess.run(cmd, capture_output=True, text=True, cwd=work)
   if out.returncode != 0:
     sys.exit("integrate_dhdl.py failed on %s:\n%s" % (path, out.stderr))
   return float(out.stdout.split()[0])
@@ -130,7 +132,7 @@ def integrate_legps(path, l0, l1, leg_ps=None):
          "--lambda-start", str(l0), "--lambda-end", str(l1)]
   if leg_ps is not None:
     cmd += ["--leg-ps", str(leg_ps)]
-  out = subprocess.run(cmd, capture_output=True, text=True)
+  out = subprocess.run(cmd, capture_output=True, text=True, cwd=work)
   return float(out.stdout.split()[0]), out.stderr
 
 truth_short = float(np.trapezoid(dvdl(lam_short), lam_short))
@@ -416,7 +418,7 @@ if m:
     for i, l in enumerate(lam):
       f.write("%.4f  %.6f\n" % (i * 34.0, dvdl(l)))
   r = subprocess.run([sys.executable, INTEGRATE, "-f", p_x, "--direction", "rev"]
-                     + s_bad.split(), capture_output=True, text=True)
+                     + s_bad.split(), capture_output=True, text=True, cwd=work)
   check("integrate_dhdl accepts it", r.returncode == 0,
         (r.stderr.strip().splitlines() or [""])[-1][:60])
 
@@ -450,7 +452,25 @@ print("")
 print("[5] convergence grid")
 sys.argv = [sys.argv[0]]
 sys.path.insert(0, REPO)
-import groscore_fe as _G
+# groscore_fe reads and writes run_config.gs in the working directory when it is
+# imported. Imported from the caller's directory, this test wrote one there (into
+# the repository root when run as python3 tests/test_staged.py), and a stale one
+# there handed the import its settings: the one in the repository root on
+# 2026-10-04 said sum_k 25000, not the default 12500. So the import runs in a
+# scratch directory, and the caller's directory is restored.
+_caller = os.getcwd()
+_rc_path = os.path.join(_caller, "run_config.gs")
+_rc_before = open(_rc_path, "rb").read() if os.path.isfile(_rc_path) else None
+_scratch = tempfile.mkdtemp(prefix="groscore_staged_import_")
+os.chdir(_scratch)
+try:
+  import groscore_fe as _G
+finally:
+  os.chdir(_caller)
+  shutil.rmtree(_scratch, ignore_errors=True)
+check("importing groscore_fe leaves the caller's run_config.gs as it was",
+      (open(_rc_path, "rb").read() if os.path.isfile(_rc_path) else None) == _rc_before,
+      "absent before" if _rc_before is None else "present before")
 
 check("below the minimum there is no grid at all", _G._conv_grid(4) == [])
 check("a single point is not a curve and is dropped by the caller",

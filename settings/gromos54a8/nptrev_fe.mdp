@@ -1,10 +1,8 @@
-; nptrev_fe.mdp - 5 ns equilibrium hold at the unbound, Boresch-restrained state, lambda = 1.
-; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage
-; works still sum exactly to the work of the whole ramp. It exists so the
-; stages either side of it can be estimated SEPARATELY and their estimates
-; added, which is only legitimate if the ensemble here is equilibrated:
-; summing their per-cycle works instead would reproduce the unstaged
-; distribution exactly and gain nothing.
+; nptrev_fe.mdp - 5 ns equilibrium hold at the unbound state, u = 1 nm, lambda = 1:
+; the Boresch restraints, and the elastic network if the structure has one,
+; with no interface springs. delta-lambda = 0 and pull rate 0, so it
+; contributes NO work. It joins the two directions: the forward ramp ends
+; here and the reverse ramp starts from its end.
 ;
 ; nsteps 1250000 * dt 0.004 = 5000 ps.
 

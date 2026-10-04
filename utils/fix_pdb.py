@@ -8,11 +8,28 @@
 import argparse
 import tempfile
 import os
+import sys
+import warnings
+import openmm
 from pdbfixer import PDBFixer
 from openmm.app import PDBFile
 
 # Ion residue names supported by all GroScore force fields
 ION_RESIDUES = {"BA", "CA", "CD", "CL", "CO", "CS", "CU", "CU1", "FE", "FE2", "HG", "K", "LI", "MG", "MN", "NA", "NI", "PB", "SD", "SR", "ZN"}
+# PDBFixer's addMissingAtoms() minimises the atoms it adds and, where one still sits
+# closer than 0.13 nm to another atom, runs Langevin dynamics whose integrator takes a
+# random seed unless it is given one. Unseeded, two setups of one structure differed
+# wherever side-chain atoms were missing: 14 atom lines of 1E6E's fixed.pdb (GLU A 1,
+# ASP B 458, 492 and 562, the OXT of SER B 570), and with them its caps, cutout and
+# results; of the 46 HADDOCK inputs 1E6E, 1GHQ, 1H1V, 1IBR, 1OPH, 2HLE and 1Z0K. The
+# seed alone did not settle it: OpenMM ran PDBFixer on CUDA where present, and seeded
+# runs of 2HLE (three runs, three outputs), 1Z0K and once the 1E6E extract still
+# differed. With the seed, the CPU platform and one thread, as cap_termini.py runs,
+# every run gives the same bytes (tests/test_fix_pdb_seed.py); 2HLE, whose many
+# missing side chains need the dynamics, takes 16 s instead of 1 s.
+ADD_ATOMS_SEED = 1
+CPU = openmm.Platform.getPlatformByName('CPU')
+CPU.setPropertyDefaultValue('Threads', '1')
 
 parser = argparse.ArgumentParser(description="Fix PDB file with PDBFixer")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file")
@@ -22,6 +39,10 @@ args = parser.parse_args()
 
 # NCAA residues to keep (not replace with standard equivalents)
 ncaa_keep = set(r.strip() for r in args.keep_ncaa.split(',') if r.strip())
+
+# A failed run must not leave the previous run's output for cap_termini.py to use.
+if os.path.exists(args.output):
+    os.remove(args.output)
 
 # Separate ion lines from protein lines before PDBFixer
 # PDBFixer may drop or corrupt single-atom ion residues
@@ -68,8 +89,25 @@ with tempfile.NamedTemporaryFile(mode='w', suffix='.pdb', delete=False) as tmp:
             tmp.write(line)
 
 try:
-    # Run PDBFixer on protein-only PDB
-    fixer = PDBFixer(filename=tmp_path)
+    # Run PDBFixer on protein-only PDB.
+    # OpenMM's PDB reader merges two residues that share chain, number and
+    # insertion code into one, keeps one copy of every repeated atom and only warns
+    # 'duplicate atom'. That deleted a Ser from 2FD6 chain H and from 1IQD chain B
+    # (Kabat 82A-82C written without insertion codes), and cap_termini.py then
+    # closed the 4.5 A backbone gap by dragging the next residue 2.3 A. A duplicate
+    # atom is therefore an error, never a warning.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        fixer = PDBFixer(filename=tmp_path, platform=CPU)   # CPU, one thread: see ADD_ATOMS_SEED
+    dups = [str(w.message) for w in caught if "duplicate atom" in str(w.message)]
+    if dups:
+        sys.stderr.write(
+            "fix_pdb: ERROR - %d duplicate atom(s) in %s: two residues share chain, residue number "
+            "and insertion code, and the PDB reader would merge them into one. First: %s\n"
+            "  Renumber with utils/renumber_pdb.py, which separates residues by insertion code, "
+            "residue name and repeated atom names, or correct the input.\n"
+            % (len(dups), args.file, dups[0].replace("WARNING: ", "")))
+        sys.exit(1)
     fixer.findMissingResidues()
     fixer.findNonstandardResidues()
     # Filter out NCAA residues from replacement list (keep them as-is for OpenFF parametrization)
@@ -119,7 +157,7 @@ try:
                 print(f"Warning: could not determine parent for {resname}")
     fixer.replaceNonstandardResidues()
     fixer.findMissingAtoms()
-    fixer.addMissingAtoms()
+    fixer.addMissingAtoms(seed=ADD_ATOMS_SEED)
 
     # Write fixed protein
     with open(args.output, "w") as out:

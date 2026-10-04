@@ -1,10 +1,8 @@
-; holdfwd0_fe.mdp - 1 ns equilibrium hold at u = 0, lambda = 0.
-; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage
-; works still sum exactly to the work of the whole ramp. It exists so the
-; stages either side of it can be estimated SEPARATELY and their estimates
-; added, which is only legitimate if the ensemble here is equilibrated:
-; summing their per-cycle works instead would reproduce the unstaged
-; distribution exactly and gain nothing.
+; holdfwd0_fe.mdp - 1 ns equilibrium hold at u = 0, lambda = 0: the handoff from the
+; bound legs to the ramp, under the Hamiltonian both run there (full
+; interface springs, Boresch at zero strength). delta-lambda = 0 and pull
+; rate 0, so it contributes NO work. The forward ramp starts from its end,
+; and so does boundrev2, the first reverse bound leg (fe_protocol.legs()).
 ;
 ; nsteps 250000 * dt 0.004 = 1000 ps.
 

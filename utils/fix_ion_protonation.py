@@ -45,8 +45,10 @@ parser.add_argument('-m', '--ionres', type=str, default='ion_residues.gs', help=
 parser.add_argument('--ff', type=str, default='amber19sb', help="Force field name")
 args = parser.parse_args()
 
-# Determine FF naming
-ff_base = args.ff.replace('_opc', '').replace('_opc3', '')
+# Determine FF naming. '_opc3' before '_opc': the other order turned amber19sb_opc3
+# into 'amber19sb3', and every AMBER19SB/OPC3 setup warned twice of an unknown force
+# field before falling back to the right names (review E2).
+ff_base = args.ff.replace('_opc3', '').replace('_opc', '')
 if ff_base not in FF_NAMES:
     print(f"Warning: unknown force field '{ff_base}', using AMBER naming")
     ff_base = 'amber19sb'

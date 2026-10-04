@@ -1,0 +1,22 @@
+Small extracts of deposited structures for tests/test_glycan_fusion.py. PDB data are
+released by the wwPDB under CC0 1.0 (https://www.wwpdb.org/about/usage-policies). Each
+file keeps the ATOM/HETATM records of its source unchanged, says in its REMARK 250
+what was kept, and was cut on 2026-10-04 by selecting whole residues: the glycan, the
+amino acid it hangs on with both peptide neighbours, and the residues near the sugars.
+
+  1MAH_glycan.pdb     1MAH HADDOCK benchmark input: NAG A 544 on ASN A 350
+  2AJF_glycans.pdb    2AJF HADDOCK benchmark input: NAG on ASN A 53, A 322, A 546, E 330
+  5XJE_glycans.pdb    5XJE: two 9-sugar Fc glycans, NAG-FUC on ASN C 162, NAG-NAG-BMA on ASN C 45
+  3AVE_glycans.pdb    3AVE: two 8-sugar Fc glycans on ASN A 297 and B 297
+  4BYH_sialyl.pdb     4BYH: the sialylated 10-sugar glycan C on ASN A 297
+  5A2I_tn_ser.pdb     5A2I: alpha-GalNAc (A2G) on SER P 4 of a MUC1 glycopeptide
+  5A2K_tn_thr.pdb     5A2K: alpha-GalNAc (A2G) on THR P 4
+  5A2L_s_linked.pdb   5A2L: A2G on CYS P 4 SG (an S-linked glycan)
+  5T78_nga.pdb        5T78: an alpha-linked GalNAc on THR F 4 deposited under the beta code NGA
+  2BTF_caps.pdb       2BTF HADDOCK benchmark input: HETATM ACE caps and HIC A 73
+  1S1Q_mse.pdb        1S1Q HADDOCK benchmark input: MSE A 11
+  2MTA_trq.pdb        2MTA HADDOCK benchmark input: TRQ L 57
+  1FZC_partial.pdb    1FZC: NAG K 1 on ASN B 364 and NAG K 2, linked O4-C1 at 1.85 A (LINK)
+  2PO6_flipped.pdb    2PO6: NAG E 301 deposited on OD1 of ASN E 42 (a flipped amide)
+  1YPZ_o1.pdb         1YPZ: NAG L 1-NAG L 2-MAN L 3 on ASN G 133, NAG L 1 with its O1 1.51 A from ND2
+  2FD6_site.pdb       2FD6 HADDOCK benchmark input: NAG C 1-NAG C 2 on ASN U 172, C1-ND2 1.99 A, O1 0.79 A from ND2

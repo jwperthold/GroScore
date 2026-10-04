@@ -98,6 +98,18 @@ check("and that tool exists",
 check("workstation.sh is left alone (it is not SLURM)",
       "--exclude" not in open(os.path.join(SLURM, "workstation.sh")).read())
 
+print("\n[5] the GPU templates give job.run's legs a GPU-sized timeout")
+# job.run's GROSCORE_LEG_TIMEOUT defaults to 24h, sized for a slow CPU run; a classic
+# pull leg takes about 45-60 min on a VSC5 GPU. As a directive, since an export line
+# in a template would strand the #SBATCH lines groscore.py appends after it.
+for name in ("vsc5.sh", "vsc5_fast.sh"):
+    text = open(os.path.join(SLURM, name)).read()
+    ex = re.findall(r"^#SBATCH --export=(\S+)\s*$", text, re.M)
+    check("%s exports GROSCORE_LEG_TIMEOUT=180m with the submission environment" % name,
+          ex == ["ALL,GROSCORE_LEG_TIMEOUT=180m"], str(ex))
+check("workstation.sh (CPU) keeps job.run's 24h default",
+      "GROSCORE_LEG_TIMEOUT" not in open(os.path.join(SLURM, "workstation.sh")).read())
+
 print()
 if failures:
     print("FAILED (%d):" % len(failures))

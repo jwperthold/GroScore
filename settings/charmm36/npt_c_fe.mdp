@@ -1,15 +1,15 @@
-; holdrev0_fe.mdp - 1 ns equilibrium hold at u = 0, lambda = 0.
-; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage
-; works still sum exactly to the work of the whole ramp. It exists so the
-; stages either side of it can be estimated SEPARATELY and their estimates
-; added, which is only legitimate if the ensemble here is equilibrated:
-; summing their per-cycle works instead would reproduce the unstaged
-; distribution exactly and gain nothing.
+; npt_c_fe.mdp - 20 ns NPT of the bound state at the start of every FE cycle,
+; with the elastic network on if the structure has one, i.e. H(lambda = 0) of the
+; bound legs, so that boundfwd1 starts in equilibrium with the Hamiltonian it runs.
+; The physics is npt_fe.mdp's. make_boresch.py appends the network's pull block to
+; the structure's copy, or sets pull = no there for a structure without network
+; pairs (2KTF), which then runs npt_fe.mdp's physics unchanged; job_fe.run runs
+; that copy, ./npt_c_fe.mdp.
 ;
-; nsteps 250000 * dt 0.004 = 1000 ps.
+; nsteps 5000000 * dt 0.004 = 20000 ps.
 
 integrator               = md
-nsteps                   = 250000
+nsteps                   = 5000000
 dt                       = 0.004
 mass-repartition-factor  = 3
 
@@ -20,7 +20,7 @@ nstvout                  = 0
 nstfout                  = 0
 nstenergy                = 2000
 nstlog                   = 2000
-nstcalcenergy            = 100
+nstcalcenergy            = 2000
 
 comm-mode                = linear
 nstcomm                  = 1000
@@ -33,17 +33,17 @@ lincs_order              = 6
 
 cutoff-scheme            = Verlet
 ns_type                  = grid
-rlist                    = 1.0
-rcoulomb                 = 1.0
-rvdw                     = 1.0
+rlist                    = 1.2
+rcoulomb                 = 1.2
+rvdw                     = 1.2
+rvdw-switch              = 1.0
 
 vdwtype                  = cutoff
-vdw-modifier             = Potential-shift
+vdw-modifier             = force-switch
 
 coulombtype              = PME
-fourierspacing           = 0.125
 
-DispCorr                 = EnerPres
+DispCorr                 = no
 
 tcoupl                   = V-rescale
 tc-grps                  = Protein Non-Protein
@@ -60,16 +60,6 @@ refcoord_scaling         = com
 pbc                      = xyz
 
 gen_vel                  = no
-
-; ---- Free-energy: force-constant switching k -> kB, driven by lambda ----
-free-energy              = yes
-init-lambda              = 0
-delta-lambda             = 0
-dhdl-derivatives         = yes
-nstdhdl                  = 500
-separate-dhdl-file       = yes
-calc-lambda-neighbors    = 0
-sc-alpha                 = 0
 
 ; ---- COM pulling (pull block appended by make_boresch.py) ----
 pull                     = yes

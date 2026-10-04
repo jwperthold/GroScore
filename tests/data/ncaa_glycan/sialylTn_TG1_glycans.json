@@ -1,0 +1,648 @@
+{
+ "residues": [
+  {
+   "resname": "TG1",
+   "family": "TG",
+   "parent": "THR",
+   "link": [
+    "OG1",
+    "C1A"
+   ],
+   "atoms": [
+    {
+     "name": "N",
+     "element": "N",
+     "charge": 0,
+     "h": 1,
+     "src": "THR A 2 N"
+    },
+    {
+     "name": "CA",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "THR A 2 CA"
+    },
+    {
+     "name": "C",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "THR A 2 C"
+    },
+    {
+     "name": "O",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "THR A 2 O"
+    },
+    {
+     "name": "CB",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "THR A 2 CB"
+    },
+    {
+     "name": "OG1",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "THR A 2 OG1"
+    },
+    {
+     "name": "CG2",
+     "element": "C",
+     "charge": 0,
+     "h": 3,
+     "src": "THR A 2 CG2"
+    },
+    {
+     "name": "O5A",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "A2G A 501 O5"
+    },
+    {
+     "name": "C1A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 C1"
+    },
+    {
+     "name": "C2A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 C2"
+    },
+    {
+     "name": "N2A",
+     "element": "N",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 N2"
+    },
+    {
+     "name": "C3A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 C3"
+    },
+    {
+     "name": "O3A",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 O3"
+    },
+    {
+     "name": "C4A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 C4"
+    },
+    {
+     "name": "O4A",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 O4"
+    },
+    {
+     "name": "C5A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "A2G A 501 C5"
+    },
+    {
+     "name": "C6A",
+     "element": "C",
+     "charge": 0,
+     "h": 2,
+     "src": "A2G A 501 C6"
+    },
+    {
+     "name": "O6A",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "A2G A 501 O6"
+    },
+    {
+     "name": "C7A",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "A2G A 501 C7"
+    },
+    {
+     "name": "O7A",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "A2G A 501 O7"
+    },
+    {
+     "name": "C8A",
+     "element": "C",
+     "charge": 0,
+     "h": 3,
+     "src": "A2G A 501 C8"
+    },
+    {
+     "name": "C1B",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "SIA A 502 C1"
+    },
+    {
+     "name": "C2B",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "SIA A 502 C2"
+    },
+    {
+     "name": "C3B",
+     "element": "C",
+     "charge": 0,
+     "h": 2,
+     "src": "SIA A 502 C3"
+    },
+    {
+     "name": "C4B",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 C4"
+    },
+    {
+     "name": "C5B",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 C5"
+    },
+    {
+     "name": "C6B",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 C6"
+    },
+    {
+     "name": "C7B",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 C7"
+    },
+    {
+     "name": "C8B",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 C8"
+    },
+    {
+     "name": "C9B",
+     "element": "C",
+     "charge": 0,
+     "h": 2,
+     "src": "SIA A 502 C9"
+    },
+    {
+     "name": "C10B",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "SIA A 502 C10"
+    },
+    {
+     "name": "C11B",
+     "element": "C",
+     "charge": 0,
+     "h": 3,
+     "src": "SIA A 502 C11"
+    },
+    {
+     "name": "N5B",
+     "element": "N",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 N5"
+    },
+    {
+     "name": "O1AB",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "SIA A 502 O1A"
+    },
+    {
+     "name": "O1BB",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 O1B"
+    },
+    {
+     "name": "O4B",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 O4"
+    },
+    {
+     "name": "O6B",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "SIA A 502 O6"
+    },
+    {
+     "name": "O7B",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 O7"
+    },
+    {
+     "name": "O8B",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 O8"
+    },
+    {
+     "name": "O9B",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "SIA A 502 O9"
+    },
+    {
+     "name": "O10B",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "SIA A 502 O10"
+    }
+   ],
+   "bonds": [
+    [
+     "N",
+     "CA",
+     1
+    ],
+    [
+     "CA",
+     "C",
+     1
+    ],
+    [
+     "CA",
+     "CB",
+     1
+    ],
+    [
+     "C",
+     "O",
+     2
+    ],
+    [
+     "CB",
+     "OG1",
+     1
+    ],
+    [
+     "CB",
+     "CG2",
+     1
+    ],
+    [
+     "O5A",
+     "C5A",
+     1
+    ],
+    [
+     "C1A",
+     "O5A",
+     1
+    ],
+    [
+     "C1A",
+     "C2A",
+     1
+    ],
+    [
+     "C2A",
+     "C3A",
+     1
+    ],
+    [
+     "N2A",
+     "C2A",
+     1
+    ],
+    [
+     "C3A",
+     "C4A",
+     1
+    ],
+    [
+     "C3A",
+     "O3A",
+     1
+    ],
+    [
+     "C4A",
+     "O4A",
+     1
+    ],
+    [
+     "C5A",
+     "C4A",
+     1
+    ],
+    [
+     "C5A",
+     "C6A",
+     1
+    ],
+    [
+     "C6A",
+     "O6A",
+     1
+    ],
+    [
+     "C7A",
+     "N2A",
+     1
+    ],
+    [
+     "O7A",
+     "C7A",
+     2
+    ],
+    [
+     "C8A",
+     "C7A",
+     1
+    ],
+    [
+     "C1B",
+     "C2B",
+     1
+    ],
+    [
+     "C1B",
+     "O1AB",
+     2
+    ],
+    [
+     "C1B",
+     "O1BB",
+     1
+    ],
+    [
+     "C2B",
+     "C3B",
+     1
+    ],
+    [
+     "C2B",
+     "O6B",
+     1
+    ],
+    [
+     "C3B",
+     "C4B",
+     1
+    ],
+    [
+     "C4B",
+     "C5B",
+     1
+    ],
+    [
+     "C4B",
+     "O4B",
+     1
+    ],
+    [
+     "C5B",
+     "C6B",
+     1
+    ],
+    [
+     "C5B",
+     "N5B",
+     1
+    ],
+    [
+     "C6B",
+     "C7B",
+     1
+    ],
+    [
+     "C6B",
+     "O6B",
+     1
+    ],
+    [
+     "C7B",
+     "C8B",
+     1
+    ],
+    [
+     "C7B",
+     "O7B",
+     1
+    ],
+    [
+     "C8B",
+     "C9B",
+     1
+    ],
+    [
+     "C8B",
+     "O8B",
+     1
+    ],
+    [
+     "C9B",
+     "O9B",
+     1
+    ],
+    [
+     "C10B",
+     "C11B",
+     1
+    ],
+    [
+     "C10B",
+     "N5B",
+     1
+    ],
+    [
+     "C10B",
+     "O10B",
+     2
+    ],
+    [
+     "OG1",
+     "C1A",
+     1
+    ],
+    [
+     "O6A",
+     "C2B",
+     1
+    ]
+   ],
+   "hnames": {
+    "C1A": [
+     "H1A"
+    ],
+    "C2A": [
+     "H2A"
+    ],
+    "N2A": [
+     "HN2A"
+    ],
+    "C3A": [
+     "H3A"
+    ],
+    "O3A": [
+     "HO3A"
+    ],
+    "C4A": [
+     "H4A"
+    ],
+    "O4A": [
+     "HO4A"
+    ],
+    "C5A": [
+     "H5A"
+    ],
+    "C6A": [
+     "H6A1",
+     "H6A2"
+    ],
+    "C8A": [
+     "H8A1",
+     "H8A2",
+     "H8A3"
+    ],
+    "C3B": [
+     "H3B1",
+     "H3B2"
+    ],
+    "C4B": [
+     "H4B"
+    ],
+    "C5B": [
+     "H5B"
+    ],
+    "C6B": [
+     "H6B"
+    ],
+    "C7B": [
+     "H7B"
+    ],
+    "C8B": [
+     "H8B"
+    ],
+    "C9B": [
+     "H9B1",
+     "H9B2"
+    ],
+    "C11B": [
+     "HX01",
+     "HX02",
+     "HX03"
+    ],
+    "N5B": [
+     "HN5B"
+    ],
+    "O1BB": [
+     "HX1"
+    ],
+    "O4B": [
+     "HO4B"
+    ],
+    "O7B": [
+     "HO7B"
+    ],
+    "O8B": [
+     "HO8B"
+    ],
+    "O9B": [
+     "HO9B"
+    ]
+   },
+   "sugars": [
+    {
+     "tag": "A",
+     "ccd": "A2G",
+     "type": "D-saccharide, alpha linking",
+     "source": "local cache tests/data/ccd/A2G.cif",
+     "modified": "2024-09-27"
+    },
+    {
+     "tag": "B",
+     "ccd": "SIA",
+     "type": "D-saccharide, alpha linking",
+     "source": "local cache tests/data/ccd/SIA.cif",
+     "modified": "2024-09-27"
+    }
+   ],
+   "instances": [
+    {
+     "chain": "A",
+     "resnum": "2",
+     "icode": "",
+     "sugars": [
+      "A2G A 501",
+      "SIA A 502"
+     ],
+     "link_A": 1.432,
+     "stereo": [
+      "A2G A 501 (A): C1 C2 C3 C4 C5 as in A2G",
+      "SIA A 502 (B): C2 C4 C5 C6 C7 C8 as in SIA"
+     ]
+    }
+   ]
+  }
+ ],
+ "excluded": [],
+ "max_sugars": 3,
+ "report": {
+  "fused": [
+   {
+    "resname": "TG1",
+    "site": "THR A 2",
+    "sugars": [
+     "A2G A 501",
+     "SIA A 502"
+    ],
+    "link": "OG1-C1 1.43 A",
+    "stereo": [
+     "A2G A 501 (A): C1 C2 C3 C4 C5 as in A2G",
+     "SIA A 502 (B): C2 C4 C5 C6 C7 C8 as in SIA"
+    ],
+    "altloc": null
+   }
+  ],
+  "not_fused": []
+ }
+}

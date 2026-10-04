@@ -53,7 +53,11 @@ check("bash -n job_fe.run", r.returncode == 0, r.stderr.strip()[:200])
 print("\n[4] the function behaves: succeeds first time, retries once, gives up")
 # Extract the function verbatim and drive it with a fake gmx on PATH.
 m = re.search(r"^run_leg_mdrun\(\) \{\n.*?^\}\n", src, re.S | re.M)
-check("function body extractable", m is not None)
+# It starts mdrun through run_bg, which records the running leg in the locks
+# (review S3); run_bg and its proc_start come with it.
+helpers = "".join(h.group(0) for h in (re.search(r"^%s\(\) \{\n.*?^\}\n" % n, src, re.S | re.M)
+                                       for n in ("proc_start", "run_bg")) if h)
+check("function body extractable", m is not None and helpers.count("() {") == 2)
 if m:
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -65,7 +69,7 @@ if m:
             "if [[ $n -gt 0 ]]; then echo $((n-1)) > fails; exit 1; fi\n"
             "touch ${out}.gro\n")
         os.chmod(fake, 0o755)
-        script = ("set -u\nnt=1; GPUOPT=''\n" + m.group(0) +
+        script = ("set -u\nnt=1; GPUOPT=''\n" + helpers + m.group(0) +
                   "cd %s\necho 0 > fails; run_leg_mdrun a 1m; echo rc_a=$? \n"
                   "rm -f a.gro; echo 1 > fails; run_leg_mdrun b 1m; echo rc_b=$?\n"
                   "rm -f b.gro; echo 5 > fails; run_leg_mdrun c 1m; echo rc_c=$?\n" % d)

@@ -1,0 +1,10 @@
+An extract of a deposited structure for tests/test_fix_pdb_seed.py. PDB data are
+released by the wwPDB under CC0 1.0 (https://www.wwpdb.org/about/usage-policies). The
+file keeps the ATOM records of its source unchanged and says in its REMARK 250 what
+was kept; it was cut on 2026-10-04 by selecting whole residues.
+
+  1E6E_missing_atoms.pdb  1E6E HADDOCK benchmark input after utils/renumber_pdb.py: the
+                          residues near GLU A 1, ASP B 458, 492 and 562 (side chains
+                          missing) and SER B 570 (no OXT), 43 residues
+  2HLE_renumbered.pdb.gz  2HLE HADDOCK benchmark input after utils/renumber_pdb.py -c B,
+                          whole (2467 atoms, many side chains missing)

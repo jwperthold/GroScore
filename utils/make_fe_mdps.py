@@ -33,9 +33,10 @@ BASE = {"stage_fwd": "bind.mdp", "stage_rev": "bindrev.mdp",
 #
 # Berendsen, which the equilibrations used, samples no ensemble at all, and
 # GROMACS 2026 says so itself in a warning that -maxwarn was swallowing. It
-# mattered most for npt_fe, whose output is the bound-state configuration each
-# cycle's boundfwd starts from: the Crooks analysis assumes those initial states
-# are drawn from the true equilibrium distribution. Parrinello-Rahman does sample
+# mattered most for the per-cycle npt_c (npt_c_fe.mdp since v1.5, npt_fe.mdp
+# before), whose output each cycle's boundfwd1 starts from: the Crooks analysis
+# assumes those initial states are drawn from the true equilibrium distribution.
+# Parrinello-Rahman does sample
 # the right ensemble but is second order, so it oscillates when started from a box
 # that has never been pressure-coupled, which is why a protocol built on it needs
 # a weak-coupling stage in front. C-rescale is first order and relaxes
@@ -58,17 +59,50 @@ def header_for(leg):
                leg["stage"], leg["u_from"], leg["u_to"], ps / 1000.0,
                leg["lam_from"], leg["lam_to"]))
     if leg["kind"] == "hold":
-        where = ("the unbound, Boresch-restrained state" if leg["u_from"] >= P.PULL_DIST
-                 else "u = %g" % leg["u_from"])
+        # Four kinds of hold, told apart by where they sit in the table rather than
+        # by name: inside the bound lambda switch, inside the ramp, the bound -> ramp
+        # handoff at u = 0, and the unbound hold at u = PULL_DIST. The staging
+        # argument (separate estimates added) holds for the first two only.
+        # mdrun -deffnm writes a hold's dH/dlambda to <leg>_<cycle>.xvg; job_fe.run
+        # keeps it, since that is what a hold length is measured from.
+        later = [l["name"] for l in P.legs() if l["start_from"] == n]
+        if leg["block"] == "bound":
+            return (
+                "; %s - %g ns equilibrium hold inside the bound restraint switch, u = 0,\n"
+                "; lambda = %g. delta-lambda = 0 and pull rate 0 under the bound block of\n"
+                "; the sub-legs either side, so it contributes NO work and the bound sub-leg\n"
+                "; works still sum exactly to the work of the whole bound switch. It exists\n"
+                "; so the sub-legs either side of it can be estimated SEPARATELY and their\n"
+                "; estimates added, which is only legitimate if the ensemble here is\n"
+                "; equilibrated: summing their per-cycle works instead would reproduce the\n"
+                "; unstaged distribution exactly and gain nothing.\n"
+                % (leg["mdp"], ps / 1000.0, leg["lam_from"]))
+        if leg["u_from"] >= P.PULL_DIST:
+            return (
+                "; %s - %g ns equilibrium hold at the unbound state, u = %g nm, lambda = %g:\n"
+                "; the Boresch restraints, and the elastic network if the structure has one,\n"
+                "; with no interface springs. delta-lambda = 0 and pull rate 0, so it\n"
+                "; contributes NO work. It joins the two directions: the forward ramp ends\n"
+                "; here and the reverse ramp starts from its end.\n"
+                % (leg["mdp"], ps / 1000.0, leg["u_from"], leg["lam_from"]))
+        if leg["u_from"] == 0.0:
+            return (
+                "; %s - %g ns equilibrium hold at u = 0, lambda = %g: the handoff from the\n"
+                "; bound legs to the ramp, under the Hamiltonian both run there (full\n"
+                "; interface springs, Boresch at zero strength). delta-lambda = 0 and pull\n"
+                "; rate 0, so it contributes NO work. The forward ramp starts from its end%s.\n"
+                % (leg["mdp"], ps / 1000.0, leg["lam_from"],
+                   (",\n; and so does %s, the first reverse bound leg (fe_protocol.legs())"
+                    % " and ".join(later)) if later else ""))
         return (
-            "; %s - %g ns equilibrium hold at %s, lambda = %g.\n"
+            "; %s - %g ns equilibrium hold at u = %g, lambda = %g.\n"
             "; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage\n"
             "; works still sum exactly to the work of the whole ramp. It exists so the\n"
             "; stages either side of it can be estimated SEPARATELY and their estimates\n"
             "; added, which is only legitimate if the ensemble here is equilibrated:\n"
             "; summing their per-cycle works instead would reproduce the unstaged\n"
             "; distribution exactly and gain nothing.\n"
-            % (leg["mdp"], ps / 1000.0, where, leg["lam_from"]))
+            % (leg["mdp"], ps / 1000.0, leg["u_from"], leg["lam_from"]))
     if leg["kind"] == "bound":
         return (
             "; %s - Bound-state restraint %s (dhdl only, no pulling).\n"
@@ -80,20 +114,50 @@ def header_for(leg):
 
 
 NPT_HEADER = (
-    "; npt_fe.mdp - %g ns NPT equilibration of the unrestrained bound state before\n"
-    "; each FE cycle. Its output is the configuration boundfwd starts from, and the\n"
-    "; Crooks analysis assumes those are drawn from the true NPT ensemble, so it uses\n"
-    "; C-rescale and runs straight off the NVT ladder (C-rescale is first order and\n"
-    "; needs no weak-coupling stage in front of it).\n" % (P.NPT_PS / 1000.0))
+    "; npt_fe.mdp - %g ns NPT of the bound state with no pull code: the physics of the\n"
+    "; per-cycle npt_c, which since v1.5 runs npt_c_fe.mdp, i.e. this file plus the\n"
+    "; elastic network if the structure has one. Kept as the pull-free reference that\n"
+    "; file is checked against.\n"
+    "; The Crooks analysis assumes the states boundfwd1 starts from are drawn from the\n"
+    "; true NPT ensemble, so it uses C-rescale and runs straight off the NVT ladder\n"
+    "; (C-rescale is first order and needs no weak-coupling stage in front of it).\n"
+    % (P.NPT_PS / 1000.0))
+
+# WHY npt_c CARRIES THE ELASTIC NETWORK. boundfwd1 starts from the end of npt_c, and
+# its Crooks pair assumes that start is an equilibrium sample of H(lambda = 0) of the
+# bound block: interface springs off, no Boresch, and the elastic network (EN, the
+# intra-partner pull coordinates at k = kB, independent of lambda) ON. Through v1.4
+# npt_c ran npt_fe.mdp with no pull code, so the EN came on at full strength at t = 0
+# of boundfwd1: a median 299 kJ/mol (up to 33,549) never recorded, and in 20 of 920
+# pass-2 cycles a cutout fragment held only by the EN had drifted so far during the
+# 20 ns that its pair passed 0.49 times the box and the boundfwd1 grompp refused it
+# (bm_fe_amber_2/_ana/digest/fu3.txt F10, qc.txt npt_c_elastic_network_off).
+#
+# The EN is per structure, so this template carries only the pull print header the
+# leg mdps carry; make_boresch.py appends the EN-only block (the same groups, pairs
+# and references the legs use, rate 0), or sets pull = no for a structure without
+# EN pairs, which then runs exactly the npt_fe physics. npt_init_fe.mdp stays
+# pull-free: the EN is built from the probe it drives.
+NPT_C_HEADER = (
+    "; npt_c_fe.mdp - %g ns NPT of the bound state at the start of every FE cycle,\n"
+    "; with the elastic network on if the structure has one, i.e. H(lambda = 0) of the\n"
+    "; bound legs, so that boundfwd1 starts in equilibrium with the Hamiltonian it runs.\n"
+    "; The physics is npt_fe.mdp's. make_boresch.py appends the network's pull block to\n"
+    "; the structure's copy, or sets pull = no there for a structure without network\n"
+    "; pairs (2KTF), which then runs npt_fe.mdp's physics unchanged; job_fe.run runs\n"
+    "; that copy, ./npt_c_fe.mdp.\n"
+    % (P.NPT_PS / 1000.0))
 
 NPT_INIT_HEADER = (
-    "; npt_init_fe.mdp - %g ns NPT equilibration run ONCE during setup. Longer than\n"
-    "; the per-cycle npt_fe.mdp because make_boresch.py measures backbone flexibility\n"
-    "; from this trajectory to choose the Boresch anchor groups: the first 1 ns is\n"
-    "; discarded and the rest, sampled every %g ps, gives the frames the RMSF is taken\n"
-    "; from. The discarded first 1 ns also absorbs the C-rescale box relaxation off\n"
-    "; the NVT ladder. Paid once per structure rather than once per cycle.\n"
-    % (P.NPT_INIT_PS / 1000.0, P.XOUT_PS_INIT))
+    "; npt_init_fe.mdp - %g ns NPT equilibration of one probe replica, in the small\n"
+    "; probe box; the setup runs N_PROBES = %d of them, once per structure rather than\n"
+    "; once per cycle. make_boresch.py discards the first %g ns of each\n"
+    "; (PROBE_SKIP_FRAC), which also absorbs the C-rescale box relaxation off the NVT\n"
+    "; ladder, and takes the backbone RMSF behind the Boresch anchor choice and the\n"
+    "; restraint references from the rest, sampled every %g ps. measure_box.py sizes\n"
+    "; the production box from every frame.\n"
+    % (P.NPT_INIT_PS / 1000.0, P.N_PROBES, P.NPT_INIT_PS * P.PROBE_SKIP_FRAC / 1000.0,
+       P.XOUT_PS_INIT))
 
 
 def read(path):
@@ -115,6 +179,18 @@ def strip_pull_block(text):
     """Remove the trailing 'pull = yes' print block so it can be re-emitted."""
     i = text.find("pull                     = yes")
     return text[:i].rstrip("\n") + "\n" if i != -1 else text.rstrip("\n") + "\n"
+
+def pull_header(pull_fout):
+    """The pull print header every mdp make_boresch.py appends a block to carries.
+    One definition, so the legs and npt_c_fe.mdp cannot drift apart."""
+    return ("\n; ---- COM pulling (pull block appended by make_boresch.py) ----\n"
+            "pull                     = yes\n"
+            "pull-print-com1          = no\n"
+            "pull-print-com2          = no\n"
+            "pull-print-ref-value     = no\n"
+            "pull-print-components    = no\n"
+            "pull-nstxout             = 0\n"
+            "pull-nstfout             = %d\n" % pull_fout)
 
 
 def build(text, ps, lam_from, lam_to, pull_fout, xout_ps):
@@ -157,15 +233,7 @@ def build(text, ps, lam_from, lam_to, pull_fout, xout_ps):
           "calc-lambda-neighbors    = 0\n"
           "sc-alpha                 = 0\n"
           % (("%g" % lam_from), "0" if dl == 0 else ("%.12e" % dl)))
-    pull = ("\n; ---- COM pulling (pull block appended by make_boresch.py) ----\n"
-            "pull                     = yes\n"
-            "pull-print-com1          = no\n"
-            "pull-print-com2          = no\n"
-            "pull-print-ref-value     = no\n"
-            "pull-print-components    = no\n"
-            "pull-nstxout             = 0\n"
-            "pull-nstfout             = %d\n" % pull_fout)
-    return text.rstrip("\n") + "\n" + fe + pull, nsteps, dt
+    return text.rstrip("\n") + "\n" + fe + pull_header(pull_fout), nsteps, dt
 
 
 def main():
@@ -190,14 +258,19 @@ def main():
                 f.write(head + body)
             written += 1
 
-        # The two equilibrations carry no lambda and no pull.
-        for name, ps, xout, head in (("npt_fe.mdp", P.NPT_PS, P.XOUT_PS, NPT_HEADER),
-                                     ("npt_init_fe.mdp", P.NPT_INIT_PS, P.XOUT_PS_INIT,
-                                      NPT_INIT_HEADER)):
+        # The equilibrations carry no lambda. npt_c_fe.mdp is npt_fe.mdp plus the
+        # pull print header, for the elastic network (see NPT_C_HEADER); the other
+        # two carry no pull at all.
+        for name, ps, xout, head, pull in (
+                ("npt_fe.mdp", P.NPT_PS, P.XOUT_PS, NPT_HEADER, False),
+                ("npt_c_fe.mdp", P.NPT_PS, P.XOUT_PS, NPT_C_HEADER, True),
+                ("npt_init_fe.mdp", P.NPT_INIT_PS, P.XOUT_PS_INIT, NPT_INIT_HEADER, False)):
             base_path = os.path.join(d, BASE["npt"])
             if not os.path.isfile(base_path):
                 print("  %s: missing base %s, skipped" % (ff, BASE["npt"])); continue
             body, nsteps, dt = build(read(base_path), ps, None, None, 0, xout)
+            if pull:
+                body += pull_header(0)
             with open(os.path.join(d, name), "w") as f:
                 f.write(head + ";\n; nsteps %d * dt %g = %g ps.\n\n" % (nsteps, dt, ps) + body)
             written += 1
@@ -205,8 +278,10 @@ def main():
         print("generated %d FE mdps for %s" % (written, ff))
 
     print("")
-    print("cycle: %g ns over %d legs plus %g ns equilibration"
-          % (P.cycle_ps() / 1000.0, len(legs), P.NPT_PS / 1000.0))
+    # cycle_ps() already counts npt_c, so the legs are the difference.
+    print("cycle: %g ns over %d legs plus %g ns of npt_c, %g ns in all"
+          % ((P.cycle_ps() - P.NPT_PS) / 1000.0, len(legs), P.NPT_PS / 1000.0,
+             P.cycle_ps() / 1000.0))
     print("stale mdps from a previous protocol are NOT removed; run")
     print("  git status settings/  to see anything left behind by a reshaped ramp.")
 

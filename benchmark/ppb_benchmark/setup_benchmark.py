@@ -13,6 +13,9 @@ import argparse
 import urllib.request
 import openpyxl
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from glycan_chains import linked_glycan_chains  # noqa: E402
+
 parser = argparse.ArgumentParser(description="Setup PPB-Affinity benchmark structures.")
 parser.add_argument('--include-mutants', action='store_true', help="Include mutant entries (default: wild-type only)")
 parser.add_argument('--max-entries', type=int, default=0, help="Limit number of structures (0 = all)")
@@ -306,6 +309,9 @@ with open('sp.gs', 'w') as sp:
         atom_name_col = col_idx.get('_atom_site.label_atom_id') or col_idx.get('_atom_site.auth_atom_id')
         comp_col = col_idx.get('_atom_site.label_comp_id') or col_idx.get('_atom_site.auth_comp_id')
         seq_col = col_idx.get('_atom_site.auth_seq_id')
+        # Insertion code (PDB column 27); without it residues 82/82A/82B share a number
+        # and downstream readers merge them (see haddock_benchmark/setup_benchmark.py).
+        ins_col = col_idx.get('_atom_site.pdbx_PDB_ins_code')
         x_col = col_idx.get('_atom_site.Cartn_x')
         y_col = col_idx.get('_atom_site.Cartn_y')
         z_col = col_idx.get('_atom_site.Cartn_z')
@@ -365,6 +371,11 @@ with open('sp.gs', 'w') as sp:
         else:
             stats['direct_match'] += 1
 
+        # The oligosaccharides linked to the kept chains, which have chains of their own
+        # since the wwPDB carbohydrate remediation (benchmark/glycan_chains.py).
+        glycan_asyms = linked_glycan_chains(cif_content, chains_to_keep)
+        label_chain_col = col_idx.get('_atom_site.label_asym_id')
+
         # Write PDB from mmCIF
         pdb_lines = []
         prev_chain = None
@@ -380,7 +391,8 @@ with open('sp.gs', 'w') as sp:
             if alt_col is not None and len(fields) > alt_col and fields[alt_col] not in ('.', 'A', '?'):
                 continue
             auth_ch = fields[auth_chain_col]
-            if auth_ch not in chains_to_keep:
+            if auth_ch not in chains_to_keep and (label_chain_col is None or len(fields) <= label_chain_col
+                                                  or fields[label_chain_col] not in glycan_asyms):
                 continue
 
             group = fields[group_col] if group_col is not None and len(fields) > group_col else 'ATOM'
@@ -416,9 +428,11 @@ with open('sp.gs', 'w') as sp:
                 seq_int = int(seq_id)
             except ValueError:
                 seq_int = 1
+            icode = fields[ins_col] if ins_col is not None and len(fields) > ins_col else '?'
+            icode = ' ' if icode in ('?', '.') else icode[0]
 
             serial = len(pdb_lines) + 1
-            record = (f"{group:<6s}{serial:5d} {atom_name_fmt} {comp:>3s} {auth_ch}{seq_int:4d}    "
+            record = (f"{group:<6s}{serial:5d} {atom_name_fmt} {comp:>3s} {auth_ch}{seq_int:4d}{icode}   "
                       f"{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{bfactor:6.2f}          {element:>2s}")
             pdb_lines.append(record)
 

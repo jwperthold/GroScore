@@ -12,7 +12,8 @@ What must hold for EACH remembered setting, not just for sum_k:
   * a fresh directory records it, default included, so no invocation can reach a
     default that has since moved
   * a later invocation with no flag inherits it, and does not warn
-  * an explicit DIFFERENT value warns and says the works are not comparable
+  * an explicit DIFFERENT value warns and says the works are not comparable,
+    except a new cycle target (-n), which changes no work and is only recorded
   * an explicit SAME value does not warn
   * booleans can express "unset", or a remembered false could never be honoured
 
@@ -75,6 +76,7 @@ print("\n[2] a fresh directory records every one of them, defaults included")
 d = fresh()
 run(d)
 c = cfg(d)
+shutil.rmtree(d, ignore_errors=True)
 for k in sorted(have):
     check("fresh directory states %s (= %s)" % (k, c.get(k)), k in c, str(c))
 
@@ -130,6 +132,19 @@ for flag, first, other in (("--sum-k", "9000", "8000"),
     check("and the warning names the setting and both values",
           key in said and _fmt(first) in said and _fmt(other) in said, said[-300:])
     shutil.rmtree(d, ignore_errors=True)
+
+print("\n[4b] a new cycle target is recorded without the not-comparable warning")
+# -n is how cycles are added (-n <more> --restart); it changes no work, so the
+# warning that works of the two values are not comparable was wrong for it (D10).
+d = fresh()
+run(d, "-n", "3")
+r = run(d, "-n", "4")
+said = r.stdout + r.stderr
+check("-n 4 after -n 3: numruns 4 recorded", cfg(d).get("numruns") == "4", str(cfg(d)))
+check("  saying the target moved, without the not-comparable warning",
+      "Cycle target 3 in run_config.gs, now 4; recorded." in said
+      and "this directory was set up with" not in said, said[-300:])
+shutil.rmtree(d, ignore_errors=True)
 
 print("\n[5] booleans can express 'unset', so a remembered false is honoured")
 check("--no-cutout uses store_const with default None, not store_false",

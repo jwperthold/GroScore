@@ -1,0 +1,361 @@
+{
+ "residues": [
+  {
+   "resname": "NG1",
+   "family": "NG",
+   "parent": "ASN",
+   "link": [
+    "ND2",
+    "C1A"
+   ],
+   "atoms": [
+    {
+     "name": "N",
+     "element": "N",
+     "charge": 0,
+     "h": 1,
+     "src": "ASN A 350 N"
+    },
+    {
+     "name": "CA",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "ASN A 350 CA"
+    },
+    {
+     "name": "C",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "ASN A 350 C"
+    },
+    {
+     "name": "O",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "ASN A 350 O"
+    },
+    {
+     "name": "CB",
+     "element": "C",
+     "charge": 0,
+     "h": 2,
+     "src": "ASN A 350 CB"
+    },
+    {
+     "name": "CG",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "ASN A 350 CG"
+    },
+    {
+     "name": "OD1",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "ASN A 350 OD1"
+    },
+    {
+     "name": "ND2",
+     "element": "N",
+     "charge": 0,
+     "h": 1,
+     "src": "ASN A 350 ND2"
+    },
+    {
+     "name": "C1A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 C1"
+    },
+    {
+     "name": "C2A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 C2"
+    },
+    {
+     "name": "C3A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 C3"
+    },
+    {
+     "name": "C4A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 C4"
+    },
+    {
+     "name": "C5A",
+     "element": "C",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 C5"
+    },
+    {
+     "name": "C6A",
+     "element": "C",
+     "charge": 0,
+     "h": 2,
+     "src": "NAG A 544 C6"
+    },
+    {
+     "name": "C7A",
+     "element": "C",
+     "charge": 0,
+     "h": 0,
+     "src": "NAG A 544 C7"
+    },
+    {
+     "name": "C8A",
+     "element": "C",
+     "charge": 0,
+     "h": 3,
+     "src": "NAG A 544 C8"
+    },
+    {
+     "name": "N2A",
+     "element": "N",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 N2"
+    },
+    {
+     "name": "O3A",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 O3"
+    },
+    {
+     "name": "O4A",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 O4"
+    },
+    {
+     "name": "O5A",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "NAG A 544 O5"
+    },
+    {
+     "name": "O6A",
+     "element": "O",
+     "charge": 0,
+     "h": 1,
+     "src": "NAG A 544 O6"
+    },
+    {
+     "name": "O7A",
+     "element": "O",
+     "charge": 0,
+     "h": 0,
+     "src": "NAG A 544 O7"
+    }
+   ],
+   "bonds": [
+    [
+     "N",
+     "CA",
+     1
+    ],
+    [
+     "CA",
+     "C",
+     1
+    ],
+    [
+     "CA",
+     "CB",
+     1
+    ],
+    [
+     "C",
+     "O",
+     2
+    ],
+    [
+     "CB",
+     "CG",
+     1
+    ],
+    [
+     "CG",
+     "OD1",
+     2
+    ],
+    [
+     "CG",
+     "ND2",
+     1
+    ],
+    [
+     "C1A",
+     "C2A",
+     1
+    ],
+    [
+     "C1A",
+     "O5A",
+     1
+    ],
+    [
+     "C2A",
+     "C3A",
+     1
+    ],
+    [
+     "C2A",
+     "N2A",
+     1
+    ],
+    [
+     "C3A",
+     "C4A",
+     1
+    ],
+    [
+     "C3A",
+     "O3A",
+     1
+    ],
+    [
+     "C4A",
+     "C5A",
+     1
+    ],
+    [
+     "C4A",
+     "O4A",
+     1
+    ],
+    [
+     "C5A",
+     "C6A",
+     1
+    ],
+    [
+     "C5A",
+     "O5A",
+     1
+    ],
+    [
+     "C6A",
+     "O6A",
+     1
+    ],
+    [
+     "C7A",
+     "C8A",
+     1
+    ],
+    [
+     "C7A",
+     "N2A",
+     1
+    ],
+    [
+     "C7A",
+     "O7A",
+     2
+    ],
+    [
+     "ND2",
+     "C1A",
+     1
+    ]
+   ],
+   "hnames": {
+    "C1A": [
+     "H1A"
+    ],
+    "C2A": [
+     "H2A"
+    ],
+    "C3A": [
+     "H3A"
+    ],
+    "C4A": [
+     "H4A"
+    ],
+    "C5A": [
+     "H5A"
+    ],
+    "C6A": [
+     "H6A1",
+     "H6A2"
+    ],
+    "C8A": [
+     "H8A1",
+     "H8A2",
+     "H8A3"
+    ],
+    "N2A": [
+     "HN2A"
+    ],
+    "O3A": [
+     "HO3A"
+    ],
+    "O4A": [
+     "HO4A"
+    ],
+    "O6A": [
+     "HO6A"
+    ]
+   },
+   "sugars": [
+    {
+     "tag": "A",
+     "ccd": "NAG",
+     "type": "D-saccharide, beta linking",
+     "source": "local cache forcefield/ccd_cache/NAG.cif",
+     "modified": "2024-09-27"
+    }
+   ],
+   "instances": [
+    {
+     "chain": "A",
+     "resnum": "350",
+     "icode": "",
+     "sugars": [
+      "NAG A 544"
+     ],
+     "link_A": 1.451,
+     "stereo": [
+      "NAG A 544 (A): C1 C2 C3 C4 C5 as in NAG"
+     ]
+    }
+   ]
+  }
+ ],
+ "excluded": [],
+ "max_sugars": 3,
+ "report": {
+  "fused": [
+   {
+    "resname": "NG1",
+    "site": "ASN A 350",
+    "sugars": [
+     "NAG A 544"
+    ],
+    "link": "ND2-C1 1.45 A",
+    "stereo": [
+     "NAG A 544 (A): C1 C2 C3 C4 C5 as in NAG"
+    ],
+    "altloc": null
+   }
+  ],
+  "not_fused": []
+ }
+}

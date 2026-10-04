@@ -10,13 +10,27 @@
 #
 # Usage: python parametrize_ncaa.py -f fixed.pdb [--gmx-ff amber19sb]
 #
+# FUSED GLYCANS. utils/fuse_glycans.py makes a glycan covalently bonded to ASN ND2,
+# SER OG or THR OG1 one residue with that amino acid (NG<k>, SG<k>, TG<k>) and writes
+# its chemistry to glycans.json in the structure directory: heavy atoms with element,
+# formal charge and hydrogen count, bonds with orders, hydrogen names, all taken from
+# the CCD entries of the amino acid and the sugars. A residue named there is built
+# from that definition (parametrize_fused()), its parent is the definition's, and its
+# name is never looked up in the CCD. One that fails goes to glycan_failed.gs
+# ('RESNAME reason'), never to ncaa_failed.gs: the runners then fuse again without it,
+# and its sugars become ligands that merge_ligand.py judges by region.
+#
 
 import os
 import sys
+import json
 import argparse
 import tempfile
 import shutil
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ccd_cache  # noqa: E402  (standard library only)
 
 parser = argparse.ArgumentParser(description="Parametrize NCAAs with OpenFF for GROMACS.")
 parser.add_argument('-f', '--file', type=str, required=True, help="Input PDB file (fixed.pdb)")
@@ -42,6 +56,138 @@ BACKBONE_TYPES = {'N': 'N', 'H': 'H', 'CA': 'XC', 'HA': 'H1', 'C': 'C', 'O': 'O'
 BACKBONE_NAMES = set(BACKBONE_TYPES.keys())
 CB_TYPE = 'CT'
 CB_H_TYPE = 'HC'
+# amber19sb types a hydrogen on an aliphatic carbon by that carbon's electron-
+# withdrawing neighbours (N, O, S, halogens): HC with none, H1 with one (the CB
+# hydrogens of SER and THR next to OG, of CYS next to SG; MET HG next to SD, PRO and
+# ARG HD next to N), H2 with two, H3 with three. The CB hydrogens of an NCAA are typed
+# the same way: a glycosylated Ser or Thr (SG<k>, TG<k>), phospho-Ser and phospho-Thr
+# get H1 (critic F12c), and so does a Cys-derived NCAA such as the CME of 1S9D, which
+# kept HC while only an oxygen counted (ncaa review F3). HC, H1, H2 and H3 differ only
+# in sigma, 0.2650, 0.2471, 0.2293 and 0.2115 nm (epsilon 0.0657 kJ/mol all).
+# An amine N is the exception: amber19sb types the hydrogens next to NZ HP in both LYS
+# (NH3+) and LYN (NH2), and the H1 the count gave was GAFF's convention, not the force
+# field's (verifier V4). A CB bonded to an sp3 amine N (DPP, 2,3-diaminopropionic
+# acid) gets HP; an amide or guanidinium N (PRO, ARG HD) stays H1.
+CB_H_TYPES = ('HC', 'H1', 'H2', 'H3')           # by the number of such neighbours
+CB_AMINE_H_TYPE = 'HP'
+# amber19sb has no XC-CT-HP angle (an HP on the CB next to the CMAP CA type XC never
+# occurs in its residues), so grompp would stop on such a CB. XC takes CT's bonded
+# terms, and this is its copy of CT-CT-HP, written to ncaa_bonded.itp when HP is used.
+HP_CB_ANGLE = {('HP', 'CT', 'XC'): (1, 109.5, 418.4)}
+ELECTRON_WITHDRAWING = {7, 8, 9, 16, 17, 35, 53}  # N, O, F, S, Cl, Br, I
+
+
+def is_amine_n(atom):
+    """An sp3 amine nitrogen of an RDKit molecule, charged or not: no multiple bond,
+    not aromatic, and no neighbour with a multiple bond (that is an amide, an aniline
+    or a sulfonamide N)."""
+    from rdkit import Chem
+    single = Chem.BondType.SINGLE
+    return (atom.GetAtomicNum() == 7 and not atom.GetIsAromatic()
+            and all(b.GetBondType() == single for b in atom.GetBonds())
+            and not any(n.GetIsAromatic() or any(b.GetBondType() != single for b in n.GetBonds())
+                        for n in atom.GetNeighbors()))
+
+# ---- Fused glycan residues (utils/fuse_glycans.py) ----
+# Their names are authoritative and never read as CCD codes: nearly every 3-character
+# code is a CCD entry (11 of 220 probed were free), NG1 among them (GalNAc
+# 1-phosphate, parent A2G). Before this the script took that entry's parent and, after
+# OpenBabel built the 22-atom fused Asn-GlcNAc of 1MAH at charge +1, its 19-atom RCSB
+# template, which failed; NG1 then went to ncaa_failed.gs, the parent-replacement path
+# (design run 1MAH_orig).
+GLYCANS_JSON = 'glycans.json'
+GLYCAN_FAILED = 'glycan_failed.gs'
+NCAA_FAILED = 'ncaa_failed.gs'
+GLYCAN_DEFS = {}      # resname -> definition from glycans.json (main section)
+CHARGE_NOTES = {}     # resname -> how a fused residue's charges were made, for ncaa.rtp
+# Hydrogen-name bases fuse_glycans.py takes for a name that would exceed 4 characters
+# (the SIA C11 methyl: H11B1) or clash; a parent that gains hydrogens at the pH takes an
+# unused one (fused_h_names()).
+HX_POOL = ['HX' + c for c in '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ']
+# The whole AM1-BCC time of a fused residue is bounded, first attempt included
+# (fused_interchange()).
+GLYCAN_WALL_ENV = 'GROSCORE_GLYCAN_AM1BCC_WALL_S'
+
+
+def load_glycan_defs(path):
+    """{resname: definition} from fuse_glycans.py's glycans.json; {} without the file."""
+    if not os.path.isfile(path):
+        return {}
+    with open(path) as f:
+        return {r['resname']: r for r in json.load(f)['residues']}
+
+
+def ccd_parent(resname, glycans=None):
+    """(parent residue, note) of an NCAA from its CCD entry, read from the local CCD
+    cache first and files.rcsb.org second (utils/ccd_cache.py): (parent, None) when the
+    entry names one; ('ALA', why) when it names none, as for D-amino acids (DAL, DPN)
+    and beta-amino acids (BAL, ACB), which keep ALA's CMAP as in v1.4 (review V2);
+    (None, why not) when the entry cannot be read. A fused glycan residue, a name in
+    `glycans` (the glycans.json definitions), takes the definition's parent, and its
+    CCD entry is never read: the real NG1 would give A2G."""
+    if glycans and resname in glycans:
+        parent = str(glycans[resname].get('parent') or '').strip().upper()
+        if not parent:
+            return None, f"glycans.json names no parent residue for {resname}"
+        return parent, None
+    text, src = ccd_cache.fetch(resname)
+    if text is None:
+        return None, src
+    parent = ccd_cache.parse_cif(text).get('_chem_comp.mon_nstd_parent_comp_id', ['?'])[0]
+    parent = parent.split(',')[0].strip().upper()
+    if parent in ('', '?', '.'):
+        return 'ALA', f"the CCD entry {resname} names no parent residue, so it gets ALA's CMAP"
+    return parent, None
+
+
+def ccd_template(ccd_id):
+    """(molecule, source): the CCD entry ccd_id as an RDKit molecule with its hydrogens,
+    bond orders, formal charges and ideal coordinates (the model ones where the entry
+    has none), its stereo from those coordinates, read from the local CCD cache first
+    and files.rcsb.org second (utils/ccd_cache.py). Strategy 2's template. It used to be
+    files.rcsb.org's <ID>_ideal.sdf and nothing else, so on a node without network
+    every NCAA Strategy 2 builds went to its parent residue although the cache holds
+    its entry (2MTA TRQ, 2BTF HIC; ncaa review P2). For 56 NCAAs (HIC, MSE, TRQ, SEP,
+    TPO, PTR, D- and beta-amino acids among them) this molecule is atom for atom the
+    one that SDF gave: elements, charges, hydrogens, bonds, coordinates and stereo.
+    Raises RuntimeError with the reason when the entry cannot be read or built."""
+    from rdkit import Chem
+    from rdkit.Geometry import Point3D
+    text, src = ccd_cache.fetch(ccd_id)
+    if text is None:
+        raise RuntimeError(src)
+    cif, comp = ccd_cache.parse_cif(text), ccd_cache.component(text)
+    ids = cif.get('_chem_comp_atom.atom_id', [])
+    xyz = {}
+    for key in ('_chem_comp_atom.pdbx_model_Cartn_%s_ideal', '_chem_comp_atom.model_Cartn_%s'):
+        cols = [cif.get(key % c, []) for c in 'xyz']
+        if all(len(c) == len(ids) for c in cols):
+            for n, x, y, z in zip(ids, *cols):
+                if n not in xyz:
+                    try:
+                        xyz[n] = (float(x), float(y), float(z))
+                    except ValueError:
+                        pass
+    order = {'SING': Chem.BondType.SINGLE, 'DOUB': Chem.BondType.DOUBLE, 'TRIP': Chem.BondType.TRIPLE}
+    rw, idx = Chem.RWMol(), {}
+    for a in comp['atoms']:
+        if a['name'] not in xyz:
+            raise RuntimeError(f"the CCD entry {ccd_id} has no coordinates for {a['name']}")
+        atom = Chem.Atom(a['element'].capitalize())
+        atom.SetFormalCharge(a['charge'])
+        idx[a['name']] = rw.AddAtom(atom)
+    for n1, n2, o, arom in comp['bonds']:
+        if o not in order:
+            raise RuntimeError(f"bond order {o} between {n1} and {n2} in the CCD entry {ccd_id}")
+        rw.AddBond(idx[n1], idx[n2], order[o])
+    mol = rw.GetMol()
+    conf = Chem.Conformer(mol.GetNumAtoms())
+    for a in comp['atoms']:
+        conf.SetAtomPosition(idx[a['name']], Point3D(*xyz[a['name']]))
+    mol.AddConformer(conf, assignId=True)
+    Chem.SanitizeMol(mol)
+    Chem.AssignStereochemistryFrom3D(mol)
+    return mol, src
 
 
 # ---- PDB parsing ----
@@ -161,21 +307,330 @@ def build_capped_pdb(atoms, chain, resnum):
     return '\n'.join(lines) + '\n', ncaa_heavy_coords, ncaa_atom_names
 
 
+# ---- Fused glycan residues: the chemistry from glycans.json ----
+
+def fused_h_names(d, h_parent):
+    """({hydrogen index: name}, notes) for the hydrogens of a fused residue as they
+    are after protonation at the pH; h_parent = {hydrogen index: parent heavy-atom
+    name}, residue atoms only.
+
+    The definition's names (hnames) come from the CCD hydrogen counts, but OpenBabel's
+    pH model and the acid rules remove the proton of every carboxylic acid, sulfate and
+    phosphate: SIA's O1B loses its H. Naming those CCD names regardless stopped every
+    sialylated glycan after its full AM1-BCC run, as 'unassigned HO6A' on an acid
+    variant of the 1MAH NG1 after 133 s (critic F5). So the hydrogens that exist are
+    named: a parent takes the definition's names in order for as many as it keeps, and
+    the trailing ones are dropped (and logged); a parent that gained hydrogens takes an
+    unused base from HX0..HXZ for all of them, since pdb2gmx names a group from one
+    base (base1, base2, ...). The pool also serves a sugar atom the definition gives
+    no hydrogen and no names: the generic NCAA rule would call the hydrogen of a
+    sialic acid's N5A H5A, the name of C5A's. Parents the definition gives no names
+    that keep their count, the amino acid's, are named as for any NCAA
+    (assign_h_names()). The names must be unique, distinct from the heavy-atom names
+    and at most 4 characters."""
+    groups = {}
+    for h in sorted(h_parent):
+        groups.setdefault(h_parent[h], []).append(h)
+    hnames = d.get('hnames') or {}
+    defined_h = {a['name']: a['h'] for a in d['atoms']}
+    heavy = set(defined_h)
+    taken = heavy | {n for v in hnames.values() for n in v}
+    pool = [b for b in HX_POOL if not any(n == b or (n[:-1] == b and n[-1].isdigit()) for n in taken)]
+    names, notes = {}, []
+    for parent, hs in groups.items():
+        n = len(hs)
+        listed = hnames.get(parent)
+        if listed is None and n <= defined_h.get(parent, 0):
+            got = [assign_h_names({h: parent for h in hs})[h] for h in hs]
+        elif listed is not None and n <= len(listed):
+            got = list(listed[:n])
+            if n < len(listed):
+                notes.append(f"{parent} keeps {n} of {len(listed)} hydrogens at the pH: {' '.join(listed[n:])} dropped")
+        else:
+            if not pool:
+                raise RuntimeError(f"no free hydrogen name left for the {n} hydrogens of {parent}")
+            base = pool.pop(0)
+            got = [base] if n == 1 else [f"{base}{k}" for k in range(1, n + 1)]
+            had = len(listed) if listed is not None else defined_h.get(parent, 0)
+            notes.append(f"{parent} gained hydrogens at the pH ({had} -> {n}): named {' '.join(got)}")
+        names.update(zip(hs, got))
+    for parent, want in hnames.items():
+        if want and parent not in groups:
+            notes.append(f"{parent} keeps 0 of {len(want)} hydrogens at the pH: {' '.join(want)} dropped")
+    values = list(names.values())
+    dup = sorted({n for n in values if values.count(n) > 1})
+    clash = sorted(set(values) & heavy)
+    long_names = sorted(n for n in values if len(n) > 4)
+    if dup or clash or long_names:
+        raise RuntimeError(f"hydrogen names: duplicates {dup}, equal to a heavy atom {clash}, "
+                           f"longer than 4 characters {long_names}")
+    return names, notes
+
+
+def fused_hdb_problems(resname, mol, names, n_res, h_parent, h_names):
+    """Why the hdb entry generate_hdb() would write for this molecule could not make
+    pdb2gmx rebuild exactly these hydrogens ([] when it can). Run on the protonated
+    RDKit molecule before any sqm time is spent (critic F5): pdb2gmx -ignh drops the
+    hydrogens and adds them from the hdb, and under -missing an hdb line it cannot
+    follow leaves the residue short of atoms without a word. A line exists for every
+    parent with 1 to 3 hydrogens, with 2 reference atoms (3 for a single tetrahedral H),
+    and its names, base1..baseN for a group, are the rtp names."""
+    adj = {}
+    for b in mol.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        adj.setdefault(i, set()).add(j)
+        adj.setdefault(j, set()).add(i)
+    zs = sorted({a.GetAtomicNum() for a in mol.GetAtoms()})
+    top = {'atomtypes': [{'name': f'Z{z}', 'at_num': z} for z in zs],
+           'atoms': [{'type': f'Z{a.GetAtomicNum()}'} for a in mol.GetAtoms()]}
+    entry = [line for line in generate_hdb(resname, names[:n_res], h_parent, h_names,
+                                           {i: names[i] for i in range(n_res)}, adj, top).split('\n')
+             if line.strip()]
+    want = {}
+    for h, p in h_parent.items():
+        want.setdefault(p, []).append(h_names[h])
+    probs, seen = [], set()
+    head = entry[0].split()
+    if len(head) != 2 or int(head[1]) != len(entry) - 1:
+        probs.append(f"header {entry[0]!r} for {len(entry) - 1} lines")
+    for line in entry[1:]:
+        f = line.split('\t')
+        n, kind, base, parent, refs = int(f[0]), int(f[1]), f[2], f[3], [r for r in f[4:] if r]
+        seen.add(parent)
+        made = [base] if n == 1 else [f"{base}{k}" for k in range(1, n + 1)]
+        if sorted(made) != sorted(want.get(parent, [])):
+            probs.append(f"{parent}: the hdb line makes {' '.join(made)}, the rtp has "
+                         f"{' '.join(sorted(want.get(parent, [])))}")
+        if len(refs) != (3 if kind == 5 else 2) or len(set(refs)) != len(refs) or parent in refs:
+            probs.append(f"{parent}: reference atoms {' '.join(refs) or '-'} for an hdb line of type {kind}")
+    for parent in sorted(set(want) - seen):
+        probs.append(f"{parent}: {len(want[parent])} hydrogens and no hdb line")
+    return probs
+
+
+def fused_interchange(ff, offmol, clock=None):
+    """parametrize_ligand.make_interchange() (valence typing first, then AM1-BCC on the
+    deposited conformer and seeded retries) with the AM1-BCC time bounded as a whole,
+    first attempt included.
+
+    The ligand path never cuts its first attempt. A fused residue's AM1-BCC grows
+    roughly with the cube of its size: 54-102 s with one sugar, 161 s with two and
+    532 s with three, an estimated 25 min with five and 2 h for a 9-sugar Fc glycan.
+    Glycans have no size cap by default, so neither has this time: the ligand path's
+    AM1BCC_RETRY_WALL_S of 3600 s would send every large glycan back to the ligands,
+    where it stops the structure, after an hour of sqm. Unlimited is the default; the
+    job's own time limit is the bound. GROSCORE_GLYCAN_AM1BCC_WALL_S (s) sets a wall
+    for fused residues, after which the glycan goes back to the ligands, so that a run
+    can bound the setup or force the fallback (critic F4). Each attempt gets what the
+    attempts before it left of the wall: the retries used to get a wall of their own
+    after the first attempt's, nearly twice the value in all (runner review R3).
+    clock: time.monotonic, or a fake one for a test."""
+    import time
+    import parametrize_ligand as PL
+    clock = clock or time.monotonic
+    wall = float('inf')
+    if os.environ.get(GLYCAN_WALL_ENV):
+        try:
+            wall = float(os.environ[GLYCAN_WALL_ENV])
+            print(f"  {GLYCAN_WALL_ENV}={wall:g} s bounds the AM1-BCC of the fused residue")
+        except ValueError:
+            print(f"  WARNING: {GLYCAN_WALL_ENV}={os.environ[GLYCAN_WALL_ENV]!r} is not a number of "
+                  f"seconds; the AM1-BCC of the fused residue stays unlimited")
+    attempt, retry_wall = PL.am1bcc_attempt, PL.AM1BCC_RETRY_WALL_S
+    start = []
+
+    def bounded(mol, conformer, timeout=None):
+        if not start:
+            start.append(clock())
+        left = wall - (clock() - start[0])
+        if left <= 0:
+            raise TimeoutError("AM1-BCC did not finish within %.0f s" % wall)
+        left = left if timeout is None else min(timeout, left)
+        # am1bcc_attempt() waits without limit on None; an infinite timeout would
+        # overflow the poll.
+        return attempt(mol, conformer, None if left == float('inf') else left)
+
+    PL.am1bcc_attempt, PL.AM1BCC_RETRY_WALL_S = bounded, wall
+    try:
+        return PL.make_interchange(ff, offmol)
+    finally:
+        PL.am1bcc_attempt, PL.AM1BCC_RETRY_WALL_S = attempt, retry_wall
+
+
+def parametrize_fused(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
+    """parametrize_capped() for a fused glycan residue: Ace-X-NMe from its glycans.json
+    definition on the canonical instance's deposited coordinates.
+
+    Heavy atoms, elements, formal charges, hydrogen counts and bond orders are the
+    definition's (the CCD entries of the amino acid and its sugars, as
+    fuse_glycans.py joined them); the caps are build_capped_pdb()'s. Hydrogens and
+    charges follow the ligand path: OpenBabel's pH model on those hydrogen counts
+    (parametrize_ligand.ob_protonate), the pH 7.4 acid rules (ionize_acids: a sialic
+    acid carboxylate becomes COO-), then OpenFF valence typing and AM1-BCC on the
+    deposited conformer with seeded retries (fused_interchange()). On 1MAH the
+    deposited conformer's AM1-BCC took 102 s against 126 s for OpenFF's own conformer,
+    and the charges differ by up to 0.057 e per atom (0.012 e on average). No OpenBabel
+    bond perception, no CCD template and no MCS name recovery: each reads the
+    residue name as a CCD code.
+
+    Returns parametrize_capped()'s tuple; the names by index cover the residue's
+    hydrogens too (fused_h_names()), the cap atoms stay None."""
+    import time
+    from rdkit import Chem
+    from rdkit.Chem import rdMolDescriptors
+    from rdkit.Geometry import Point3D
+    from openff.toolkit import Molecule, ForceField
+    import parametrize_ligand as PL
+
+    d = GLYCAN_DEFS[ncaa_resname]
+    defined = [a['name'] for a in d['atoms']]
+    missing = [n for n in defined if n not in ncaa_heavy_coords]
+    extra = sorted(set(ncaa_heavy_coords) - set(defined))
+    if missing or extra:
+        raise RuntimeError(f"the deposited residue is not its glycans.json definition "
+                           f"(missing {','.join(missing) or '-'}, extra {','.join(extra) or '-'})")
+    if not {'N', 'CA', 'C'} <= set(defined):
+        raise RuntimeError("the glycans.json definition has no backbone N, CA and C")
+    caps = {}
+    for line in pdb_text.split('\n'):
+        if line.startswith('ATOM') and line[17:20].strip() in ('ACE', 'NME'):
+            caps[(line[17:20].strip(), line[12:16].strip())] = tuple(float(line[c:c + 8]) for c in (30, 38, 46))
+    cap_atoms = [('ACE', 'CH3', 'C', 3), ('ACE', 'C', 'C', 0), ('ACE', 'O', 'O', 0),
+                 ('NME', 'N', 'N', 1), ('NME', 'CH3', 'C', 3)]
+    if any((r, n) not in caps for r, n, _, _ in cap_atoms):
+        raise RuntimeError("no peptide neighbour on both sides to cap the residue with ACE and NME")
+
+    rw = Chem.RWMol()
+    idx, names, xyz = {}, [], []
+
+    def add(name, element, charge, h, pos):
+        a = Chem.Atom(str(element).capitalize())
+        a.SetFormalCharge(int(charge))
+        a.SetNoImplicit(True)
+        a.SetNumExplicitHs(int(h))
+        idx[name] = rw.AddAtom(a)
+        names.append(name)
+        xyz.append(pos)
+
+    # The residue's atoms first, in definition order, so that index i < n_res is
+    # definition atom i; the caps after them.
+    for a in d['atoms']:
+        add(a['name'], a['element'], a.get('charge', 0), a['h'], tuple(ncaa_heavy_coords[a['name']]))
+    for r, n, el, h in cap_atoms:
+        add(f'{r}:{n}', el, 0, h, caps[(r, n)])
+    n_res = len(defined)
+    order = {1: Chem.BondType.SINGLE, 2: Chem.BondType.DOUBLE, 3: Chem.BondType.TRIPLE,
+             'SING': Chem.BondType.SINGLE, 'DOUB': Chem.BondType.DOUBLE, 'TRIP': Chem.BondType.TRIPLE}
+    for a1, a2, o in d['bonds']:
+        rw.AddBond(idx[a1], idx[a2], order[o])
+    for a1, a2, o in (('ACE:CH3', 'ACE:C', 1), ('ACE:C', 'ACE:O', 2), ('ACE:C', 'N', 1),
+                      ('C', 'NME:N', 1), ('NME:N', 'NME:CH3', 1)):
+        rw.AddBond(idx[a1], idx[a2], order[o])
+    m = rw.GetMol()
+    conf = Chem.Conformer(m.GetNumAtoms())
+    for i, p in enumerate(xyz):
+        conf.SetAtomPosition(i, Point3D(*p))
+    m.AddConformer(conf, assignId=True)
+    Chem.SanitizeMol(m)
+    rad = [names[a.GetIdx()] for a in m.GetAtoms() if a.GetNumRadicalElectrons()]
+    if rad:
+        raise RuntimeError("radical atoms in the definition: " + ','.join(rad))
+
+    mol = PL.ob_protonate(m, ph)
+    if mol is None:
+        raise RuntimeError("RDKit could not read OpenBabel's protonated molecule")
+    if [a.GetAtomicNum() for a in mol.GetAtoms()][:m.GetNumAtoms()] != [a.GetAtomicNum() for a in m.GetAtoms()]:
+        raise RuntimeError("OpenBabel's protonated molecule does not keep the heavy atoms in order")
+    print(f"  fused chemistry: {rdMolDescriptors.CalcMolFormula(Chem.AddHs(m))} (CCD hydrogens), "
+          f"{rdMolDescriptors.CalcMolFormula(mol)} (OpenBabel, pH {ph:g})")
+    if PL.ACID_PH_WINDOW[0] <= ph <= PL.ACID_PH_WINDOW[1]:
+        mol, notes = PL.ionize_acids(mol, dict(enumerate(names)))
+        for n in notes:
+            print(f"  acid rule: {n}")
+    else:
+        print(f"  Warning: pH {ph} is outside {PL.ACID_PH_WINDOW}: the pH 7.4 acid rules are not applied")
+    formal_charge = Chem.GetFormalCharge(mol)
+
+    # Hydrogen names and the hdb entry, before any sqm time is spent (critic F5)
+    h_parent = {}
+    for a in mol.GetAtoms():
+        if a.GetAtomicNum() == 1:
+            nb = [x.GetIdx() for x in a.GetNeighbors()]
+            if len(nb) == 1 and nb[0] < n_res:
+                h_parent[a.GetIdx()] = names[nb[0]]
+    h_names, notes = fused_h_names(d, h_parent)
+    for n in notes:
+        print(f"  hydrogen names: {n}")
+    probs = fused_hdb_problems(ncaa_resname, mol, names, n_res, h_parent, h_names)
+    if probs:
+        raise RuntimeError("no hdb entry can rebuild its hydrogens: " + "; ".join(probs))
+
+    mol, _ = PL.clean_copy(mol)
+    if mol is None:
+        raise RuntimeError("the SDF round trip of the protonated molecule failed")
+    Chem.AssignStereochemistryFrom3D(mol)
+    print(f"  capped molecule: {mol.GetNumAtoms()} atoms, formal charge {formal_charge:+d}, "
+          f"SMILES {Chem.MolToSmiles(Chem.RemoveHs(mol))}")
+    offmol = Molecule.from_rdkit(mol, allow_undefined_stereo=True, hydrogens_are_explicit=True)
+    t0 = time.monotonic()
+    interchange, note = fused_interchange(ForceField(ff_name), offmol)
+    print(f"  {note}; OpenFF parameters and charges took {time.monotonic() - t0:.0f} s")
+    CHARGE_NOTES[ncaa_resname] = note
+    with tempfile.TemporaryDirectory() as tmpdir:
+        prefix = os.path.join(tmpdir, "ncaa")
+        interchange.to_gromacs(prefix)
+        with open(f"{prefix}.top") as f:
+            top_content = f.read()
+        with open(f"{prefix}.gro") as f:
+            gro_content = f.read()
+    # Names go by index, so the topology must keep the molecule's atom order.
+    top = parse_top(top_content)
+    at_num = {at['name']: at['at_num'] for at in top['atomtypes']}
+    if [at_num.get(a['type']) for a in top['atoms']] != [a.GetAtomicNum() for a in mol.GetAtoms()]:
+        raise RuntimeError("the OpenFF topology does not keep the molecule's atom order")
+    names_by_idx = [None] * mol.GetNumAtoms()
+    for i in range(n_res):
+        names_by_idx[i] = names[i]
+    for h, name in h_names.items():
+        names_by_idx[h] = name
+    return top_content, gro_content, mol, formal_charge, names_by_idx
+
+
+def fused_rtp_comment(resname, formal_charge):
+    """The ncaa.rtp comment of a fused residue: what it is made of, the CCD entries
+    with source and modification date as glycans.json records them, and how its
+    charges were made."""
+    d = GLYCAN_DEFS[resname]
+    sugars = d.get('sugars') or []
+    lines = [f"; {resname}: {d.get('parent', '?')}"
+             + ''.join(f" + {s.get('ccd', '?')} (tag {s.get('tag', '?')})" for s in sugars)
+             + f", fused by utils/fuse_glycans.py ({GLYCANS_JSON}), link {'-'.join(d.get('link') or ['?'])}"]
+    for s in sugars:
+        lines.append(f";   CCD {s.get('ccd', '?')}: {s.get('source') or 'source not recorded'}, "
+                     f"modified {s.get('modified') or '?'}")
+    lines.append(f";   charges: {CHARGE_NOTES.get(resname, '?')}; residue charge {formal_charge:+d}, "
+                 f"the residual on CA")
+    return '\n'.join(lines) + '\n'
+
+
 # ---- OpenBabel / RDKit / OpenFF parametrization ----
 
 def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
     """Parametrize capped tripeptide with OpenFF. Returns parsed topology data.
 
     Strategy 1: OpenBabel bond perception (works for simple NCAAs)
-    Strategy 2: RCSB template for NCAA + manual ACE/NME capping
+    Strategy 2: the CCD entry as template (ccd_template()) + manual ACE/NME capping
+    A fused glycan residue goes to parametrize_fused() instead.
     """
+    if ncaa_resname in GLYCAN_DEFS:
+        return parametrize_fused(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph)
     from openbabel import openbabel as ob
     from rdkit import Chem
     from rdkit.Chem import AllChem
     from openff.toolkit import Molecule, ForceField, Topology
     from openff.interchange import Interchange
     from openff.units import unit
-    import urllib.request
+    import parametrize_ligand as PL
 
     mol_rdkit = None
     formal_charge = 0
@@ -204,18 +659,16 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
         sdf_block = conv.WriteString(mol_ob)
         mol_rdkit = Chem.MolFromMolBlock(sdf_block, removeHs=False, sanitize=True)
 
-    # Strategy 2: RCSB template for NCAA + manual ACE/NME capping
+    # Strategy 2: the CCD entry as template for the NCAA + manual ACE/NME capping
     if mol_rdkit is None:
-        print("  Strategy 2: RCSB template + manual capping...")
+        print("  Strategy 2: CCD template + manual capping...")
         try:
-            # Download NCAA ideal SDF
-            url = f"https://files.rcsb.org/ligands/download/{ncaa_resname}_ideal.sdf"
-            sdf_data = urllib.request.urlopen(url, timeout=15).read().decode()
-            template_h = Chem.MolFromMolBlock(sdf_data, removeHs=False, sanitize=True)
+            template_h, template_src = ccd_template(ncaa_resname)
+            print(f"  template from the CCD entry {ncaa_resname} ({PL.describe_source(template_src)})")
             template = Chem.RemoveHs(template_h) if template_h else None
 
             if template is None:
-                raise RuntimeError(f"RCSB template for {ncaa_resname} failed")
+                raise RuntimeError(f"CCD template for {ncaa_resname} failed")
 
             # Remove OXT from template (not present mid-chain)
             rwt = Chem.RWMol(template)
@@ -264,15 +717,18 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
             # Assign bond orders from template
             try:
                 mol_assigned = AllChem.AssignBondOrdersFromTemplate(template_clean, ncaa_pdb_mol)
-                print(f"  Bond orders assigned from RCSB template")
+                print(f"  Bond orders assigned from the CCD template")
             except Exception as e:
                 print(f"  Template matching failed ({e})")
                 # Fallback: use template directly with ideal coords
-                # Assign PDB atom names from CCD CIF (SDF doesn't preserve them)
+                # Assign PDB atom names from the CCD CIF (the template carries none)
                 mol_assigned = template_clean
                 try:
-                    cif_url = f"https://files.rcsb.org/ligands/download/{ncaa_resname}.cif"
-                    cif_data = urllib.request.urlopen(cif_url, timeout=10).read().decode()
+                    # The CCD entry from the local cache first (utils/ccd_cache.py),
+                    # files.rcsb.org second, as for the ligands.
+                    cif_data, cif_src = ccd_cache.fetch(ncaa_resname)
+                    if cif_data is None:
+                        raise RuntimeError(cif_src)
                     ccd_names = []
                     in_atom_block = False
                     for cif_line in cif_data.split('\n'):
@@ -386,14 +842,40 @@ def parametrize_capped(pdb_text, ncaa_heavy_coords, ncaa_resname, ff_name, ph):
 
             mol_capped = rwmol.GetMol()
             Chem.SanitizeMol(mol_capped)
-            mol_rdkit = Chem.AddHs(mol_capped, addCoords=True)
+            # The CCD entry is the neutral molecule (SEP, TPO and PTR as phosphoric
+            # acids, ORN, DAB and DPP with NH2), and RDKit's AddHs kept it neutral at
+            # any pH (ncaa review P1). The hydrogens now come from OpenBabel's pH model
+            # on the CCD hydrogen counts (parametrize_ligand.ob_protonate, an amine
+            # NH3+), and the pH 7.4 acid rules follow below, as for the ligands and
+            # the fused glycan residues.
+            mol_rdkit = PL.ob_protonate(mol_capped, ph)
+            if mol_rdkit is None:
+                raise RuntimeError("RDKit could not read OpenBabel's protonated molecule")
+            if ([a.GetAtomicNum() for a in mol_rdkit.GetAtoms()][:mol_capped.GetNumAtoms()]
+                    != [a.GetAtomicNum() for a in mol_capped.GetAtoms()]):
+                raise RuntimeError("OpenBabel's protonated molecule does not keep the heavy atoms in order")
             formal_charge = Chem.GetFormalCharge(mol_rdkit)
-            print(f"  Capped molecule: {mol_rdkit.GetNumAtoms()} atoms, charge={formal_charge}")
+            print(f"  Capped molecule: {mol_rdkit.GetNumAtoms()} atoms, charge={formal_charge} "
+                  f"(OpenBabel, pH {ph:g})")
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            raise RuntimeError(f"RCSB template approach failed: {e}")
+            raise RuntimeError(f"CCD template approach failed: {e}")
+
+    # The pH 7.4 acid rules of the ligand path, on either strategy's molecule: a
+    # phosphate monoester (SEP, TPO, PTR) -2, a carboxylate -1. OpenBabel's pH
+    # model is not the ligand path's last word on acids either. Only hydrogens change,
+    # so the heavy-atom order holds; the integer residue charge then goes to CA as for
+    # every NCAA.
+    if PL.ACID_PH_WINDOW[0] <= ph <= PL.ACID_PH_WINDOW[1]:
+        mol_rdkit, notes = PL.ionize_acids(mol_rdkit)
+        for n in notes:
+            print(f"  acid rule: {n}")
+    else:
+        print(f"  Warning: pH {ph} is outside {PL.ACID_PH_WINDOW}: the pH 7.4 acid rules are not applied")
+    formal_charge = Chem.GetFormalCharge(mol_rdkit)
+    print(f"  residue charge at pH {ph:g}: {formal_charge:+d} (capped molecule)")
 
     # Strip PDB metadata (OpenFF requires clean mol without residue info)
     sdf_clean = Chem.MolToMolBlock(mol_rdkit)
@@ -613,18 +1095,29 @@ def assign_h_names(h_atoms):
     return h_names
 
 
-def assign_types_and_charges(ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge):
+def assign_types_and_charges(ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge, mol=None):
     """Assign atom types and charges for NCAA atoms.
 
     Backbone: AMBER19SB types and fixed charges (N,H,C,O)
     CA, HA: AMBER19SB types, OpenFF charges
-    CB: AMBER19SB type CT, OpenFF charge
+    CB: AMBER19SB type CT, OpenFF charge; its hydrogens HC, H1, H2 or H3 by the number
+    of CB's electron-withdrawing neighbours (CB_H_TYPES), HP next to an amine N
+    (CB_AMINE_H_TYPE; needs `mol`, the RDKit molecule in the topology's atom order)
     Sidechain: OpenFF types (prefixed), OpenFF charges
     """
     prefix = resname + '_'
     all_ncaa = set(ncaa_atom_map.keys()) | set(h_atoms.keys())
     type_map = {}
     charge_map = {}
+    cb_h_type = CB_H_TYPE
+    cb_idx = next((i for i, n in ncaa_atom_map.items() if n == 'CB'), None)
+    if cb_idx is not None:
+        at_num = {at['name']: at['at_num'] for at in top['atomtypes']}
+        cb_nbrs = build_adjacency(top).get(cb_idx, ())
+        n_ew = sum(1 for j in cb_nbrs if at_num.get(top['atoms'][j]['type']) in ELECTRON_WITHDRAWING)
+        cb_h_type = CB_H_TYPES[min(n_ew, len(CB_H_TYPES) - 1)]
+        if mol is not None and any(is_amine_n(mol.GetAtomWithIdx(j)) for j in cb_nbrs):
+            cb_h_type = CB_AMINE_H_TYPE
 
     for idx in all_ncaa:
         if idx in ncaa_atom_map:
@@ -651,7 +1144,7 @@ def assign_types_and_charges(ncaa_atom_map, h_atoms, h_names, top, resname, form
                 type_map[idx] = 'H1'
                 charge_map[idx] = top['atoms'][idx]['charge']
             elif parent == 'CB':
-                type_map[idx] = CB_H_TYPE
+                type_map[idx] = cb_h_type
                 charge_map[idx] = top['atoms'][idx]['charge']
             else:
                 type_map[idx] = prefix + top['atoms'][idx]['type']
@@ -664,6 +1157,15 @@ def assign_types_and_charges(ncaa_atom_map, h_atoms, h_names, top, resname, form
     if ca_idx is not None:
         charge_map[ca_idx] += correction
         print(f"  Charge correction on CA: {correction:+.6f} (total: {formal_charge})")
+        # The rtp holds 6 decimals. Rounded one by one, the written charges of the
+        # 1MAH NG1 summed to -1.4e-5 e and those of the 5XJE residues to +1.3e-5 and
+        # +1.7e-5 e (critic F7), so pdb2gmx and grompp saw a residue that is not
+        # integer. The charges are rounded to whole micro-e here, and the residual of
+        # the rounded sum goes to CA as well: the written charges sum exactly to the
+        # formal charge.
+        micro = {i: int(round(q * 1e6)) for i, q in charge_map.items()}
+        micro[ca_idx] += int(round(formal_charge * 1e6)) - sum(micro.values())
+        charge_map = {i: m / 1e6 for i, m in micro.items()}
 
     return type_map, charge_map, prefix
 
@@ -839,7 +1341,10 @@ def generate_rtp(resname, ncaa_atom_map, h_atoms, h_names, ncaa_atom_names,
     # Standard peptide bond impropers
     lines.append(' -C    CA    N     H')
     lines.append(' CA    +N    C     O')
-    # Sidechain impropers from OpenFF
+    # Sidechain impropers from OpenFF, sorted: OpenFF lists them in an order that
+    # changes from run to run, so two runs on one input wrote ncaa.rtp files that
+    # differed in that order only (pdb2gmx sorts them; ncaa review F4).
+    side = []
     for entry in top['impropers']:
         ai, aj, ak, al = entry[:4]
         if all(i in idx_set for i in (ai, aj, ak, al)):
@@ -847,7 +1352,8 @@ def generate_rtp(resname, ncaa_atom_map, h_atoms, h_names, ncaa_atom_names,
             if all(names):
                 # Skip pure backbone impropers (already listed)
                 if not all(n in BACKBONE_NAMES for n in names):
-                    lines.append(f' {names[0]:<5s} {names[1]:<5s} {names[2]:<5s} {names[3]}')
+                    side.append(f' {names[0]:<5s} {names[1]:<5s} {names[2]:<5s} {names[3]}')
+    lines += sorted(side)
 
     # CMAP
     lines.append(' [ cmap ]')
@@ -962,6 +1468,38 @@ def generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj,
 
 # ---- Write force field files ----
 
+def merge_hdb(text, entries):
+    """(text, replaced names): aminoacids.hdb `text` with every generate_hdb() entry in
+    `entries` appended after any entry of the same residue name has been dropped (its
+    header and its count lines; blank and comment lines do not count, as for pdb2gmx).
+
+    Names compare as whole words, the first token of an entry header. The substring
+    test this replaces appended no entry for a residue named NGL, which is part of NGLN,
+    NGLU and NGLY in amber19sb's aminoacids.hdb, and pdb2gmx then built it without
+    hydrogens (design 5(e)). It also kept the old entry of a name a local force field
+    already held, e.g. after a setup restart that did not remove amber19sb.ff, though
+    the name may now stand for another residue (critic F12a)."""
+    names = {e.split(None, 1)[0] for e in entries}
+    lines = text.split('\n')
+    out, replaced, i = [], [], 0
+    while i < len(lines):
+        tok = lines[i].split()
+        if len(tok) == 2 and tok[0] in names and tok[1].isdigit():
+            left, i = int(tok[1]), i + 1
+            while left and i < len(lines):
+                if lines[i].split(';')[0].strip():
+                    left -= 1
+                i += 1
+            replaced.append(tok[0])
+            continue
+        out.append(lines[i])
+        i += 1
+    merged = '\n'.join(out).rstrip('\n') + '\n'
+    for e in entries:
+        merged += '\n' + e + '\n'
+    return merged, replaced
+
+
 def write_ncaa_atomtypes(path, atomtypes):
     """Write ncaa_atomtypes.itp with new sidechain atom types."""
     with open(path, 'w') as f:
@@ -1025,6 +1563,13 @@ def write_ncaa_bonded(path, bonds, angles, dihedrals, impropers):
 if not os.path.isfile(args.file):
     print(f"Error: {args.file} not found.", file=sys.stderr)
     sys.exit(1)
+
+# The failure lists describe this run only. They used to be written and never removed,
+# so one left by a setup that died before conf.gro sent a residue that parametrises
+# now down the fallback of the next attempt (critic F3; the runners remove them too).
+for _stale in (NCAA_FAILED, GLYCAN_FAILED):
+    if os.path.exists(_stale):
+        os.remove(_stale)
 
 pdb_atoms = parse_pdb(args.file)
 ncaa_types = find_ncaas(pdb_atoms)
@@ -1144,8 +1689,58 @@ all_rtp = []
 all_hdb = []
 
 failed_ncaas = []  # NCAAs that couldn't be parametrized → fall back to PDBFixer replacement
+failed_glycans = {}  # fused glycan residue -> why it could not be parametrised (glycan_failed.gs)
+parents = {}       # NCAA -> parent residue, whose AMBER19SB CMAP it gets
+
+# The fused glycan residues and their chemistry. An unreadable glycans.json ends the
+# run with exit 1, which the runners count as a failure of every fused residue: read
+# as an ordinary NCAA, a fused name would be looked up in the CCD.
+try:
+    GLYCAN_DEFS = load_glycan_defs(GLYCANS_JSON)
+except (OSError, ValueError, KeyError, TypeError) as e:
+    print(f"Error: cannot read {GLYCANS_JSON} ({type(e).__name__}: {e})", file=sys.stderr)
+    sys.exit(1)
+if GLYCAN_DEFS:
+    print(f"Fused glycan residues defined in {GLYCANS_JSON}: {', '.join(GLYCAN_DEFS)}")
+
+
+def fail(resname, reason):
+    """Send a residue that could not be parametrised down its fallback: a fused glycan
+    residue to glycan_failed.gs (its sugars go back to the ligands), never to
+    ncaa_failed.gs, whose parent replacement would look its name up in the CCD
+    (fix_pdb.py); any other NCAA to ncaa_failed.gs (its parent residue)."""
+    if resname in GLYCAN_DEFS:
+        print(f"  {resname} is a fused glycan residue: {GLYCAN_FAILED}, its sugars go back to the ligands")
+        failed_glycans[resname] = ' '.join(str(reason).split())[:300] or 'parametrisation failed'
+    else:
+        print(f"  Will fall back to PDBFixer parent-residue replacement for {resname}")
+        failed_ncaas.append(resname)
+
 
 for resname, instances in ncaa_types.items():
+    # THE PARENT FIRST. It used to be read from files.rcsb.org only, after the
+    # parametrisation, with ALA as the silent fallback: on a node without network the
+    # TRQ of 2MTA and the HIC of 2BTF got ALA's CMAP although the CCD cache holds their
+    # entries (review L-4). That fixed the parent alone: Strategy 2 still downloaded its
+    # template, so offline both residues became their parents anyway, until its template
+    # came from the cache as well (ccd_template(), ncaa review P2). Now the cache
+    # answers first for both, and an NCAA whose CCD entry
+    # cannot be read fails like one that cannot be parametrized (ncaa_failed.gs:
+    # fix_pdb.py puts in the parent residue when PDBFixer knows the NCAA or
+    # files.rcsb.org names its parent, and otherwise pdb2gmx stops the structure). An
+    # entry that names no parent (D- and beta-amino acids) keeps ALA's CMAP, with a
+    # note: failing those too sent every D-amino acid to PDBFixer, which renames DAL
+    # to ALA, and left BAL and ACB for pdb2gmx to stop on (review V2). A fused glycan
+    # residue's parent is its definition's.
+    if args.gmx_ff.startswith('amber19sb'):
+        parent, why = ccd_parent(resname, GLYCAN_DEFS)
+        if parent is None:
+            print(f"\n  WARNING: {resname}: no parent residue for its CMAP ({why})")
+            fail(resname, f"no parent residue for its CMAP ({why})")
+            continue
+        if why:
+            print(f"\n  NOTE: {resname}: {why}")
+        parents[resname] = parent
     # Choose the instance with the most heavy atoms as canonical: crystal structures
     # sometimes have truncated copies of the same NCAA (missing sidechain atoms),
     # and parametrizing the shortest version produces an rtp that pdb2gmx rejects
@@ -1190,6 +1785,13 @@ for resname, instances in ncaa_types.items():
         adj = build_adjacency(top)
         h_atoms = find_ncaa_h_atoms(adj, ncaa_atom_map, top)
         h_names = assign_h_names(h_atoms)
+        if resname in GLYCAN_DEFS:
+            # Named on the protonated molecule (fused_h_names()); assign_h_names()
+            # gives C2A and N2A of a GlcNAc the same H2A.
+            h_names = {h: atom_names_by_idx[h] for h in h_atoms}
+            named = {i for i, n in enumerate(atom_names_by_idx) if n is not None and i not in ncaa_atom_map}
+            if None in h_names.values() or set(h_atoms) != named:
+                raise RuntimeError("the hydrogens of the topology are not the ones named on the molecule")
         all_ncaa = set(ncaa_atom_map.keys()) | set(h_atoms.keys())
 
         print(f"  NCAA atoms: {len(ncaa_atom_map)} heavy + {len(h_atoms)} H = {len(all_ncaa)} total")
@@ -1231,13 +1833,12 @@ for resname, instances in ncaa_types.items():
             if cyclic_bond:
                 sc_name = ncaa_atom_map.get(list(cyclic_bond)[0], '?')
                 print(f"  Cyclic NCAA detected: backbone N bonded to sidechain {sc_name}")
-                print(f"  Will fall back to PDBFixer parent-residue replacement for {resname}")
-                failed_ncaas.append(resname)
+                fail(resname, f"cyclic: backbone N bonded to side-chain atom {sc_name}")
                 continue
 
         # Assign types and charges
         type_map, charge_map, prefix = assign_types_and_charges(
-            ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge)
+            ncaa_atom_map, h_atoms, h_names, top, resname, formal_charge, mol_rdkit)
 
         # Collect new parameters
         atomtypes, bonds, angles, dihedrals, impropers = collect_new_params(
@@ -1245,6 +1846,8 @@ for resname, instances in ncaa_types.items():
         all_atomtypes.update(atomtypes)
         all_bonds.update(bonds)
         all_angles.update(angles)
+        if CB_AMINE_H_TYPE in type_map.values():
+            all_angles.update(HP_CB_ANGLE)
         all_dihedrals.extend(dihedrals)
         all_impropers.extend(impropers)
 
@@ -1256,13 +1859,14 @@ for resname, instances in ncaa_types.items():
         rtp = generate_rtp(resname, ncaa_atom_map, h_atoms, h_names, ncaa_atom_names,
                            type_map, charge_map, top, all_ncaa, adj)
         hdb = generate_hdb(resname, ncaa_atom_names, h_atoms, h_names, ncaa_atom_map, adj, top)
+        if resname in GLYCAN_DEFS:
+            rtp = fused_rtp_comment(resname, formal_charge) + rtp
         all_rtp.append(rtp)
         all_hdb.append(hdb)
 
     except Exception as e:
         print(f"\n  WARNING: Failed to parametrize {resname}: {e}")
-        print(f"  Will fall back to PDBFixer parent-residue replacement for {resname}")
-        failed_ncaas.append(resname)
+        fail(resname, e)
         continue
 
 if failed_ncaas:
@@ -1270,9 +1874,14 @@ if failed_ncaas:
     # Write failed NCAAs to file so job.run can re-run fix_pdb.py without keeping them
     # (must write even if some other NCAAs succeeded, otherwise the failed ones remain
     #  in the PDB and pdb2gmx fails)
-    with open('ncaa_failed.gs', 'w') as f:
+    with open(NCAA_FAILED, 'w') as f:
         for rn in failed_ncaas:
             f.write(f"{rn}\n")
+if failed_glycans:
+    print(f"\nFused glycan residues that go back to the ligands: {', '.join(failed_glycans)}")
+    with open(GLYCAN_FAILED, 'w') as f:
+        for rn, why in failed_glycans.items():
+            f.write(f"{rn} {why}\n")
 
 if not all_rtp:
     print("No NCAA residues were successfully parametrized.")
@@ -1362,17 +1971,16 @@ with open(rtp_path, 'w') as f:
         f.write(rtp + '\n\n')
 print(f"Wrote {rtp_path}")
 
-# Append HDB entries to aminoacids.hdb
+# Append HDB entries to aminoacids.hdb, each in place of an entry of the same name
 hdb_path = os.path.join(local_ff, 'aminoacids.hdb')
 with open(hdb_path) as f:
     hdb_content = f.read()
-
+hdb_content, hdb_replaced = merge_hdb(hdb_content, all_hdb)
+with open(hdb_path, 'w') as f:
+    f.write(hdb_content)
 for hdb in all_hdb:
-    resname = hdb.split('\t')[0]
-    if resname not in hdb_content:
-        with open(hdb_path, 'a') as f:
-            f.write('\n' + hdb + '\n')
-        print(f"Appended {resname} HDB entry to {hdb_path}")
+    resname = hdb.split(None, 1)[0]
+    print(f"{'Replaced' if resname in hdb_replaced else 'Appended'} {resname} HDB entry in {hdb_path}")
 
 # Write output info
 with open('ncaa_residues.gs', 'w') as f:
@@ -1400,7 +2008,6 @@ if os.path.isfile(restypes_local):
 # AMBER19SB uses residue-specific CMAP types like N-TRP, XC-TRP, C-TRP
 cmap_path = os.path.join(local_ff, 'cmap.itp')
 if os.path.isfile(cmap_path):
-    import urllib.request as _urlreq
     with open(cmap_path) as f:
         cmap_content = f.read()
 
@@ -1408,20 +2015,11 @@ if os.path.isfile(cmap_path):
     for resname in ncaa_types:
         if f'N-{resname}' in cmap_content:
             continue  # already has CMAP
+        if resname not in parents:
+            continue  # failed above (ncaa_failed.gs)
 
-        # Determine parent residue from RCSB CCD
-        parent = 'ALA'
-        try:
-            url = f"https://files.rcsb.org/ligands/download/{resname}.cif"
-            cif_data = _urlreq.urlopen(url, timeout=15).read().decode()
-            for line in cif_data.split('\n'):
-                if '_chem_comp.mon_nstd_parent_comp_id' in line:
-                    parts = line.strip().split()
-                    if len(parts) >= 2 and parts[1] != '?':
-                        parent = parts[1]
-                        break
-        except Exception:
-            pass
+        # The parent residue from its CCD entry (read before the parametrisation)
+        parent = parents[resname]
         print(f"NCAA {resname}: parent residue = {parent}")
 
         # Copy parent's CMAP entry with NCAA residue name

@@ -91,12 +91,17 @@ check("parent A is NOT cut (n_sigma 1.51, it is not near the cliff)",
 check("so the ramp has exactly nine stages", P.n_stages() == 9, str(P.n_stages()))
 
 print("\n[4] subdividing did not change the cycle")
-check("still 100 ns per cycle", abs(P.cycle_ps() - 100000.0) < 1.0,
+# 100 ns when the ramp was subdivided, and 99 since v1.5 dropped the 1 ns holdrev0:
+# the reverse bound legs branch from the end of holdfwd0 instead. The 1 ns left the
+# cycle, it was not handed to another leg, so the subdivision's budget is intact.
+check("99 ns per cycle, 100 less the 1 ns holdrev0", abs(P.cycle_ps() - 99000.0) < 1.0,
       "%.1f ps" % P.cycle_ps())
 check("the bound leg is untouched", [b[:3] for b in P.BOUND] ==
       [("1", 0.0, 0.25), ("2", 0.25, 1.0)], str(P.BOUND))
 holds = [l["ps"] for l in P.legs() if l["kind"] == "hold"]
-check("the handoffs are still 1 ns", holds.count(P.HANDOFF_HOLD_PS) == 4, str(holds))
+check("the 1 ns handoffs are holdfwd0 and the two bound holds, three in all",
+      [l["name"] for l in P.legs() if l["kind"] == "hold" and l["ps"] == 1000.0]
+      == ["holdbfwd1", "holdfwd0", "holdbrev1"], str(holds))
 check("and the eight new-and-old mid-ramp holds pay for the boundaries",
       holds.count(P.RAMP_HOLD_PS) == 16, str(holds))
 

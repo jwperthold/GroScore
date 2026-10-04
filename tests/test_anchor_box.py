@@ -9,6 +9,11 @@ selected a triad at 1.306 nm (passes, 2.306 < 2.467), averaged to 1.490 (fails,
 2.490), and died after its five 20 ns probes had already run -- the whole setup
 lost to a dead band between two measurements of the same thing.
 
+Since v1.5 the guard can also be handed the SNAPSHOT r, when the pose gate replaces
+the ensemble mean, so the search budgets the larger of the two, both measured on the
+groups of the combination itself (review R1; the behaviour is pinned end to end by
+tests/test_boresch_r_budget.py).
+
 Also pinned here: two bugs made while fixing that, because both are the kind that
 only appear on a path nobody exercises.
 
@@ -42,9 +47,13 @@ seg = src[src.index("def search(eps_max)"):]
 seg = seg[:seg.index("\n  # Escalate")] if "\n  # Escalate" in seg else seg
 check("search calls it", "ensemble_cross_r(cand)" in seg)
 check("and uses it for the cross pair, not the snapshot norm",
-      "cross_r(p, l, d1, d2)" in seg)
+      "cross_r(i, p, j, l)" in seg)
+check("on each combination's own groups, keyed by triad and seed",
+      'cand[("P", i, p)] = d1[p]' in seg and 'cand[("L", j, l)] = d2[l]' in seg)
 check("falling back to the snapshot only when there is no trajectory",
-      "if ens is None" in seg and 'd1[p]["com"] - d2[l]["com"]' in seg)
+      "if ens is None" in seg and "return snapshot_cross_r(D1[i][1][p], D2[j][1][l])" in seg)
+check("and the snapshot r of the pair enters the budget too",
+      "r_snap = snapshot_cross_r(d1[P3], d2[L1])" in seg)
 
 print("\n[2] definition order -- the helper must exist when search runs")
 i_def = src.index("def ensemble_cross_r(")
@@ -55,7 +64,7 @@ i_gw = src.index("def group_weights(")
 check("group_weights too", i_gw < i_def)
 
 print("\n[3] the search budget and the final guard are the same test")
-sel = re.search(r"r_cross \+ args\.pull_dist > (\S+) \* PULL_LIMIT", src)
+sel = re.search(r"max\(r_cross, r_snap\) \+ args\.pull_dist > (\S+) \* PULL_LIMIT", src)
 grd = re.search(r"r0_release > (\S+) \* PULL_LIMIT", src)
 check("the search scales by a named fraction", sel is not None)
 check("the guard scales by one too", grd is not None)

@@ -90,7 +90,7 @@ ap.add_argument("--temp", type=float, default=310.0,
                 help="Temperature in K (default: 310, must match the run).")
 ap.add_argument("--equil", type=float, default=_P.NPT_PS / 1000.0 + 0.1,
                 help="Per-cycle equilibration outside the switching legs, ns "
-                     "(default: the NVT ladder plus npt_fe, taken from "
+                     "(default: the NVT ladder plus npt_c, taken from "
                      "fe_protocol.py, so it follows the protocol rather than "
                      "being a constant that silently goes stale).")
 ap.add_argument("--max-friction-cycles", type=int, default=12, metavar="N",
@@ -493,7 +493,7 @@ if n >= 4:
     else:
         print("   NOT near zero: the cycles differ partly by where they started,")
         print("   so some of the spread is inherited and a longer bound-state")
-        print("   equilibration (npt_fe) could narrow it.")
+        print("   equilibration (npt_c) could narrow it.")
 
 # ---- 4. what each lever costs ------------------------------------------------
 

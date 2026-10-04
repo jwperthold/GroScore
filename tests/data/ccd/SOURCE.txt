@@ -1,0 +1,14 @@
+wwPDB Chemical Component Dictionary (CCD) entries for the tests, one file per
+component (<ID>.cif), exactly as served at https://files.rcsb.org/ligands/download/<ID>.cif
+on 2026-10-04. The CCD is released under CC0 1.0 (https://www.wwpdb.org/about/usage-policies).
+
+Tests point GROSCORE_CCD_CACHE here and refuse the network, so they need no
+files.rcsb.org; forcefield/ccd_cache holds only what the benchmark inputs use.
+
+  FUC BMA MAN GAL NGA A2G SIA   sugars of the vendored glycans (tests/data/glycans)
+  NG1                           GalNAc 1-phosphate, a real entry under the name
+                                fuse_glycans.py gives the first fused Asn glycan: a
+                                decoy for any step that would look a fused name up
+  SEP TPO PTR ORN DPP           NCAAs whose pH 7.4 states test_ncaa_protonation.py
+                                pins (phosphoserine, -threonine, -tyrosine;
+                                ornithine; 2,3-diaminopropionic acid)

@@ -15,7 +15,7 @@ fi
 
 # Execution mode (groscore_fe.py submits setup and cycles as separate SLURM jobs so
 # the embarrassingly-parallel cycles can run as an array):
-#   --setup      run the shared setup only (stage 0 + initial equilibration +
+#   --setup      run the shared setup only (stage 0 + the probe replicas +
 #                make_boresch, which defines the elastic network / restraints),
 #                then write setup.done and exit.
 #   --cycle N    wait for setup.done, then run ONLY cycle N. Safe to run many of
@@ -41,22 +41,204 @@ if [[ "$MODE" == "cycle" && ! "$CYCLE_ARG" =~ ^[0-9]+$ ]]; then
   echo "--cycle requires a positive integer (got '$CYCLE_ARG')"; exit 1
 fi
 
-# Safety check: Exit if any files were modified within the last 70 minutes
-# This prevents running simulations while setup is still in progress
-# 60 minutes matches the timeout duration for individual simulation steps.
-# The probe equilibration is the one exception at 600m, so this window no
-# longer covers a setup that is still in its equilibration.
-# Only meaningful in legacy single-job mode: with the setup/cycle split, sibling
-# array tasks are writing files by design, so this check would abort all of them.
-if [[ "$MODE" == "all" ]]; then
-  NUMBER_FILES=$(ls -1 2>/dev/null | wc -l)
-  RECENT_FILES=$(find . -maxdepth 1 -type f -mmin -70 2>/dev/null | wc -l)
-  if [[ $NUMBER_FILES -lt 4 ]]; then
-    echo "Safety check: Starting simulation from scratch."
-  elif [[ $RECENT_FILES -gt 2 ]]; then
-    echo "Safety check: Files in this directory were modified within the last 70 minutes."
-    echo "Exiting to avoid conflicts with ongoing setup. Wait 70 minutes and resubmit."
-    exit 0
+# proc_start PID: the start time of process PID (clock ticks after boot, field 22 of
+# /proc/PID/stat), or nothing when it does not exist. A pid is reused; a pid and its
+# start time are not.
+proc_start() {
+  local s
+  s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  s=${s##*) }
+  set -- $s
+  echo "${20}"
+}
+
+# lock_put DIR OWNER: create the lock directory DIR holding the owner line OWNER, in
+# one step. It is built under a private name and renamed into place: rename(2) onto
+# an existing lock fails, a lock never being empty, so one process wins, as with
+# mkdir, and no process ever finds a lock without its owner line.
+lock_put() {
+  local tmp="$1.new.$BASHPID"
+  rm -rf "$tmp"
+  if mkdir "$tmp" 2>/dev/null && echo "$2" > "$tmp/owner" && mv -T "$tmp" "$1" 2>/dev/null; then
+    return 0
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
+# leg_alive DIR: the leg recorded in the lock DIR (DIR/leg, 'pid start', run_bg) is
+# still running on this host.
+leg_alive() {
+  local lpid lstart
+  [[ -f "$1/leg" ]] && read -r lpid lstart 2>/dev/null < "$1/leg" || return 1
+  [[ -n "$lpid" && -n "$lstart" && "$(proc_start "$lpid")" == "$lstart" ]]
+}
+
+# take_lock DIR: claim the directory DIR as a lock held by this process. Returns 0
+# with DIR/owner holding host:pid:slurm_job, or 1 when a live owner holds it, whose
+# owner line is then in LOCK_OWNER. lock_put elects one winner atomically, on POSIX
+# and on NFS. A lock left by a killed job is reclaimed, but only where its death can
+# be shown. On the same host the pid means something, so the kernel is asked. On
+# another host the pid is meaningless, but a SLURM job id is not: a lock is only
+# released by the EXIT trap, and SIGKILL (`timeout -s 9`, SLURM's walltime kill) runs
+# no trap, so without a cross-host test a job hard-killed on another node would hold
+# its lock forever, every later run would skip it, and --restart would quietly do
+# nothing for it. An owner on another host with no job id cannot be shown dead, so it
+# is skipped rather than risked, and the message says to remove the lock by hand.
+#
+# squeue must ANSWER: the job counts as gone only when squeue lists nothing for it,
+# lists it in a finished state, or says its id is unknown ('Invalid job id
+# specified', once slurmctld has forgotten it). Any other failure (a controller
+# timeout, no route to it) keeps the lock. Through the first v1.5 round every
+# non-zero exit counted as proof of death, so under controller load a second job took
+# the lock of a live one, even of a live pid on this host (review S1).
+#
+# A stale lock is reclaimed by one process at a time, under the mutex LOCK.reclaim
+# (mkdir). Under it the owner is read again, and only a lock that still names the
+# dead owner is renamed aside, checked to be that owner's, removed and re-created.
+# Reclaimed by rm and mkdir, two processes reading the same dead owner both got the
+# lock (7 of 300 trials; review S2). Renamed aside without the mutex, a reclaimer that
+# judged the owner dead before another one retook the lock moved that lock aside, a
+# third start took the empty path, and the put-back failed in silence: two holders,
+# the first one's lock stranded at LOCK.stale.<pid> (review V3). A lock that cannot
+# be put back is an error now, and nothing is left moved aside. A reclaim takes
+# milliseconds, so a mutex older than 60 s by the file system's own clock was left by
+# a reclaimer that died, and is removed.
+# A dead owner whose leg still runs on this host keeps its lock (see run_bg).
+# (The same functions as job.run's.)
+take_lock() {
+  local lock=$1 owner host pid job out rc dead="" stale me cur probe now made
+  me="$(hostname):$$:${SLURM_JOB_ID:--}"
+  LOCK_OWNER=""
+  lock_put "$lock" "$me" && return 0
+  owner=$(cat "$lock/owner" 2>/dev/null)
+  IFS=: read -r host pid job <<< "$owner"
+  if [[ "$host" == "$(hostname)" && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    dead="dead pid $pid"
+  elif [[ -n "$job" && "$job" != "-" ]] && command -v squeue >/dev/null 2>&1; then
+    out=$(squeue -h -j "$job" -o %T 2>&1); rc=$?
+    if [[ $rc -eq 0 && -z "${out//[[:space:]]/}" ]] || [[ "$out" == *"Invalid job id"* ]] \
+       || [[ $rc -eq 0 && "$out" =~ ^[[:space:]]*(BOOT_FAIL|CANCELLED|COMPLETED|DEADLINE|FAILED|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|TIMEOUT)[[:space:]]*$ ]]; then
+      dead="SLURM job $job, no longer queued"
+    elif [[ $rc -ne 0 ]]; then
+      echo "$lock: squeue could not say whether SLURM job $job still runs (${out//$'\n'/ }); the lock is kept."
+    fi
+  fi
+  if [[ -n "$dead" && "$host" == "$(hostname)" ]] && leg_alive "$lock"; then
+    echo "$lock: its owner is gone ($dead), but the leg it started still runs; the lock is kept."
+    dead=""
+  fi
+  if [[ -n "$dead" ]] && ! mkdir "$lock.reclaim" 2>/dev/null; then
+    probe="$lock.reclaim.now.$BASHPID"
+    : > "$probe" 2>/dev/null
+    now=$(stat -c %Y "$probe" 2>/dev/null)
+    rm -f "$probe"
+    made=$(stat -c %Y "$lock.reclaim" 2>/dev/null)
+    if [[ -n "$now" && -n "$made" ]] && (( now - made > 60 )); then
+      rm -rf "$lock.reclaim"
+      mkdir "$lock.reclaim" 2>/dev/null || dead=""
+    else
+      dead=""
+    fi
+  fi
+  if [[ -n "$dead" ]]; then
+    cur=$(cat "$lock/owner" 2>/dev/null)
+    stale="$lock.stale.$BASHPID"
+    rm -rf "$stale"
+    if [[ "$cur" == "$owner" ]] && mv -T "$lock" "$stale" 2>/dev/null; then
+      cur=$(cat "$stale/owner" 2>/dev/null)
+      if [[ "$cur" == "$owner" ]]; then
+        echo "$lock: reclaiming stale lock from $dead"
+        rm -rf "$stale"
+        if lock_put "$lock" "$me"; then
+          rm -rf "$lock.reclaim"
+          return 0
+        fi
+      elif ! mv -T "$stale" "$lock" 2>/dev/null; then
+        echo "$lock: ERROR: the lock of $cur was moved aside while reclaiming it and could not be put back," \
+             "as another process took $lock meanwhile; two jobs may now run here."
+        rm -rf "$stale"
+      fi
+      cur=$(cat "$lock/owner" 2>/dev/null)
+    fi
+    rm -rf "$lock.reclaim"
+    owner=${cur:-$owner}
+  fi
+  LOCK_OWNER=${owner:-unknown}
+  return 1
+}
+
+# THE RUNNING LEG IS PART OF THE LOCK. Every mdrun runs as a background job of this
+# script (run_bg) with its pid and start time in each lock this job holds (leg), and
+# INT and TERM pass a TERM on to it and wait until it has stopped (stop_leg). mdrun
+# runs under GNU timeout, which gives it a process group of its own, so a job killed
+# hard left its mdrun running, and the next start reclaimed the lock from the dead
+# pid and ran the same leg beside it: two mdruns on one -deffnm. And a TERM
+# (scancel, the walltime, the local runner's shutdown) took effect only once the
+# running leg had ended (review S3). mdrun stops on TERM at its next
+# neighbour-search step and writes a checkpoint, from which the leg resumes.
+LEG_PID=""
+run_bg() {
+  local d rc
+  "$@" &
+  LEG_PID=$!
+  for d in "${JOB_LOCK:-}" "${CYCLE_LOCK:-}"; do
+    [[ -n "$d" && -d "$d" ]] && echo "$LEG_PID $(proc_start $LEG_PID)" > "$d/leg"
+  done
+  wait "$LEG_PID"
+  rc=$?
+  for d in "${JOB_LOCK:-}" "${CYCLE_LOCK:-}"; do
+    [[ -n "$d" ]] && rm -f "$d/leg"
+  done
+  LEG_PID=""
+  return $rc
+}
+stop_leg() {
+  [[ -n "$LEG_PID" ]] || return 0
+  kill -TERM "$LEG_PID" 2>/dev/null
+  wait "$LEG_PID" 2>/dev/null
+}
+
+# ONE SETUP-OR-LEGACY JOB PER DIRECTORY. The setup phase, and in legacy mode the
+# whole job, writes files a second copy of itself would write too: a re-submission,
+# a duplicate setup job, or a job.run left running by a killed local runner. That
+# used to be guessed from file times, exiting 0 when more than two files had changed
+# within 70 minutes, which counted the files the submitter itself writes. Under
+# --run-local --sequential a fresh directory holds input.pdb plus run.gs and job.run
+# from groscore_fe.py and job_local.out, which local_runner.py opens before it starts
+# this script: three recent files, so the job exited at once and the runner logged a
+# structure that had done nothing as 'done (exit 0)' (audit of 2026-10-04; that
+# start runs through the real local runner in tests/test_fe_runner_guards.py). The
+# lock asks the question directly. --cycle tasks do not take it: they wait for
+# setup.done, and each one holds its own cycle lock (claim_cycle below).
+# The path is absolute because the archive step leaves this directory before the
+# job exits; the archive itself leaves the lock out.
+#
+# INT and TERM release the lock AND EXIT. A trap on TERM that does not exit makes
+# bash survive the signal: it runs the handler once the running command ends, then
+# goes on with the next one and finally exits 0. Measured with a 3 s command and a
+# TERM after 1 s: without a trap bash exits 143 at once; with a non-exiting trap it
+# ran every remaining step and exited 0. SLURM sends TERM before KILL at the walltime
+# and on scancel, and the local runner sends it on shutdown, so a job that went on
+# would write statuses for work it never did and report success. The running leg is
+# stopped first, and the lock released only once it has (stop_leg, run_bg).
+JOB_LOCK=""
+release_job_lock() {
+  [[ -n "$JOB_LOCK" && -d "$JOB_LOCK" ]] && rm -rf "$JOB_LOCK"
+  JOB_LOCK=""
+}
+if [[ "$MODE" != "cycle" ]]; then
+  if take_lock "$PWD/job_run.lock"; then
+    JOB_LOCK="$PWD/job_run.lock"
+    trap 'release_job_lock' EXIT
+    trap 'stop_leg; release_job_lock; exit 130' INT
+    trap 'stop_leg; release_job_lock; exit 143' TERM
+  else
+    # Non-zero, so neither SLURM nor the local runner reports this job as done.
+    echo "Safety check: another job.run (owner $LOCK_OWNER) holds job_run.lock in this"
+    echo "  directory, so this one exits without touching anything. If that job is gone"
+    echo "  and squeue cannot say so, remove job_run.lock by hand and resubmit."
+    exit 1
   fi
 fi
 
@@ -79,26 +261,59 @@ PULL_DIST=1.0
 # when the structure archives. The writer asserts its own row against it, and both
 # now come from the same place, so they cannot drift apart at all.
 #
-# Sourced rather than written out: FE_RESULT_NF, FE_LEGS, FE_LEG_MDP,
-# FE_LEG_PULL, FE_LEG_DHDL, FE_LEG_MDPS, FE_WORKS and FE_WORK_FIELDS all come
-# from utils/fe_protocol.py, which is the single definition of the cycle. The
-# runner therefore cannot disagree with the mdps that were generated from it.
+# Sourced rather than written out: FE_PROTOCOL_ID, FE_RESULT_NF, FE_LEGS,
+# FE_LEG_MDP, FE_LEG_PULL, FE_LEG_DHDL, FE_LEG_FROM, FE_LEG_MDPS, FE_WORKS and
+# FE_WORK_FIELDS all come from utils/fe_protocol.py, which is the single definition
+# of the cycle. The runner therefore cannot disagree with the mdps that were
+# generated from it.
 FE_PROTO=$(python3 "$(dirname "$0")/utils/fe_protocol.py" --shell 2>/dev/null) \
   || FE_PROTO=$(python3 ../../utils/fe_protocol.py --shell 2>/dev/null)
 if [[ -z "$FE_PROTO" ]]; then
   echo "FATAL: could not read the FE protocol from utils/fe_protocol.py" >&2
   exit 1
 fi
+# The runner and the protocol are paired in both directions. The export's first
+# line exits unless this variable says the runner honours FE_LEG_FROM: a job.run
+# from before v1.5 does not set it, and evaluating this protocol it would run every
+# leg as a plain chain, boundrev2 straight after bindrevA (review CYC-2). Not
+# exported, so nothing this script starts inherits it.
+FE_RUNNER_HONOURS_START_FROM=1
 eval "$FE_PROTO"
+# The other direction: this runner refuses a protocol from before v1.5. That
+# protocol is consistent in itself, a plain chain through holdrev0, but it is not
+# the one this runner sets up and checks: it exports no FE_LEG_FROM and no
+# FE_PROTOCOL_ID, the settings generated from it have no npt_c_fe.mdp, and the v1.5
+# settings have no holdrev0_fe.mdp for it to run.
+if [[ ${#FE_LEG_FROM[@]} -ne ${#FE_LEGS[@]} ]]; then
+  echo "FATAL: utils/fe_protocol.py gives ${#FE_LEG_FROM[@]} leg starts (FE_LEG_FROM) for" >&2
+  echo "       ${#FE_LEGS[@]} legs; this job_fe.run needs the protocol of v1.5 or later." >&2
+  exit 1
+fi
+if [[ -z "${FE_PROTOCOL_ID:-}" ]]; then
+  echo "FATAL: utils/fe_protocol.py names no protocol (FE_PROTOCOL_ID); this job_fe.run" >&2
+  echo "       records it in protocol_id.gs and runs no cycle without it." >&2
+  exit 1
+fi
 
 # Every xvg the cycle's legs write, without the .xvg suffix. Used to gunzip them
 # back on a restart and to gzip them again afterwards; derived so that adding a
 # stage cannot leave its traces uncompressed or, worse, un-restorable.
+#
+# A leg without a dhdl channel still writes dH/dlambda: every leg mdp runs
+# free-energy = yes (make_fe_mdps.py), and with no -dhdl option mdrun -deffnm puts
+# it in <leg>_<cycle>.xvg. Those are the holds and nptrev (the integrator's 2KTF run
+# wrote holdfwd0_1.xvg, holdbfwd1_1.xvg and nptrev_1.xvg). No work comes from them,
+# but they are what a hold length is measured from (fe_protocol.py, HOLD LENGTHS),
+# so they are kept and compressed like the rest.
 fe_xvgs() {
   local i
   for i in "${!FE_LEGS[@]}"; do
     [[ "${FE_LEG_PULL[$i]}" == "1" ]] && echo "${FE_LEGS[$i]}_${cycle}_pullf"
-    [[ "${FE_LEG_DHDL[$i]}" == "1" ]] && echo "${FE_LEGS[$i]}_${cycle}_dhdl"
+    if [[ "${FE_LEG_DHDL[$i]}" == "1" ]]; then
+      echo "${FE_LEGS[$i]}_${cycle}_dhdl"
+    else
+      echo "${FE_LEGS[$i]}_${cycle}"
+    fi
   done
 }
 
@@ -138,7 +353,7 @@ run_leg_mdrun() {
   while [[ $i -le $tries ]]; do
     local cpi=()
     [[ -f "${out}.cpt" ]] && cpi=(-cpi "${out}.cpt")
-    timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@" "${cpi[@]}"
+    run_bg timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@" "${cpi[@]}"
     [[ -f "${out}.gro" ]] && return 0
     if [[ $i -lt $tries ]]; then
       echo "  leg $out did not finish (attempt $i of $tries); retrying$([[ -f ${out}.cpt ]] && echo " from its checkpoint")."
@@ -148,15 +363,63 @@ run_leg_mdrun() {
   return 1
 }
 
+# Get structure ID from current directory name
+STRUCT_ID=$(basename $(pwd))
+
+# A SETUP NEVER CERTIFIES CYCLES IT DID NOT START. protocol_id.gs, written when a
+# setup completes, is what lets a cycle run (see the cycle phase), so a setup run
+# again in a directory that already holds cycles would vouch for cycles begun under
+# another setup. That is what happened to a pre-v1.5 directory whose setup.done was
+# removed: the setup rebuilt only the restraints, on the old probe, box and ligands,
+# and the unfinished v1.4 cycles went on from their old checkpoints into v1.5 legs,
+# writing rows nothing could tell from v1.5 ones (review CYC-1, reproduced with this
+# runner and a fake gmx that records where every checkpoint came from). So where
+# cycles exist, the setup runs again only if it completed under this very protocol
+# and its solvated system is still there. It then rebuilds the same restraints,
+# since make_boresch.py has no random input; groscore_fe.py's setup_is_complete()
+# creates that case when it clears setup.done over a missing restraint file.
+# Every cycle starts with the grompp of nvt_1_c<N>, and npt_c<N>.* and the .done
+# markers outlive any later cleanup.
+cycles_started() {
+  compgen -G 'nvt_1_c[0-9]*.tpr' >/dev/null || compgen -G 'npt_c[0-9]*.*' >/dev/null \
+    || compgen -G 'results_fe_c[0-9]*.done' >/dev/null
+}
+if [[ "$MODE" != "cycle" && ! -f setup.done ]] && cycles_started; then
+  SETUP_ID=$(head -n 1 protocol_id.gs 2>/dev/null | tr -d '[:space:]')
+  WHY=""
+  if [[ "$SETUP_ID" != "$FE_PROTOCOL_ID" ]]; then
+    WHY="no setup under protocol $FE_PROTOCOL_ID started them (protocol_id.gs: ${SETUP_ID:-absent})"
+  elif [[ ! -f emin_solv.gro ]]; then
+    WHY="emin_solv.gro is gone, so the setup would rebuild the system they run in"
+  fi
+  if [[ -n "$WHY" ]]; then
+    echo "Stage 0 refused: this directory already holds FE cycles (nvt_1_c*, npt_c* or"
+    echo "  results_fe_c*.done), and $WHY."
+    echo "  A setup here would rebuild what those cycles were started on. Set this"
+    echo "  structure up again in a fresh directory."
+    echo $STRUCT_ID "SETUP_FAIL" >> ../results_0.gs
+    exit 0
+  fi
+fi
+
 # Restart recovery: detect and clean up stale intermediate files from failed runs.
 # If conf.gro exists but emin_solv.gro doesn't, a previous setup attempt failed
 # partway through. Clean up ALL setup files and start from scratch to avoid
-# stale topology/coordinate mismatches.
-if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
+# stale topology/coordinate mismatches: when the topology is incomplete (no
+# emin_vac.gro) or the production box was begun (box.gro), whose solvation rewrites
+# topol.top in place. NOT when it stopped in the probe pass in between: the probe
+# solvates a copy of the topology, its steps are guarded on their own outputs, and
+# a re-run resumes it from the finished replicas and the checkpoint of the one that
+# died, as its PROBE_FAIL messages say. The recovery used to fire there too and
+# threw away up to five 20 ns replicas (review S4).
+if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]] \
+   && [[ ! -f emin_vac.gro || -f box.gro ]]; then
   echo "Restart recovery: setup incomplete (conf.gro exists but emin_solv.gro missing)"
   echo "Cleaning all setup files for fresh re-run..."
   rm -f renumbered.pdb chain_map.gs ion_residues.gs ligand_info.gs ligand_residues.gs
   rm -f ncaa_residues.gs ncaa_failed.gs residuetypes.dat
+  # The glycan fusion's files describe the attempt being discarded too.
+  rm -f fused.pdb glycans.json glycan_unfused.gs glycan_failed.gs
   rm -f fixed.pdb fixed_capped.pdb cutout.pdb cutout_capped.pdb
   rm -f conf.gro conf_cutout.gro conf_vacbox.gro topol.top topol_*.itp posre*.itp
   rm -f emin_vac.tpr emin_vac.gro emin_vac.edr emin_vac.log emin_vac.trr
@@ -176,8 +439,16 @@ if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]]; then
   # `npt_probe.*` does not match `npt_probe_cluster.gro`.
   rm -f npt_probe.* npt_probe_* npt_probe[0-9]* nvt_[1-5]_probe[0-9]* \
         boxpad.gs boxpad.tmp boxpad_used.gs
-  rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs
-  rm -rf amber19sb.ff
+  # ligand_failed.gs as well: it describes the attempt being discarded, and a stale
+  # line would report LIGAND_FAIL for a ligand the fresh attempt builds correctly.
+  # The extracted ligand_*.pdb too, which renumber_pdb.py never deletes: the NAG file
+  # of an attempt that did not fuse its glycan would be parametrised and judged again.
+  rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_*.pdb ligand_manifest.gs ligand_failed.gs
+  # And the completion record of whatever setup this was: everything it vouched for
+  # is being deleted, and the setup starting now writes both again when it completes.
+  rm -f setup.done protocol_id.gs
+  # The work directory of an AM1-BCC attempt killed with its parametrisation.
+  rm -rf amber19sb.ff am1bcc_*
 fi
 
 # WHICH CODE IS THIS. The scripts live in the checkout two levels up, and a run
@@ -197,16 +468,15 @@ if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
   GROSCORE_REV="$GROSCORE_REV-dirty"
 fi
 echo "GroScore-FE code: $GROSCORE_SRC @ $GROSCORE_REV"
-
-# Get structure ID from current directory name
-STRUCT_ID=$(basename $(pwd))
+echo "FE protocol: $FE_PROTOCOL_ID"
 
 # Announce a fresh setup attempt before doing anything that could fail. This is
 # what lets a cycle task tell "this directory failed" from "this directory failed
 # once and is being redone": without it the newest line for the structure is still
 # the previous attempt's failure for as long as the new setup takes to reach its
-# first status write, and the array released alongside it exits on that.
-if [[ "$MODE" != "cycle" ]]; then
+# first status write, and the array released alongside it exits on that. A
+# directory whose setup is complete gets no attempt (below), so no announcement.
+if [[ "$MODE" != "cycle" && ! -f setup.done ]]; then
   echo $STRUCT_ID "SETUP_RUNNING" >> ../results_0.gs
 fi
 MAXRUNS=0
@@ -228,10 +498,15 @@ do
   fi
 done < run.gs
 
-# A completed setup is never redone: make_boresch rewrites index.ndx and the leg
-# .mdp files, which would be pulled out from under any cycle task already running
-# (e.g. if the user re-submits with --restart while jobs are live).
-if [[ "$MODE" == "setup" && -f setup.done ]]; then
+# A completed setup is never redone, in --setup mode and in legacy mode alike:
+# make_boresch rewrites index.ndx and the leg .mdp files, which would be pulled out
+# from under any cycle task already running (e.g. if the user re-submits with
+# --restart while jobs are live). Legacy mode used to run the setup phase on every
+# start, and in a directory set up by older code that rebuilt the restraints on the
+# old probe, box and ligands and then let the unfinished cycles continue into the
+# new legs (review CYC-1). It now goes straight to its cycles, where the
+# protocol_id.gs check decides whether they may run.
+if [[ "$MODE" != "cycle" && -f setup.done ]]; then
   # Still refresh the top-level analytical record: it is cheap, idempotent, and
   # may be missing even though the setup is complete (e.g. the results files were
   # cleared for a fresh scoring run). Without it every structure scores PENDING.
@@ -240,8 +515,18 @@ if [[ "$MODE" == "setup" && -f setup.done ]]; then
     mkdir -p ../results_analytical.d
     echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
   fi
-  echo "Setup already complete for $STRUCT_ID; nothing to do."
-  exit 0
+  SETUP_ID=$(head -n 1 protocol_id.gs 2>/dev/null | tr -d '[:space:]')
+  if [[ "$SETUP_ID" != "$FE_PROTOCOL_ID" ]]; then
+    [[ -n "$SETUP_ID" ]] || SETUP_ID="unrecorded (no protocol_id.gs: set up before v1.5)"
+    echo "WARNING: $STRUCT_ID was set up under protocol $SETUP_ID, and this code runs"
+    echo "  $FE_PROTOCOL_ID. None of its unfinished cycles will run here; set the"
+    echo "  structure up again in a fresh directory."
+  fi
+  if [[ "$MODE" == "setup" ]]; then
+    echo "Setup already complete for $STRUCT_ID; nothing to do."
+    exit 0
+  fi
+  echo "Setup already complete for $STRUCT_ID; going on to its cycles."
 fi
 
 # In array mode, wait for the one-off setup job to finish instead of terminating:
@@ -294,6 +579,214 @@ MDP_DIR="${GROSCORE_ROOT}/settings/$FORCEFIELD"
 # is an `== "gromos54a8"` test that would otherwise fall through to the AMBER branch
 # without a word. Ten of them in this file.
 FF_BASE="${FORCEFIELD%_rf}"
+
+# Whether small-molecule ligands are parametrised, and if not, why; one definition
+# for the parametrisation loop and for merge_ligand.py, which reports the ligands
+# left out accordingly. on: AMBER19SB with OpenFF, as the run asked. off-user: the
+# user passed --no-ligand-param (run.gs field 5 = 0), so running without ligands is
+# a choice and they are only listed. off-ff: CHARMM36 and GROMOS 54A8 have no ligand
+# parametrisation here, so every ligand in the simulated region is a LIGAND_FAIL
+# line rather than a complex quietly run without part of its interface; the user
+# can still choose --no-ligand-param (decision of 2026-10-04).
+if [[ "$LIGAND_PARAM" != "1" ]]; then
+  LIGAND_PARAM_MODE="off-user"
+elif [[ "$FF_BASE" == "amber19sb_opc" || "$FF_BASE" == "amber19sb_opc3" ]]; then
+  LIGAND_PARAM_MODE="on"
+else
+  LIGAND_PARAM_MODE="off-ff"
+fi
+# merge_ligand.py is what writes ligand_failed.gs. If it crashes, no line names the
+# ligands it never merged, and the structure would run without them, so a crash
+# stops the structure as a failed ligand. It stops before conf_vacbox.gro exists, so
+# the next attempt starts from the restart cleanup and merges again.
+ligand_merge_crashed() {
+  echo "Stage 0 failed: merge_ligand.py exited $1, so which ligands reached the topology is unknown."
+  echo $STRUCT_ID "LIGAND_FAIL" >> ../results_0.gs
+  exit 0
+}
+# stage0_fail STATUS MESSAGE: one status line for groscore_fe.py and stop, exit 0 as
+# every stage-0 verdict here (job.run's function, which the setup chain below calls).
+stage0_fail() {
+  echo "Stage 0 failed: $2"
+  echo $STRUCT_ID "$1" >> ../results_0.gs
+  exit 0
+}
+
+# ---- GLYCANS AND NCAAs IN THE SETUP CHAIN (the same text in job.run and job_fe.run) ----
+# GLYCANS ARE FUSED, NOT EXTRACTED (decision of 2026-10-04). A glycan covalently
+# bonded to ASN ND2, SER OG or THR OG1 used to stop the structure as LIGAND_FAIL
+# whenever it lay in the simulated region, so 1MAH (NAG A 544 on ASN A 350) and 2AJF
+# (NAGs on ASN A 53, A 322, A 546 and E 330) never ran. utils/fuse_glycans.py now
+# makes each such glycan one residue with its amino acid (NG<k> on Asn, SG<k> on Ser,
+# TG<k> on Thr), written to fused.pdb and defined in glycans.json, and that residue
+# takes the NCAA path (parametrize_ncaa.py). A glycan it does not fuse (a non-sugar in
+# it, atoms that differ from its CCD entry, more sugars than an optional cap) stays HETATM,
+# is extracted as a ligand and stops the structure in the region as before, with the
+# reason from glycan_unfused.gs on its LIGAND_FAIL line. Fused only when ligands are
+# parametrised (LIGAND_PARAM_MODE on: AMBER19SB with OpenFF): CHARMM36 and GROMOS
+# 54A8 have no OpenFF parametrisation here (GROMOS takes NCAAs from its own force
+# field only), and under --no-ligand-param the glycans go with the ligands, left out
+# and named.
+#
+# NO CAP BY DEFAULT. Every glycan is fused, whatever its size, so none is simulated
+# detached; GROSCORE_GLYCAN_MAX_SUGARS sets an optional cap. AM1-BCC of the capped
+# residue took 54-102 s with one sugar, 161 s with two and 532 s with three, growing
+# about with the cube of its size, so a 9-sugar Fc glycan costs about 2 h of setup,
+# and parametrize_ncaa.py puts no time limit on it unless
+# GROSCORE_GLYCAN_AM1BCC_WALL_S sets one. The variable
+# comes from the environment the job was submitted from, as GROSCORE_LEG_TIMEOUT
+# does: the GPU SLURM templates pass --export=ALL, sbatch exports everything by
+# default for the CPU one, and utils/local_runner.py starts each job with a copy of
+# its own environment. It is handed on as --max-sugars, so the log shows it.
+FUSE_GLYCANS=0
+[[ "$LIGAND_PARAM_MODE" == "on" ]] && FUSE_GLYCANS=1
+
+# fuse_and_renumber [keep | fuse_glycans.py options]: the fusion when FUSE_GLYCANS is
+# 1, then renumber_pdb.py on fused.pdb, or on input.pdb when nothing is fused. 'keep'
+# renumbers the fused.pdb there is without fusing again: after an NCAA alone failed,
+# it is what parametrize_ncaa.py parametrised, while a fusion redone from scratch reads
+# the CCD again and fused a glycan the first pass had not, or refused one it had, when
+# an entry answered in one pass only (runner review R2). renumber_pdb.py
+# writes one ligand_*.pdb per extracted ligand and never deletes one, and both the
+# parametrisation loop and merge_ligand.py take every ligand_*.pdb there is, so the
+# files of an earlier pass go first: two passes over 2AJF that fused different sites
+# left ligand_NAG_A.pdb beside ligand_NAG_A_703.pdb, one NAG twice, and the
+# ligand_NAG_A.pdb an old LIGAND_FAIL attempt left in 1MAH's directory would stop a
+# rerun again although NG1 now holds that NAG (critic F3). A fusion that fails stops
+# the structure, since which glycans belong to the protein is then unknown.
+fuse_and_renumber() {
+  local rc input=input.pdb
+  if [[ $FUSE_GLYCANS -eq 1 && "${1:-}" == "keep" && -s fused.pdb ]]; then
+    input=fused.pdb
+  elif [[ $FUSE_GLYCANS -eq 1 ]]; then
+    [[ "${1:-}" == "keep" ]] && shift
+    # GROSCORE_GLYCAN_MAX_SUGARS unset or empty: no cap, every glycan is fused.
+    # Any other value must be a whole number of at least 1 in digits only, without a
+    # sign, a leading zero or a space; anything else stops the structure here as
+    # FAILED, a setting to fix, not a LIGAND_FAIL from fuse_glycans.py's exit status.
+    if [[ -n "${GROSCORE_GLYCAN_MAX_SUGARS:-}" ]]; then
+      [[ "$GROSCORE_GLYCAN_MAX_SUGARS" =~ ^[1-9][0-9]*$ ]] \
+        || stage0_fail FAILED "GROSCORE_GLYCAN_MAX_SUGARS is '$GROSCORE_GLYCAN_MAX_SUGARS', not a whole number of sugars of at least 1."
+      echo "Glycans of up to $GROSCORE_GLYCAN_MAX_SUGARS sugars are fused (GROSCORE_GLYCAN_MAX_SUGARS)."
+    fi
+    rm -f fused.pdb
+    python3 ../../utils/fuse_glycans.py -f input.pdb -o fused.pdb -d glycans.json \
+        --unfused glycan_unfused.gs ${GROSCORE_GLYCAN_MAX_SUGARS:+--max-sugars "$GROSCORE_GLYCAN_MAX_SUGARS"} "$@"
+    rc=$?
+    if [[ $rc -ne 0 || ! -s fused.pdb ]]; then
+      stage0_fail LIGAND_FAIL "fuse_glycans.py exited $rc$([[ -s fused.pdb ]] || echo ' and wrote no fused.pdb'), so which glycans belong to the protein is unknown."
+    fi
+    input=fused.pdb
+  fi
+  rm -f ligand_*.pdb ligand_info.gs
+  python3 ../../utils/renumber_pdb.py -f $input -o renumbered.pdb -c $PROTBCHAINS
+}
+
+# ncaa_names FILE: the residues of FILE's ATOM records that carry a CA and are no
+# standard amino acid, cap or ion, i.e. the NCAAs and the fused glycans, less those
+# named in ncaa_failed.gs; comma-separated. The list used to come from a grep of
+# renumbered.pdb.log, a file nothing writes, with this awk as its fallback.
+ncaa_names() {
+  awk -v failed="$(awk '{print $1}' ncaa_failed.gs 2>/dev/null)" '
+    BEGIN {n = split(failed, f); for (i = 1; i <= n; i++) skip[f[i]] = 1}
+    /^ATOM/ {res=substr($0,18,3); gsub(/ /,"",res); name=substr($0,13,4); gsub(/ /,"",name); if(name=="CA") seen[res]=1}
+    END{for(r in seen) if(!(r in skip)&&r!="ALA"&&r!="ARG"&&r!="ASN"&&r!="ASP"&&r!="CYS"&&r!="CYX"&&r!="GLN"&&r!="GLU"&&r!="GLY"&&r!="HID"&&r!="HIE"&&r!="HIP"&&r!="HIS"&&r!="ILE"&&r!="LEU"&&r!="LYS"&&r!="MET"&&r!="PHE"&&r!="PRO"&&r!="SER"&&r!="THR"&&r!="TRP"&&r!="TYR"&&r!="VAL"&&r!="ACE"&&r!="NME"&&r!="NHE"&&r!="ZN"&&r!="CA"&&r!="MG"&&r!="CU"&&r!="CU1"&&r!="NA"&&r!="CL") printf "%s,",r}' "$1" | sed 's/,$//'
+}
+
+# ncaa_fallback RC: what follows parametrize_ncaa.py, which exited with RC. A residue
+# it could not parametrise leaves the chain, all in one pass. An NCAA it named in
+# ncaa_failed.gs becomes its parent residue (fix_pdb.py and PDBFixer), as before. A
+# fused glycan it named in glycan_failed.gs ('RESNAME reason') is not fused again:
+# its sugars are extracted as ligands, parametrised as such and judged by region in
+# merge_ligand.py, and every sugar's glycan_unfused.gs line carries the reason, so
+# that its LIGAND_FAIL line says why. A crash names nothing, so a non-zero exit
+# counts against every fused residue: the names fused.pdb has and input.pdb has not
+# (fuse_glycans.py never gives a glycan a name the input uses), read from the PDB
+# files, since an unreadable glycans.json is one reason for parametrize_ncaa.py to
+# exit 1. The order is the point (critic F4): the fusion, the renumbering, the NCAA
+# list, fix_pdb.py and cap_termini.py, each from the step before. The old block ran
+# fix_pdb.py on the first pass's renumbered.pdb, which still holds a fused residue
+# that failed, and pdb2gmx would have stopped on it as a residue without an rtp
+# entry. The fusion runs again only to leave out the glycans that failed, and then
+# fuses no chemistry the first pass did not (fuse_glycans.py --exclude-file); when an
+# NCAA alone failed, the first pass's fused.pdb is renumbered as it is (runner R2).
+ncaa_fallback() {
+  local rc=$1 name why="" excl=()
+  if [[ $rc -ne 0 && -s fused.pdb ]]; then
+    for name in $(comm -13 <(awk '/^(ATOM|HETATM)/ {r = substr($0, 18, 3); gsub(/ /, "", r); print r}' input.pdb | sort -u) \
+                           <(awk '/^(ATOM|HETATM)/ {r = substr($0, 18, 3); gsub(/ /, "", r); print r}' fused.pdb | sort -u)); do
+      awk -v n="$name" '$1 == n {f = 1} END {exit !f}' glycan_failed.gs 2>/dev/null \
+        || echo "$name parametrize_ncaa.py exited $rc" >> glycan_failed.gs
+    done
+  fi
+  [[ -s ncaa_failed.gs || -s glycan_failed.gs ]] || return 0
+  if [[ -s ncaa_failed.gs ]]; then
+    echo "Replacing the NCAAs that failed to parametrise ($(awk '{print $1}' ncaa_failed.gs | paste -sd, -)) with their parent residues"
+  fi
+  if [[ -s glycan_failed.gs ]]; then
+    echo "The fused glycans that failed to parametrise go back to ligands: $(awk '{print $1}' glycan_failed.gs | paste -sd, -)"
+    # Their sugars, 'RES CHAIN NUM<TAB>RESNAME<TAB>reason', read from glycans.json
+    # before the fusion below rewrites it. The reason is whitespace-normalised, as
+    # fuse_glycans.py writes it into its own glycan_unfused.gs line, so the copy below
+    # recognises it there and adds it once.
+    why=$(python3 - <<'GLYCAN_PY'
+import json
+reason = {}
+for line in open("glycan_failed.gs"):
+    t = line.split(None, 1)
+    if t:
+        reason.setdefault(t[0], " ".join(t[1].split()) if len(t) > 1 else "no reason recorded")
+try:
+    residues = json.load(open("glycans.json")).get("residues", [])
+except (OSError, ValueError):
+    residues = []
+for r in residues:
+    for inst in (r.get("instances", []) if r.get("resname") in reason else []):
+        for s in inst.get("sugars", []):
+            print("\t".join([" ".join(str(s).split()[:3]), r["resname"], reason[r["resname"]]]))
+GLYCAN_PY
+)
+    excl=(--exclude-file glycan_failed.gs)
+  fi
+  if [[ ${#excl[@]} -gt 0 ]]; then
+    fuse_and_renumber "${excl[@]}"
+  else
+    fuse_and_renumber keep
+  fi
+  if [[ -n "$why" ]]; then
+    # A line is keyed 'RES CHAIN NUM' without an insertion code, as renumber_pdb.py
+    # names the extracted ligand and merge_ligand.py looks it up; glycans.json labels
+    # a sugar 'NAG A 544A' when it has one.
+    python3 - "$why" <<'GLYCAN_PY'
+import os, re, sys
+def key(text):
+    t = text.split()[:3]
+    return (t[0], t[1], re.sub(r"[A-Za-z]+$", "", t[2])) if len(t) == 3 else None
+lines = open("glycan_unfused.gs").read().splitlines() if os.path.isfile("glycan_unfused.gs") else []
+for row in sys.argv[1].splitlines():
+    sugar, name, why = row.split("\t", 2)
+    k = key(sugar)
+    if k is None:
+        continue
+    hit = [i for i, l in enumerate(lines) if key(l) == k]
+    if hit and why in " ".join(lines[hit[0]].split()):
+        continue
+    note = "%s failed to parametrise: %s" % (name, why)
+    if hit:
+        lines[hit[0]] += "; " + note
+    else:
+        lines.append("%s %s" % (" ".join(k), note))
+open("glycan_unfused.gs", "w").write("".join(l + "\n" for l in lines))
+GLYCAN_PY
+  fi
+  NCAA_LIST=$(ncaa_names renumbered.pdb)
+  echo "NCAA residues after the fallback: ${NCAA_LIST:-none}"
+  NCAA_FLAG=""
+  [[ -n "$NCAA_LIST" ]] && NCAA_FLAG="--keep-ncaa $NCAA_LIST"
+  python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb $NCAA_FLAG
+  python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
+}
+# ---- end of the setup chain both runners share ----
 
 
 # Simulation temperature, READ FROM THE MDP rather than repeated as a literal.
@@ -356,18 +849,24 @@ fi
 # Always re-run if conf.gro doesn't exist (restart safety: cap_termini overwrites
 # chain_map.gs with post-cap numbers that become stale if setup is re-run)
 if [[ ! -f conf.gro ]]; then
-  python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
+  # What an earlier attempt left of the fusion and its failure lists describes that
+  # attempt. ncaa_names below leaves out every name in ncaa_failed.gs, so a stale line
+  # from a setup that died before conf.gro would hand fix_pdb.py an NCAA that
+  # parametrises now as one to replace by its parent residue (critic F3).
+  # parametrize_ncaa.py removes both lists itself, but only when it starts. The ligand
+  # parametrisation outputs too, as the restart cleanup removes them: an attempt whose
+  # pdb2gmx wrote no conf.gro left a manifest line for a NAG that the next attempt
+  # fused, and merge_ligand.py merged it on top of its own sugar (runner review R1).
+  rm -f ncaa_failed.gs glycan_failed.gs fused.pdb glycans.json glycan_unfused.gs
+  rm -f ligand_*.itp ligand_*.gro ligand_*.sdf ligand_manifest.gs ligand_failed.gs
+  fuse_and_renumber
 fi
 if [[ ! -f conf.gro ]]; then
   # Detect NCAA residues: AMBER19SB uses OpenFF parametrization; GROMOS uses FF's native PTM entries
   NCAA_FLAG=""
   if [[ $LIGAND_PARAM -eq 1 && ("$FF_BASE" == "amber19sb_opc" || "$FF_BASE" == "amber19sb_opc3") ]]; then
-    # Check if renumber_pdb.py detected modified amino acids
-    NCAA_LIST=$(grep "Detected modified amino acids" renumbered.pdb.log 2>/dev/null | sed 's/.*: //' || true)
-    if [[ -z "$NCAA_LIST" ]]; then
-      # Fallback: check for HETATM with backbone CA in renumbered.pdb
-      NCAA_LIST=$(awk '/^ATOM/ {res=substr($0,18,3); gsub(/ /,"",res); name=substr($0,13,4); gsub(/ /,"",name); if(name=="CA") seen[res]=1} END{for(r in seen) if(r!="ALA"&&r!="ARG"&&r!="ASN"&&r!="ASP"&&r!="CYS"&&r!="CYX"&&r!="GLN"&&r!="GLU"&&r!="GLY"&&r!="HID"&&r!="HIE"&&r!="HIP"&&r!="HIS"&&r!="ILE"&&r!="LEU"&&r!="LYS"&&r!="MET"&&r!="PHE"&&r!="PRO"&&r!="SER"&&r!="THR"&&r!="TRP"&&r!="TYR"&&r!="VAL"&&r!="ACE"&&r!="NME"&&r!="NHE"&&r!="ZN"&&r!="CA"&&r!="MG"&&r!="CU"&&r!="CU1"&&r!="NA"&&r!="CL") printf "%s,",r}' renumbered.pdb | sed 's/,$//')
-    fi
+    # The NCAAs and the fused glycans (ncaa_names).
+    NCAA_LIST=$(ncaa_names renumbered.pdb)
     if [[ -n "$NCAA_LIST" ]]; then
       echo "NCAA residues detected: $NCAA_LIST"
       NCAA_FLAG="--keep-ncaa $NCAA_LIST"
@@ -402,9 +901,13 @@ with open('renumbered.pdb', 'w') as f:
                 atom = line[12:16].strip()
                 new_atom = atom_maps.get(res, {}).get(atom, atom)
                 new_res = renames[res]
-                # Rebuild PDB line with renamed residue and atom
-                # Atom field: cols 12-15 (4 chars), residue: cols 17-19 (3 chars)
-                line = line[:12] + ('%-4s' % new_atom) + line[16:17] + ('%-3s' % new_res) + line[20:]
+                # Rebuild PDB line with renamed residue and atom: the atom in PDB
+                # columns 13-16, the residue in 18-20, or in 18-21 for a 4-character
+                # GROMOS name (DALA), so that the chain stays in column 22. Written as
+                # '%-3s' + line[20:], DALA moved every later column one to the right and
+                # fix_pdb.py stopped on the coordinates (ncaa review F2).
+                tail = ('%-3s' % new_res) + line[20:] if len(new_res) <= 3 else ('%-4s' % new_res) + line[21:]
+                line = line[:12] + ('%-4s' % new_atom) + line[16:17] + tail
         f.write(line)
 print("Applied GROMOS PTM renames to renumbered.pdb")
 RENAME_PY
@@ -442,29 +945,11 @@ RENAME_PY
   # GROMOS NCAA handling is done above via native FF entries — no OpenFF needed.
   if [[ -n "$NCAA_FLAG" && ("$FF_BASE" == "amber19sb_opc" || "$FF_BASE" == "amber19sb_opc3") ]]; then
     python3 ../../utils/parametrize_ncaa.py -f fixed.pdb --gmx-ff amber19sb
-    # If any NCAAs failed (e.g., unsupported elements like Se in MSE),
-    # re-run fix_pdb without keeping them so PDBFixer replaces them with parent residue
-    if [[ -f ncaa_failed.gs ]]; then
-      FAILED=$(cat ncaa_failed.gs | tr '\n' ',' | sed 's/,$//')
-      echo "Re-running fix_pdb.py: replacing failed NCAAs ($FAILED) with parent residues"
-      # Remove failed NCAAs from keep list
-      NEW_NCAA_LIST=$(echo "$NCAA_LIST" | tr ',' '\n' | grep -v -F -f ncaa_failed.gs | tr '\n' ',' | sed 's/,$//')
-      if [[ -n "$NEW_NCAA_LIST" ]]; then
-        python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb --keep-ncaa "$NEW_NCAA_LIST"
-      else
-        python3 ../../utils/fix_pdb.py -f renumbered.pdb -o fixed.pdb
-      fi
-      # Regenerate chain_map.gs and ion_residues.gs with pre-cap residue numbers
-      # (cap_termini.py overwrites these with post-cap sequential numbers that
-      # won't match the new fixed.pdb generated from renumbered.pdb)
-      python3 ../../utils/renumber_pdb.py -f input.pdb -o renumbered.pdb -c $PROTBCHAINS
-      # Re-run cap_termini
-      if [[ "$FF_BASE" == "charmm36" ]]; then
-        python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs --ace-only
-      elif [[ "$FF_BASE" == "amber19sb_opc" || "$FF_BASE" == "amber19sb_opc3" ]]; then
-        python3 ../../utils/cap_termini.py -f fixed.pdb -o fixed_capped.pdb -m chain_map.gs
-      fi
-    fi
+    # A residue it could not parametrise (an element OpenFF does not type, a fused
+    # glycan whose AM1-BCC did not finish) leaves the chain here (ncaa_fallback). The
+    # renumbering is redone with it, which also restores the pre-cap chain_map.gs and
+    # ion_residues.gs that cap_termini.py overwrote with post-cap numbers.
+    ncaa_fallback $?
     if [[ -d amber19sb.ff ]]; then
       # Use local FF with NCAA entries; set GMXLIB to current dir so pdb2gmx finds it
       if [[ -n "${GMXLIB:-}" ]]; then
@@ -477,7 +962,11 @@ RENAME_PY
   fi
   # Add FeS cluster ion entries to local FF if needed (AMBER19SB only)
   # SD is not in standard AMBER19SB; FE2 atom name differs (FE2 vs FE in PDB)
-  if grep -q ' SD \| FE2 ' $PDB2GMX_INPUT 2>/dev/null; then
+  # FeS clusters arrive as one-ion residues FE2 and SD (renumber_pdb.py), so the test
+  # is by residue name: a grep for ' SD ' matched the SD atom of every methionine and
+  # gave each such structure a local copy of the force field (review E3).
+  if awk '/^(ATOM  |HETATM)/ { r = substr($0, 18, 3); gsub(/ /, "", r); if (r == "SD" || r == "FE2") f = 1 }
+          END { exit !f }' $PDB2GMX_INPUT 2>/dev/null; then
     if [[ "$FF_BASE" == "amber19sb_opc" || "$FF_BASE" == "amber19sb_opc3" ]]; then
       if [[ ! -d amber19sb.ff ]]; then
         # Find GROMACS data directory (varies by installation)
@@ -508,11 +997,16 @@ RENAME_PY
     python3 -c "
 import sys
 ncaas = set('$NCAA_LIST'.split(','))
+# OpenMM writes at most 3 characters of a residue name (fix_pdb.py, cap_termini.py),
+# so a 4-character GROMOS name (DALA) goes back into columns 18-21 (ncaa review F2).
+cut = {n[:3]: n for n in ncaas if len(n) == 4}
 with open('$PDB2GMX_INPUT') as f:
     lines = f.readlines()
 with open('$PDB2GMX_INPUT', 'w') as f:
     for line in lines:
-        if line.startswith(('ATOM','HETATM')) and line[17:20].strip() in ncaas:
+        if line.startswith(('ATOM','HETATM')) and line[17:21].strip() in cut:
+            line = line[:17] + cut[line[17:21].strip()] + line[21:]
+        if line.startswith(('ATOM','HETATM')) and line[17:21].strip() in ncaas:
             if line[12:16].strip().startswith('H'):
                 continue  # strip wrong H from NCAA
             if line.startswith('HETATM'):
@@ -549,7 +1043,6 @@ with open('$PDB2GMX_INPUT', 'w') as f:
   # Terminal selections per protein segment: N-terminus then C-terminus
   # CHARMM36: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   # AMBER19SB variants: No terminal selections needed (no termini defined in FF)
-  # GROMOS 54A7: N-term 2 (none, ACE is explicit), C-term 1 (COOH patch)
   # GROMOS 54A8: N-term 8 (none, ACE is explicit), C-term 1 (COOH patch)
   if [[ "$FF_BASE" == "charmm36" ]]; then
     TER_INPUT=$(printf '8\n1\n%.0s' $(seq 1 $NSEGS_PROTEIN))
@@ -560,9 +1053,12 @@ with open('$PDB2GMX_INPUT', 'w') as f:
   fi
   # Merge questions come first, then terminal selections
   echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $PDB2GMX_INPUT -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf.gro
+  # Without conf.gro the setup has failed: stop before the loop below spends AM1-BCC
+  # time on the ligands of a structure that cannot run (runner review R1).
+  [[ -f conf.gro ]] || stage0_fail FAILED "pdb2gmx produced no conf.gro."
   # Parametrize small molecules with OpenFF (AMBER19SB only)
   # Each instance gets a unique molecule name via running counter (-i)
-  if [[ $LIGAND_PARAM -eq 1 && ("$FF_BASE" == "amber19sb_opc" || "$FF_BASE" == "amber19sb_opc3") ]]; then
+  if [[ "$LIGAND_PARAM_MODE" == "on" ]]; then
     LIGAND_INSTANCE=0
     for ligpdb in ligand_*.pdb; do
       [ -f "$ligpdb" ] || continue
@@ -577,17 +1073,36 @@ with open('$PDB2GMX_INPUT', 'w') as f:
     done
   fi
 fi
-# with restart and cutout mode, chain_map.gs references the cutout protein
+# with restart and cutout mode, chain_map.gs references the cutout protein.
+# A completed setup passed this check when it ran, so legacy mode, like --cycle,
+# does not repeat it on every start.
 bl=0
-if [[ "$MODE" != "cycle" && ! -f conf_cutout.gro ]]; then
+if [[ "$MODE" != "cycle" && ! -f setup.done && ! -f conf_cutout.gro ]]; then
+  # No conf.gro is a failed setup, not a broken loop: fix_pdb.py now refuses a
+  # structure whose residues would merge and writes no fixed.pdb, so cap_termini.py
+  # and pdb2gmx find nothing (the same guard as job.run's).
+  if [[ ! -f conf.gro ]]; then
+    echo "Stage 0 failed: pdb2gmx produced no conf.gro."
+    echo $STRUCT_ID "FAILED" >> ../results_0.gs
+    exit 0
+  fi
   bl=$(python3 ../../utils/check_brokenloop.py -f conf.gro -m chain_map.gs)
+fi
+# Anything but 0 or 1 is a crashed check, not a verdict. check_brokenloop.py prints 2
+# on any failure, which the -eq test below would call BROKEN, and empty output would
+# pass it as 0 (job.run has the same guard).
+if [[ "$bl" != "0" && "$bl" != "1" ]]; then
+  echo "Stage 0 failed: broken-loop check returned unexpected output ('$bl')."
+  echo $STRUCT_ID "FAILED" >> ../results_0.gs
+  exit 0
 fi
 if [[ $bl -eq 0 ]]; then
 # ===== SETUP PHASE =====================================================
 # Everything the cycles share: stage 0, the initial equilibration, and the
 # restraint definition (elastic network + interface + Boresch) written into the
-# leg .mdp files. Runs once per structure; skipped entirely by --cycle tasks.
-if [[ "$MODE" != "cycle" ]]; then
+# leg .mdp files. Runs once per structure: skipped entirely by --cycle tasks, and
+# by legacy mode once setup.done exists (see "A completed setup is never redone").
+if [[ "$MODE" != "cycle" && ! -f setup.done ]]; then
   # Stage 0: Prepare system up to emin_solv.gro
   if [[ ! -f conf_vacbox.gro ]]; then
     if [[ $CUTOUT -eq 1 ]]; then
@@ -612,11 +1127,16 @@ if [[ "$MODE" != "cycle" ]]; then
         python3 -c "
 import sys
 ncaas = set('$NCAA_LIST'.split(','))
+# OpenMM writes at most 3 characters of a residue name (cap_termini.py), so a
+# 4-character GROMOS name (DALA) goes back into columns 18-21 (ncaa review F2).
+cut = {n[:3]: n for n in ncaas if len(n) == 4}
 with open('$CUTOUT_PDB') as f:
     lines = f.readlines()
 with open('$CUTOUT_PDB', 'w') as f:
     for line in lines:
-        if line.startswith(('ATOM','HETATM')) and line[17:20].strip() in ncaas:
+        if line.startswith(('ATOM','HETATM')) and line[17:21].strip() in cut:
+            line = line[:17] + cut[line[17:21].strip()] + line[21:]
+        if line.startswith(('ATOM','HETATM')) and line[17:21].strip() in ncaas:
             if line[12:16].strip().startswith('H'):
                 continue  # strip wrong H from NCAA
             if line.startswith('HETATM'):
@@ -660,25 +1180,49 @@ with open('$CUTOUT_PDB', 'w') as f:
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
       # Ligand ITP/GRO files already created during initial parametrization above
       # Merge ligands and crystal waters into cutout topology
-      python3 ../../utils/merge_ligand.py -t topol.top -c conf_cutout.gro -m chain_map.gs
+      python3 ../../utils/merge_ligand.py -t topol.top -c conf_cutout.gro -m chain_map.gs \
+          --ligand-param "$LIGAND_PARAM_MODE" || ligand_merge_crashed $?
       python3 ../../utils/merge_crystal_waters.py -t topol.top -c conf_cutout.gro --proximity
       # Generate ion coordination restraints (active from first energy minimization)
       python3 ../../utils/make_ion_restraints.py -f conf_cutout.gro -m chain_map.gs
       gmx editconf -f conf_cutout.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     else
       # No cutout: merge ligands and crystal waters into full protein system
-      python3 ../../utils/merge_ligand.py -t topol.top -c conf.gro -m chain_map.gs
+      python3 ../../utils/merge_ligand.py -t topol.top -c conf.gro -m chain_map.gs \
+          --ligand-param "$LIGAND_PARAM_MODE" || ligand_merge_crashed $?
       python3 ../../utils/merge_crystal_waters.py -t topol.top -c conf.gro
       python3 ../../utils/make_ion_restraints.py -f conf.gro -m chain_map.gs
       gmx editconf -f conf.gro -bt dodecahedron -d 10 -o conf_vacbox.gro
     fi
+  fi
+  # LIGANDS NEVER FAIL SILENTLY, unless the user chose to run without them.
+  # merge_ligand.py writes ligand_failed.gs as 'RESNAME CHAIN RESNUM reason', one line
+  # per ligand instance in the simulated region that stops the structure; absent or
+  # empty means every ligand is in. Under --ligand-param on (AMBER19SB) that is every
+  # instance that did not reach topol.top, was built as a different molecule or is
+  # covalently bonded in the deposited model. Under off-ff (CHARMM36, GROMOS 54A8,
+  # where nothing parametrises ligands) it is every in-region ligand. Under off-user
+  # (--no-ligand-param) nothing is written and the ligands left out are named on
+  # stdout only. Through v1.4 nothing stopped: pass 2 dropped the AlF3 of 1WQ1 and
+  # 1GRN, the GNP of 1HE8, the ATP of 1KXP and the iodides of 1J2J, built sulfate as
+  # neutral H2SO4 and FAD at charge 0, and scored all of them (1GRN and 1WQ1 came out
+  # 5.0 and 4.8 pKD too strong, 1KXP 10.0; bm_fe_amber_2/_ana/digest/setup.txt S3,
+  # S4). A complex without part of its interface chemistry is a different complex,
+  # so the structure stops here, before any compute is spent on it, the way
+  # PROBE_FAIL does: one status line and exit 0. Checked after the merge on every
+  # setup pass, so a restart that finds conf_vacbox.gro already built cannot skip it.
+  if [[ -f ligand_failed.gs ]] && grep -q '[^[:space:]]' ligand_failed.gs; then
+    echo "Stage 0 failed: ligand(s) missing from the topology or built wrong (ligand_failed.gs):"
+    sed 's/^/  /' ligand_failed.gs
+    echo $STRUCT_ID "LIGAND_FAIL" >> ../results_0.gs
+    exit 0
   fi
   if [[ ! -f emin_solv.gro ]]; then
     if [[ ! -f emin_vac.tpr ]]; then
       gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 2
     fi
     if [[ ! -f emin_vac.gro ]]; then
-      gmx mdrun -nt $nt $GPUOPT -deffnm emin_vac
+      run_bg gmx mdrun -nt $nt $GPUOPT -deffnm emin_vac
     fi
     # Guard: if vacuum grompp/mdrun did not produce emin_vac.gro, stage 0 failed
     # (e.g. topology/coordinate mismatch). Do NOT fall through to the entangled-loop
@@ -747,18 +1291,21 @@ with open('$CUTOUT_PDB', 'w') as f:
         fi
         if [[ ! -f emin_probe_sd.gro ]]; then
           gmx grompp -r solv_ions_probe.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions_probe.gro -p topol_probe.top -o emin_probe_sd -maxwarn 2
-          gmx mdrun -nt $nt $GPUOPT -deffnm emin_probe_sd
+          run_bg gmx mdrun -nt $nt $GPUOPT -deffnm emin_probe_sd
         fi
         if [[ ! -f emin_probe.gro ]]; then
           gmx grompp -r solv_ions_probe.gro -f $MDP_DIR/emin_solv_cg.mdp -c emin_probe_sd.gro -p topol_probe.top -o emin_probe -maxwarn 2
-          gmx mdrun -nt $nt $GPUOPT -deffnm emin_probe
+          run_bg gmx mdrun -nt $nt $GPUOPT -deffnm emin_probe
         fi
         if [[ ! -f emin_probe.gro ]]; then
           echo "Stage 0 failed: probe minimisation produced no emin_probe.gro."
           echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
           exit 0
         fi
-        if [[ ! -f index_probe.ndx ]]; then
+        # Guarded on the group the probe needs, not on the file: make_ndx writes the
+        # file first, and a probe resumed after a kill between the two steps would
+        # otherwise find it without Protein_Struct for good.
+        if ! grep -q '^\[ *Protein_Struct *\]' index_probe.ndx 2>/dev/null; then
           echo -e "! \"Water\"\nq\n" | gmx make_ndx -f emin_probe.gro -o index_probe.ndx
           python3 ../../utils/make_cluster_group.py -f emin_probe.gro -n index_probe.ndx
         fi
@@ -786,7 +1333,7 @@ with open('$CUTOUT_PDB', 'w') as f:
               else
                 gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o nvt_${stage}_probe${rep} -n index_probe.ndx -maxwarn 10
               fi
-              timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_${stage}_probe${rep}
+              run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_${stage}_probe${rep}
             fi
             prev=nvt_${stage}_probe${rep}
           done
@@ -811,8 +1358,11 @@ with open('$CUTOUT_PDB', 'w') as f:
         # pooled average, which is the part that was a lottery before.
         ln -sf npt_probe1.gro npt_probe.gro
         ln -sf npt_probe1.tpr npt_probe.tpr
-        # Running maximum over every replica, on Protein_Struct, clustered: the box
-        # has to hold whichever one swung widest.
+        # Every replica pooled, since the box has to hold whichever one swung
+        # widest. measure_box.py reassembles the protein in every frame and sizes
+        # the box from a high percentile of its diameter, not from the running
+        # maximum of a clustered group, which periodic images inflated past the
+        # probe box itself in 18 of 46 pass-2 structures (see its header).
         python3 ../../utils/measure_box.py -f "${PROBE_TRAJ[@]}" -s "${PROBE_TPR[@]}" \
                 -n index_probe.ndx -g Protein_Struct -c emin_vac.gro \
                 --pad 1.5 > boxpad.tmp
@@ -841,47 +1391,74 @@ with open('$CUTOUT_PDB', 'w') as f:
         # What actually sizes the box is the GROMACS pull check, 0.49 * the
         # shortest box VECTOR (not the shortest diagonal element; verified
         # against grompp). That demand is dynamical and much larger: interface
-        # pairs start at <= 0.6 nm and reach 3.59 nm on 2KTF once the partners
-        # separate, while the Boresch coordinates never pass 2.05 nm. So it is
-        # the interface restraints that set the box, NOT the Boresch anchors and
-        # not which anchor-selection mode ran.
+        # pairs start at <= 0.6 nm, and on the current protocol (test29, 2KTF,
+        # 50 cycles, after the Boresch dihedral sign fix b4c267f) they reach
+        # 2.36 nm in the far-end legs once the partners separate, while the
+        # Boresch distance r reaches 2.15 nm (its reference at u = 1 alone is
+        # 2.09 nm). So it is the interface restraints that set the box, NOT the
+        # Boresch anchors and not which anchor-selection mode ran.
         #
-        # BOXPAD_DEFAULT stays at the empirically validated 1.8. Do not lower it
-        # to the floor: -d 1.5 is documented to fail on this very protocol,
-        # "Distance between pull groups 73 and 75 (3.772877 nm) is larger than
-        # 0.49 times the box size (3.770459)", and 1.8 puts the limit at 4.045.
-        # It is a 2KTF-derived constant, so it is a guess for any other complex;
-        # replacing it needs the per-structure demand measured at the first frame
-        # of bindrev, which nothing static predicts (the rigorous static bound
-        # asks for -d 3.96, and the interface pair set from emin_vac.gro has
-        # Jaccard 0.31 against the real one). Until that exists, boxpad.gs is the
-        # manual override for a structure known to need more.
-        # boxpad.gs is written by the probe pass above, from measure_box.py, and
-        # is authoritative when present: L = D_max + 2*1.5 with D_max the running
-        # maximum solute atom-atom distance over the probe equilibration. It is
-        # clamped to [FLOOR, 4.0] only as a sanity range, not to steer it.
-        # BOXPAD_FALLBACK is used only when no probe ran, e.g. a directory set up
-        # before this change. It is the old 2KTF-derived constant and is a guess
-        # for any other complex, which is the whole reason for the probe.
+        # boxpad.gs is written by the probe pass above, from measure_box.py: the
+        # first token of its first line is the -d to use. It is authoritative when
+        # present, and it is CLAMPED into [FLOOR, BOXPAD_CAP = 4.0], never
+        # discarded; the log says when the clamp moved it. Through v1.4 a value
+        # outside that range was thrown away for BOXPAD_FALLBACK, which is
+        # backwards. In pass 2 eleven structures asked for 4.16 to 7.74 nm (2AJF
+        # 7.737) and were built at 1.8, so the smallest boxes went to the
+        # structures whose measurement asked for the most room: five of the eight
+        # structures that lost cycles to the 0.49-box check ran in that fallback
+        # box, and all five HIGH_RMSD structures were among the eleven
+        # (bm_fe_amber_2/_ana/digest/setup.txt S5, S6). Those requests were
+        # measurement artefacts, a running maximum over frames with the solute
+        # split across periodic images, which measure_box.py no longer takes since
+        # it measures a physical diameter. A request above the cap should now be
+        # rare, and the cap only bounds the cost: at -d 4.0 the box is already
+        # 8 nm wider than the solute.
+        #
+        # BOXPAD_FALLBACK = 1.8 is used only when there is no boxpad.gs at all,
+        # e.g. a directory set up before the probe pass existed. It is the old
+        # 2KTF-derived constant and a guess for any other complex, which is the
+        # whole reason for the probe. It replaced 1.5 after "Distance between pull
+        # groups 73 and 75 (3.772877 nm) is larger than 0.49 times the box size
+        # (3.770459)" (d5e792f, 2026-08-12) and a 3.56 nm pair at the start of
+        # bindrev (ee45e12). Both came from runs before the Boresch dihedral sign
+        # fix (b4c267f), whose mirrored references had reoriented the partners. On
+        # the current protocol the largest 2KTF pull pair is 2.36 nm, against a
+        # limit of 4.00 nm in the box built from the measured padding (1.754).
+        #
+        # A boxpad.gs that exists but whose first token is not a number, an empty
+        # file included, is a failed measurement, not an absent one: it is removed
+        # (the finished probe replicas are kept and a re-run measures again) and
+        # the structure stops as PROBE_FAIL rather than falling back to a constant.
+        # Carriage returns are dropped first, so a value written by hand with DOS
+        # line ends is read as the number it is.
         BOXPAD_FALLBACK=1.8
+        BOXPAD_CAP=4.0
         RVDW=$(awk -F= '/^ *rvdw *=/{gsub(/[ \t]/,"",$2); print $2; exit}' $MDP_DIR/${FE_LEG_MDPS[0]})
         [[ -z "$RVDW" ]] && RVDW=1.0
         FLOOR=$(awk -v r="$RVDW" -v p="$PULL_DIST" 'BEGIN{printf "%.2f", r/2 + p/2}')
-        BOXPAD=""
-        if [[ -s boxpad.gs ]]; then
-          WANT=$(awk 'NR==1{print $1+0}' boxpad.gs)
-          if awk -v w="$WANT" -v f="$FLOOR" 'BEGIN{exit !(w >= f && w <= 4.0)}'; then
+        if [[ -f boxpad.gs ]]; then
+          WANT=$(head -n 1 boxpad.gs 2>/dev/null | tr -d '\r' | awk '{print $1; exit}')
+          if ! [[ "$WANT" =~ ^[0-9]*[.]?[0-9]+$ ]]; then
+            echo "Stage 0 failed: boxpad.gs holds no padding (first token '$WANT'); removed for re-measurement."
+            rm -f boxpad.gs
+            echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+            exit 0
+          fi
+          if awk -v w="$WANT" -v f="$FLOOR" 'BEGIN{exit !(w + 0 < f + 0)}'; then
+            BOXPAD=$FLOOR
+            echo "Box padding: -d $BOXPAD nm; boxpad.gs measured $WANT, clamped UP to the floor $FLOOR."
+          elif awk -v w="$WANT" -v c="$BOXPAD_CAP" 'BEGIN{exit !(w + 0 > c + 0)}'; then
+            BOXPAD=$BOXPAD_CAP
+            echo "Box padding: -d $BOXPAD nm; boxpad.gs measured $WANT, clamped DOWN to the cap $BOXPAD_CAP."
+          else
             BOXPAD=$WANT
             echo "Box padding: -d $BOXPAD nm, measured (boxpad.gs)."
-          else
-            echo "boxpad.gs value '$WANT' outside [$FLOOR, 4.0]; ignoring it."
           fi
-        fi
-        if [[ -z "$BOXPAD" ]]; then
+        else
           BOXPAD=$(awk -v f="$FLOOR" -v d="$BOXPAD_FALLBACK" 'BEGIN{printf "%.2f", (f>d)?f:d}')
-          echo "Box padding: -d $BOXPAD nm, NOT measured (no usable boxpad.gs; floor $FLOOR, fallback $BOXPAD_FALLBACK)."
+          echo "Box padding: -d $BOXPAD nm, NOT measured (no boxpad.gs; floor $FLOOR, fallback $BOXPAD_FALLBACK)."
         fi
-        echo "$BOXPAD" > boxpad_used.gs
         echo "$BOXPAD" > boxpad_used.gs
         gmx editconf -f emin_vac.gro -o box.gro -bt dodecahedron -d $BOXPAD
       fi
@@ -902,14 +1479,14 @@ with open('$CUTOUT_PDB', 'w') as f:
         gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv.mdp -c solv_ions.gro -o emin_solv_sd -maxwarn 2
       fi
       if [[ ! -f emin_solv_sd.gro ]]; then
-        gmx mdrun -nt $nt $GPUOPT -deffnm emin_solv_sd
+        run_bg gmx mdrun -nt $nt $GPUOPT -deffnm emin_solv_sd
       fi
       # Conjugate gradient refinement (resolves clashes that SD can't escape)
       if [[ ! -f emin_solv.tpr ]]; then
         gmx grompp -r solv_ions.gro -f $MDP_DIR/emin_solv_cg.mdp -c emin_solv_sd.gro -o emin_solv -maxwarn 2
       fi
       if [[ ! -f emin_solv.gro ]]; then
-        gmx mdrun -nt $nt $GPUOPT -deffnm emin_solv
+        run_bg gmx mdrun -nt $nt $GPUOPT -deffnm emin_solv
       fi
     elif [[ "$et" == "1" ]]; then
       echo "after equilibration entangled loops were found."
@@ -974,25 +1551,49 @@ with open('$CUTOUT_PDB', 'w') as f:
     echo $STRUCT_ID "TRJCONV_FAIL" >> ../results_0.gs
     exit 0
   fi
-  if [[ ! -f npt_probe_cluster.gro ]]; then
-    echo -e "Protein_Struct\n0\n" | gmx trjconv -f npt_probe_whole.gro -s npt_probe.tpr -o npt_probe_cluster.gro -pbc cluster -n index_probe.ndx
-  fi
-  if [[ ! -f npt_probe_cluster.pdb ]]; then
-    echo -e "Protein_Struct\n! \"Water\"\n" | gmx trjconv -f npt_probe_whole.gro -s npt_probe.tpr -o npt_probe_cluster.pdb -pbc cluster -n index_probe.ndx
-  fi
-  # npt_probe_cluster.gro is the reference every restraint below is built on, and
-  # make_boresch.py now also takes its Boresch reference geometry from it.
-  if [[ ! -f npt_probe_cluster.gro ]]; then
-    echo "Stage 0 failed: trjconv -pbc cluster produced no npt_probe_cluster.gro."
-    echo $STRUCT_ID "TRJCONV_FAIL" >> ../results_0.gs
+  # THE REFERENCE FRAME IS ASSEMBLED IN SPACE, NOT CLUSTERED. npt_probe_cluster.gro
+  # is what every restraint below is built on: make_boresch.py takes the interface
+  # candidates, the elastic network and the anchor groups from it, and the snapshot
+  # Boresch geometry for its pose gate, the gate's fallback and the readback (the
+  # reference it emits is the ensemble mean over the probe replicas unless the gate
+  # fires). It used to come from trjconv -pbc cluster, which chains the unbonded
+  # fragments of a cutout one atom after the other, each at the minimum image of
+  # the one before, so a step between fragments longer than half the box puts the
+  # next fragment, and every one after it, a box vector away. On the real 1IJK
+  # setup three of five ligand fragments sat a box vector off (NME299 -> ACE300 is
+  # 7.28 nm in a 9.90 nm probe box), and with interface candidates taken from raw
+  # distances 720 of 1108 contact pairs got no spring; 2AJF and the pilot structure
+  # 1AKJ are near the same limit (review FR1). assemble_frame.py joins whole residues
+  # of Protein_Struct along a minimum spanning tree of minimum-image links
+  # (pbc_tools.assemble, as in measure_box.py, interface_qc.py and rebound_rmsd.py),
+  # moving them by lattice vectors only, and leaves the box and every other atom as
+  # they are. Rebuilt on every setup pass, since it is deterministic and takes
+  # seconds, so a frame clustered by older code is never reused.
+  rm -f npt_probe_cluster.tmp.gro
+  python3 ../../utils/assemble_frame.py -f npt_probe_whole.gro -n index_probe.ndx \
+      -g Protein_Struct -o npt_probe_cluster.tmp.gro
+  AF_RC=$?
+  if [[ $AF_RC -ne 0 || ! -s npt_probe_cluster.tmp.gro ]]; then
+    echo "Stage 0 failed: assemble_frame.py exited $AF_RC and gave no assembled npt_probe_cluster.gro"
+    echo "  (its reason is the line above)."
+    echo $STRUCT_ID "ASSEMBLE_FAIL" >> ../results_0.gs
+    rm -f npt_probe_cluster.tmp.gro
     exit 0
   fi
+  mv npt_probe_cluster.tmp.gro npt_probe_cluster.gro
+  # The .pdb is only for looking at, made from the assembled frame so that it shows
+  # what the restraints were built on: every atom but the water.
+  rm -f npt_probe_cluster.pdb
+  echo -e "! \"Water\"\n" | gmx trjconv -f npt_probe_cluster.gro -s npt_probe.tpr \
+      -o npt_probe_cluster.pdb -n index_probe.ndx
 
   # Generate the FE pull configuration (interface + Boresch + elastic network)
   # from the equilibrated reference structure. make_boresch.py appends the full
   # pull block to each leg .mdp and emits the analytical Boresch term.
   echo "Generating FE restraints (interface + Boresch + elastic network)."
-  for m in "${FE_LEG_MDPS[@]}"; do cp "$MDP_DIR/$m" ./ ; done
+  # npt_c_fe.mdp goes with the leg mdps: make_boresch.py appends the elastic
+  # network to it, and every cycle's npt_c runs this copy (see the cycle phase).
+  for m in "${FE_LEG_MDPS[@]}" npt_c_fe.mdp; do cp "$MDP_DIR/$m" ./ ; done
   # Write to a temp name and promote on success. Redirecting straight into
   # numpertres.gs meant a crashed make_boresch.py still created the file the
   # checks below look for, 0 bytes and indistinguishable from a real result.
@@ -1058,9 +1659,17 @@ with open('$CUTOUT_PDB', 'w') as f:
       --topol topol_probe.top --readback-index index_probe.ndx \
       --box-from emin_solv.gro $SUM_K_OPT $SD_MAX_OPT > numpertres.tmp
   MB_RC=$?
-  # If Boresch anchor selection failed, flag the structure and stop.
+  # make_boresch.py stopped on purpose: flag the structure and stop. Every one of
+  # its aborts writes the reason as the first line of boresch_failed.gs, and only
+  # some of them are about the anchors: NPT_C_MDP_MISSING, LEG_MDP_MISSING,
+  # PROTOCOL_BLOCK_MISSING/INVALID and PULL_DIST_MISMATCH are about the checkout,
+  # INPUT_FRAME_SPLIT about the reference frame. A fixed "anchor selection failed"
+  # made a checkout without npt_c_fe.mdp read as an anchor failure of every
+  # structure (review CYC-6), so the reason is printed as written.
   if [[ -f boresch_failed.gs ]]; then
-    echo "Boresch anchor selection failed."
+    BF_REASON=$(head -n 1 boresch_failed.gs | tr -d '\r')
+    echo "Stage 0 failed: make_boresch.py stopped with ${BF_REASON:-no reason recorded}"
+    echo "  (boresch_failed.gs; its message is the 'make_boresch: ERROR' line above)."
     echo $STRUCT_ID "BORESCH_FAIL" >> ../results_0.gs
     rm -f numpertres.tmp
     exit 0
@@ -1103,15 +1712,26 @@ with open('$CUTOUT_PDB', 'w') as f:
   for m in "${FE_LEG_MDPS[@]}"; do
     grep -q '^pull-ngroups' "$m" 2>/dev/null || SETUP_MISSING="$SETUP_MISSING $m:pull-block"
   done
+  # npt_c_fe.mdp ships with 'pull = yes' and no coordinates, which grompp refuses,
+  # so make_boresch.py must have either appended the elastic network or switched
+  # pull off for a structure without one. Neither means it never touched the file.
+  if ! grep -q '^pull-ngroups' npt_c_fe.mdp 2>/dev/null \
+     && ! grep -Eq '^pull[[:space:]]*=[[:space:]]*no([[:space:]]|;|$)' npt_c_fe.mdp 2>/dev/null; then
+    SETUP_MISSING="$SETUP_MISSING npt_c_fe.mdp:elastic-network-block"
+  fi
   if [[ -n "$SETUP_MISSING" ]]; then
     echo "Stage 0 failed: setup produced no usable restraints; missing or empty:$SETUP_MISSING"
     echo $STRUCT_ID "SETUP_FAIL" >> ../results_0.gs
     exit 0
   fi
 
-  # Setup finished: release any --cycle tasks that are waiting on this marker.
+  # Setup finished: record the protocol it was built for, then release any --cycle
+  # tasks waiting on the marker. In that order, so a released task always finds the
+  # record: a cycle runs only under the protocol its setup names (see the cycle
+  # phase), and only a completed setup writes it.
+  echo "$FE_PROTOCOL_ID" > protocol_id.gs
   touch setup.done
-  echo "Setup complete for $STRUCT_ID (restraints defined)."
+  echo "Setup complete for $STRUCT_ID (restraints defined, protocol $FE_PROTOCOL_ID)."
   if [[ "$MODE" == "setup" ]]; then
     exit 0
   fi
@@ -1150,9 +1770,10 @@ if [[ -z "$PULL_RATE" ]]; then
 fi
 
 # Independent equilibration cycles
-# Each cycle: fresh equilibration -> pull -> short NPT -> push.
-# Cycles are independent (each restarts from emin_solv.gro with new velocities),
-# so they can run concurrently as separate array tasks.
+# Each cycle: a fresh equilibration (the NVT ladder and npt_c), then the legs of
+# fe_protocol.legs() in order. Cycles are independent (each restarts from
+# emin_solv.gro with new velocities), so they can run concurrently as separate
+# array tasks.
 # Total number of cycles wanted. GROSCORE_NUMCYCLES (exported by the generated
 # SLURM script) takes precedence over run.gs so the total can be raised later to
 # add cycles -- including for archived structures, whose run.gs cannot be
@@ -1174,53 +1795,28 @@ fi
   # then the next start re-queues that cycle (it has no complete result, which is
   # indistinguishable from "dead") and two mdruns write the same -deffnm files,
   # in place, at independent offsets. Nothing downstream can detect the resulting
-  # garbage. `mkdir` is atomic on POSIX and on NFS, so it elects one winner the
-  # same way the archive step does. The lock records host:pid so a lock left by a
-  # killed job can be reclaimed, but ONLY on the same host, where the pid is
-  # meaningful -- across hosts we skip the cycle rather than risk a collision.
+  # garbage. Each cycle therefore takes its own lock, with take_lock (top of this
+  # file), the same mkdir election and host:pid:job owner the setup lock uses.
   CYCLE_LOCK=""
   release_cycle_lock() {
     [[ -n "$CYCLE_LOCK" && -d "$CYCLE_LOCK" ]] && rm -rf "$CYCLE_LOCK"
     CYCLE_LOCK=""
   }
-  trap 'release_cycle_lock' EXIT INT TERM
+  # One set of traps for both locks, since a second `trap ... EXIT` replaces the
+  # first. INT and TERM exit after releasing, for the reason at the setup lock:
+  # this trap used not to, so a TERM let the cycle carry on, and in legacy mode
+  # start the next cycle's legs, until the KILL that follows it.
+  trap 'release_cycle_lock; release_job_lock' EXIT
+  trap 'stop_leg; release_cycle_lock; release_job_lock; exit 130' INT
+  trap 'stop_leg; release_cycle_lock; release_job_lock; exit 143' TERM
 
   claim_cycle() {
     local lock=results_fe_c$1.lock
-    if mkdir "$lock" 2>/dev/null; then
-      echo "$(hostname):$$:${SLURM_JOB_ID:--}" > "$lock/owner"
+    if take_lock "$lock"; then
       CYCLE_LOCK="$lock"
       return 0
     fi
-    local owner host pid job
-    owner=$(cat "$lock/owner" 2>/dev/null)
-    IFS=: read -r host pid job <<< "$owner"
-
-    # Same host: the pid means something, so ask the kernel.
-    if [[ "$host" == "$(hostname)" && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
-      echo "Cycle $1: reclaiming stale lock from dead pid $pid"
-      rm -rf "$lock"
-    # DIFFERENT host: the pid is meaningless, but a SLURM job id is not. A lock
-    # is only released by the EXIT trap, and SIGKILL does not run traps --
-    # `timeout -s 9` and SLURM's own walltime kill both SIGKILL -- so a job that
-    # is hard-killed on another node leaves its lock behind forever. Without a
-    # cross-host liveness test that cycle can never be claimed again by anyone:
-    # every later run prints "already running elsewhere" and skips it, and
-    # --restart quietly does nothing for it. squeue answers the question
-    # exactly: if the owning job is not in the queue, it cannot be running.
-    elif [[ -n "$job" && "$job" != "-" ]] && command -v squeue >/dev/null 2>&1; then
-      if ! squeue -h -j "$job" >/dev/null 2>&1 || [[ -z "$(squeue -h -j "$job" 2>/dev/null)" ]]; then
-        echo "Cycle $1: reclaiming lock from SLURM job $job, no longer queued"
-        rm -rf "$lock"
-      fi
-    fi
-
-    if [[ ! -d "$lock" ]] && mkdir "$lock" 2>/dev/null; then
-      echo "$(hostname):$$:${SLURM_JOB_ID:--}" > "$lock/owner"
-      CYCLE_LOCK="$lock"
-      return 0
-    fi
-    echo "Cycle $1: already running elsewhere (owner ${owner:-unknown}) - skipping."
+    echo "Cycle $1: already running elsewhere (owner $LOCK_OWNER) - skipping."
     echo "  If that job is gone and squeue cannot say so, remove $lock by hand."
     return 1
   }
@@ -1248,6 +1844,50 @@ fi
     fi
     echo "=== FE cycle $cycle of $NUMCYCLES ==="
 
+    # NO CYCLE RUNS ON A SETUP OF ANOTHER PROTOCOL. A setup writes the leg mdps,
+    # npt_c_fe.mdp and the restraints for the protocol it was built under, and
+    # records that protocol in protocol_id.gs when it completes. A cycle with
+    # anything left to run goes on only if the record names the protocol this code
+    # runs (fe_protocol.PROTOCOL_ID). The check covers every leg, not only npt_c, so
+    # a cycle that had finished npt_c or any later leg under an older setup cannot
+    # go on into this protocol's legs: in a pre-v1.5 directory run in legacy mode, or
+    # set up again after its setup.done was removed, the unfinished v1.4 cycles went
+    # on from their old checkpoints, an npt_c without the elastic network and a
+    # boundrev2 resumed from a checkpoint that had started at the end of holdrev0,
+    # and wrote valid-looking rows (review CYC-1).
+    # npt_c then runs ./npt_c_fe.mdp, the structure's own copy that make_boresch.py
+    # completed with the elastic network, and there is no fallback to the settings
+    # tree's npt_fe.mdp: that would run the old, network-free npt_c without a word.
+    # A cycle whose legs are all done still integrates below, so the results of an
+    # old directory can be recomputed; groscore_fe.py records the protocol of a run
+    # directory in run_config.gs.
+    CYCLE_TODO=0
+    [[ -f npt_c${cycle}.gro ]] || CYCLE_TODO=1
+    for _leg in "${FE_LEGS[@]}"; do
+      [[ -f ${_leg}_${cycle}.gro ]] || CYCLE_TODO=1
+    done
+    if [[ $CYCLE_TODO -eq 1 ]]; then
+      SETUP_ID=$(head -n 1 protocol_id.gs 2>/dev/null | tr -d '[:space:]')
+      WHY=""
+      if [[ -z "$SETUP_ID" ]]; then
+        WHY="this directory has no protocol_id.gs, so its setup predates v1.5 (or the record was deleted)"
+      elif [[ "$SETUP_ID" != "$FE_PROTOCOL_ID" ]]; then
+        WHY="this directory was set up for protocol $SETUP_ID, and this code runs $FE_PROTOCOL_ID"
+      elif [[ ! -f npt_c_fe.mdp ]]; then
+        WHY="./npt_c_fe.mdp is missing, although protocol_id.gs says the setup completed under this protocol"
+      fi
+      if [[ -n "$WHY" ]]; then
+        echo "Cycle $cycle FAILED: $WHY."
+        echo "  Set this structure up again in a fresh directory: its probe, box, ligands"
+        echo "  and restraints all belong to that setup."
+        if [[ "$SETUP_ID" != "$FE_PROTOCOL_ID" ]]; then
+          echo "  Removing setup.done does not help: a setup run again here would rebuild"
+          echo "  only the restraints, so it refuses to run beside cycles it did not start."
+        fi
+        CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue
+      fi
+    fi
+
     # Full equilibration for this cycle (NVT 1-5 + NPT)
     if [[ ! -f npt_c${cycle}.gro ]]; then
       echo "Running full equilibration for cycle $cycle"
@@ -1255,44 +1895,53 @@ fi
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_1_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_1_c${cycle}
+        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_1_c${cycle}
       fi
       if [[ ! -f nvt_2_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_c${cycle}.tpr -t nvt_1_c${cycle}.cpt -p topol.top -o nvt_2_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_2_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_2_c${cycle}
+        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_2_c${cycle}
       fi
       if [[ ! -f nvt_3_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_c${cycle}.tpr -t nvt_2_c${cycle}.cpt -p topol.top -o nvt_3_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_3_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_3_c${cycle}
+        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_3_c${cycle}
       fi
       if [[ ! -f nvt_4_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_c${cycle}.tpr -t nvt_3_c${cycle}.cpt -p topol.top -o nvt_4_c${cycle} -maxwarn 10
       fi
       if [[ ! -f nvt_4_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_4_c${cycle}
+        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_4_c${cycle}
       fi
       if [[ ! -f nvt_5_c${cycle}.tpr ]]; then
         gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_c${cycle}.tpr -t nvt_4_c${cycle}.cpt -p topol.top -o nvt_5_c${cycle} -n index.ndx -maxwarn 10
       fi
       if [[ ! -f nvt_5_c${cycle}.gro ]]; then
-        timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_c${cycle}
+        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_c${cycle}
       fi
       # npt_c is the bound-state ensemble boundfwd starts from, and Crooks assumes
       # those initial states are drawn from the true equilibrium distribution, so
       # this leg has to run under a barostat that has one. C-rescale does, and
       # being first order it also settles the box off the NVT ladder without a
       # separate weak-coupling stage.
+      #
+      # It must also run the Hamiltonian boundfwd1 starts with, H(lambda = 0) of
+      # the bound block, and that includes the elastic network. Through v1.4 it
+      # ran $MDP_DIR/npt_fe.mdp with no pull code at all: the network came on at
+      # full strength at t = 0 of boundfwd1, a median 299 kJ/mol never recorded,
+      # and 20 of 920 pass-2 cycles died at the boundfwd1 grompp on a network pair
+      # that had drifted beyond 0.49 times the box during the 20 ns
+      # (bm_fe_amber_2/_ana/digest/fu3.txt F10, qc.txt npt_c_elastic_network_off).
       if [[ ! -f npt_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/npt_fe.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
+        gmx grompp -r emin_solv.gro -f ./npt_c_fe.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
       fi
       if [[ ! -f npt_c${cycle}.gro ]]; then
-        # 600m and -cpi, not the 60m every short stage uses. npt_fe.mdp went
-        # 1 ns -> 10 ns, and 10 ns does not fit in an hour when several slots
-        # share a GPU. The failure mode is not a slow cycle, it is a STUCK one:
+        # 600m and -cpi, not the 60m every short stage uses. npt_c runs
+        # ./npt_c_fe.mdp for 20 ns (it was 1 ns, then 10), and that does not fit
+        # in an hour when several slots share a GPU. The failure mode is not a
+        # slow cycle, it is a STUCK one:
         # a kill leaves npt_c.cpt but no .gro, the `! -f npt_c.tpr` guard then
         # skips grompp, and mdrun without -cpi restarts from step 0 of the same
         # tpr and is killed at the same place on every retry. require_gro catches
@@ -1313,17 +1962,31 @@ fi
     # been reshaped three times; each time it was four hardcoded lists.
     #
     # Every leg continues from the previous leg's checkpoint, so lambda and the
-    # pull references stay continuous around the whole cycle. Switching stages
-    # write a pull-force xvg and a dhdl xvg; holds write neither, because they
-    # carry rate 0 and delta-lambda 0 and so do no work at all.
+    # pull references stay continuous around the whole cycle, except where
+    # FE_LEG_FROM names another leg of the same cycle to start from. That is
+    # boundrev2, which branches from the end of holdfwd0: the reverse bound legs
+    # start from the forward handoff state, relaxed under their own end-state
+    # Hamiltonian, rather than from the strained rebound interface the reverse ramp
+    # leaves (fe_protocol.legs() has the measurement). The source is named by file,
+    # so a restart that skips the finished legs still branches from the right one.
+    # Switching stages write a pull-force xvg (-pf) and a dhdl xvg (-dhdl), the bound
+    # legs a dhdl xvg. Holds get neither option, since they carry rate 0 and
+    # delta-lambda 0 and so do no work, but mdrun -deffnm still writes their
+    # dH/dlambda to <hold>_<cycle>.xvg, which fe_xvgs keeps.
     LEG_FAILED=0
     prev=npt_c${cycle}
     for li in "${!FE_LEGS[@]}"; do
       leg="${FE_LEGS[$li]}"
       mdp="${FE_LEG_MDP[$li]}"
       out="${leg}_${cycle}"
+      src=$prev
+      [[ -n "${FE_LEG_FROM[$li]}" ]] && src="${FE_LEG_FROM[$li]}_${cycle}"
       if [[ ! -f ${out}.gro ]]; then
-        gmx grompp -r emin_solv.gro -f "$mdp" -c ${prev}.tpr -t ${prev}.cpt \
+        if [[ ! -f ${src}.tpr || ! -f ${src}.cpt ]]; then
+          echo "Cycle $cycle FAILED: leg $leg starts from $src, but ${src}.tpr or ${src}.cpt is missing."
+          LEG_FAILED=1; break
+        fi
+        gmx grompp -r emin_solv.gro -f "$mdp" -c ${src}.tpr -t ${src}.cpt \
                    -p topol.top -o ${out} -n index.ndx -maxwarn 10
         xtra=()
         [[ "${FE_LEG_PULL[$li]}" == "1" ]] && xtra+=(-pf ${out}_pullf.xvg)
@@ -1341,10 +2004,11 @@ fi
       CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue
     fi
 
-    # --- Work integration: one results_fe.gs line per completed cycle ---
-    # Columns: STRUCT_ID cycle W_intro Wunbind_pull Wunbind_dhdl Wrebind_pull Wrebind_dhdl W_remove RMSD_A
-    # (works in kJ/mol; groscore_fe.py combines them via the thermodynamic cycle.
-    #  RMSD_A is the rebinding sanity check, in Angstrom -- see below.)
+    # --- Work integration: one results_fe.d/<ID>_c<N>.gs row per completed cycle ---
+    # The row is FE_RESULT_NF = 43 fields: STRUCT_ID, cycle, the 40 works named by
+    # FE_WORK_FIELDS in that order, and RMSD_A (works in kJ/mol; groscore_fe.py
+    # combines them via the thermodynamic cycle. RMSD_A is the rebinding check, in
+    # Angstrom, see below.)
     # Recompute whenever this cycle's result file is missing or still holds NaN --
     # not merely when the cycle is new. Two cases the .done marker alone misses:
     #   * a cycle finished by an earlier run has its values only in the legacy
@@ -1382,8 +2046,8 @@ fi
       done
       # Never let a failed integration (crash, missing module, empty output) turn
       # a field into an empty string: that silently writes a short line which no
-      # NaN check would ever flag for repair. Fall back to NaN so the row stays
-      # 8 fields wide and is retried on the next run.
+      # NaN check would ever flag for repair. Fall back to NaN so the row keeps its
+      # FE_RESULT_NF fields and is retried on the next run.
       integrate_or_nan() {
         local out
         out=$("$@" 2>/dev/null) || out=""
@@ -1493,11 +2157,12 @@ fi
       done
 
       # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state
-      # this cycle was equilibrated in (npt_c$cycle) and the end of the rebinding
-      # leg (bindrev_$cycle). A large value means the partners did not return to
-      # the original pose, so the thermodynamic cycle did not close on the state
-      # it started from. Always computed, never fatal -- groscore_fe.py flags it
-      # (see --rmsd-warn).
+      # this cycle was equilibrated in (npt_c$cycle) and the end of the reverse
+      # ramp (LAST_STAGE, bindrevA_$cycle). A large value means the partners did
+      # not return to the original pose. Since v1.5 no leg starts from that state
+      # (boundrev2 branches from holdfwd0), so it marks a dissipative reverse ramp,
+      # not a cycle that failed to close. Always computed, never fatal:
+      # groscore_fe.py flags it (see --rmsd-warn).
       RMSD="NaN"
       LAST_STAGE=""
       for _i in "${!FE_LEGS[@]}"; do
@@ -1515,10 +2180,10 @@ fi
         # and therefore what capping the restraint list per contact could damage.
         # Measured so that a reduction can be tested rather than argued.
         #
-        # Written to its own file, NOT appended to the result row: the row width
-        # carries the nstages = (NF - 5)/4 invariant that read_works decodes the
-        # stage count from, and two extra fields would make that arithmetic
-        # non-integral and silently reject every row.
+        # Written to its own file, NOT appended to the result row: read_works
+        # decodes the number of bound sub-legs and ramp stages from the row width
+        # (groscore_fe.py _layout), and two extra fields would match no layout and
+        # silently reject every row.
         if [[ -f interface_contacts.gs ]]; then
           mkdir -p ../results_qc.d
           IQC=$(python3 ../../utils/interface_qc.py -c interface_contacts.gs \
@@ -1533,11 +2198,12 @@ fi
       # cycles running as parallel array tasks, many writers would race on the
       # same file. groscore_fe.py merges results_fe.d/ with any legacy file.
       mkdir -p ../results_fe.d
-      # The unbinding channel now carries two stages per direction, so the row is
-      # 13 fields rather than 9. The stages are stored SEPARATELY on purpose:
-      # summing them recovers the unstaged work exactly, so nothing is lost, but
-      # separate storage also allows the staged estimate that the intermediate
-      # holds exist to make possible. groscore_fe.py does both.
+      # The row is FE_RESULT_NF = 43 fields: STRUCT_ID, cycle, the 40 works of
+      # FE_WORK_FIELDS (two bound sub-legs and nine ramp stages per direction, a
+      # pull and a dhdl work per stage) and RMSD_A. The stages are stored
+      # SEPARATELY on purpose: summing them recovers the unstaged work exactly, so
+      # nothing is lost, but separate storage also allows the staged estimate that
+      # the intermediate holds exist to make possible. groscore_fe.py does both.
       _row="$STRUCT_ID $cycle"
       for _f in "${FE_WORK_FIELDS[@]}"; do _row="$_row ${W[$_f]}"; done
       echo "$_row $RMSD" > $RESFILE
@@ -1583,8 +2249,15 @@ fi
   # tasks tarring/deleting the same directory would be destructive).
   # Guard the rm behind a successful, non-empty tar so a killed/broken archive
   # can never delete the source directory (a 0-byte tar once wiped a structure).
-  DONE_CYCLES=$(ls -1 results_fe_c*.done 2>/dev/null | wc -l)
-  if [[ $DONE_CYCLES -ge $NUMCYCLES ]] && mkdir .archive.lock 2>/dev/null; then
+  # The cycles counted are 1..NUMCYCLES, as in job.run: counting every .done, those
+  # of cycles above the total from an earlier, larger -n made the first task of an
+  # array that ended archive and remove the directory while the others still ran in
+  # it (review S5).
+  DONE_CYCLES=0
+  for ((c = 1; c <= NUMCYCLES; c++)); do
+    [[ -f results_fe_c$c.done ]] && DONE_CYCLES=$((DONE_CYCLES+1))
+  done
+  if [[ $NUMCYCLES -gt 0 && $DONE_CYCLES -eq $NUMCYCLES ]] && mkdir .archive.lock 2>/dev/null; then
     # Last chance to lift the analytical term out of the structure directory:
     # once this is a tarball, boresch_analytical.gs is unreachable to the scorer
     # and the structure would score PENDING forever despite having every cycle.
@@ -1594,7 +2267,10 @@ fi
       echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
     fi
     cd ..
-    if tar -czf "${STRUCT_ID}.tar.gz" "${STRUCT_ID}/" && [[ -s "${STRUCT_ID}.tar.gz" ]]; then
+    # A legacy job still holds job_run.lock here. It stays out of the archive: an
+    # unpacked copy would carry an owner whose death another host cannot prove.
+    if tar -czf "${STRUCT_ID}.tar.gz" --exclude="${STRUCT_ID}/job_run.lock" "${STRUCT_ID}/" \
+       && [[ -s "${STRUCT_ID}.tar.gz" ]]; then
       rm -rf "${STRUCT_ID}/"
     else
       echo "Archive failed or empty for ${STRUCT_ID}; keeping directory."

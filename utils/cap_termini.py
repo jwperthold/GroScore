@@ -7,10 +7,27 @@
 
 import os
 import sys
+import random
 import argparse
 import tempfile
+import openmm
 from pdbfixer import PDBFixer
 from openmm import unit
+
+# Deterministic caps (audit SH4). Three runs of the v1.4 script on the identical
+# 2FD6 fixed.pdb gave three different fixed_capped.pdb: 663-892 of 5163 non-cap
+# heavy atoms differed by more than 0.1 A, up to 2.2-2.8 A, and make_cutout then
+# cut 348, 348 and 355 residues. The cap atoms start from random positions
+# (Modeller.addHydrogens draws from Python's random), PDBFixer's integrator was
+# unseeded, and both ran on whatever platform OpenMM picked (CUDA if present) with
+# every thread. Output became byte-identical only with all four pinned: Python
+# random seeded, addMissingAtoms(seed), the CPU platform and one thread. One
+# thread costs about 30 s per call on the 2FD6 full model and 18-23 s on its
+# cutout (v1.4: 9 s on 24 threads); repeated runs are byte-identical.
+CAP_SEED = 1
+random.seed(CAP_SEED)
+CPU = openmm.Platform.getPlatformByName('CPU')
+CPU.setPropertyDefaultValue('Threads', '1')
 
 # Ion residue names supported by all GroScore force fields
 ION_RESIDUES = {"BA", "CA", "CD", "CL", "CO", "CS", "CU", "CU1", "FE", "FE2", "HG", "K", "LI", "MG", "MN", "NA", "NI", "PB", "SD", "SR", "ZN"}
@@ -100,8 +117,8 @@ if ion_lines:
 else:
     pdbfixer_input = args.file
 
-# Load PDB with PDBFixer
-fixer = PDBFixer(filename=pdbfixer_input)
+# Load PDB with PDBFixer (CPU, one thread: see CAP_SEED)
+fixer = PDBFixer(filename=pdbfixer_input, platform=CPU)
 fixer.findMissingResidues()
 fixer.missingResidues = {}  # Clear auto-detected missing residues
 
@@ -118,7 +135,9 @@ for chain in fixer.topology.chains():
             fixer.missingResidues[(chain.index, len(residues))] = ['NME']
 
 fixer.findMissingAtoms()
-fixer.addMissingAtoms()
+# PDBFixer holds every existing atom massless while it places the new ones (the
+# caps), so this step leaves the input coordinates exactly as they were.
+fixer.addMissingAtoms(seed=CAP_SEED)
 
 # Strip extra terminal atoms that conflict with caps
 # PDBFixer adds ACE/NME but doesn't remove N-terminal H2/H3 or C-terminal OXT
@@ -151,7 +170,8 @@ if atoms_to_delete:
 # Brief OpenMM energy minimization of cap atoms to resolve steric clashes
 # PDBFixer places ACE/NME atoms from templates without checking for clashes,
 # which can result in cap hydrogens overlapping backbone atoms (e.g., ACE H1 on CA)
-import openmm
+from io import StringIO
+import numpy as np
 from openmm import app as mmapp
 
 cap_residue_names = {'ACE', 'NME', 'NHE'}
@@ -160,13 +180,200 @@ for atom in fixer.topology.atoms():
     if atom.residue.name in cap_residue_names:
         cap_atom_indices.add(atom.index)
 
+# Residues without an amber14 template (v1.5). OpenMM bonds only the residues it
+# knows, and amber14-all has templates only for those. An NCAA (2MTA TRQ, 2BTF HIC),
+# a fused glycan residue (NG1, Asn with its NAG) or a CYM that fix_ion_protonation.py
+# made from an ion-binding Cys and make_cutout.py hands back without hydrogens
+# (addHydrogens has no CYM entry; 1E6E, 2MTA cutouts) got neither internal bonds nor
+# the peptide bond from the residue before, so createSystem failed on that neighbour
+# ("No template found for residue 34 (THR) ... missing 1 C atom"), the exception
+# below caught it, and EVERY cap of the structure kept PDBFixer's raw position: 7 cap
+# heavy-atom contacts below 1.8 A down to 1.11 A on the fused 2AJF full model, 16
+# down to 0.85 A on its cutout, 6-20 on the 2BTF, 2MTA and 1E6E files. Now the bonds
+# OpenMM left out are made first, and every residue that still matches no template
+# gets one built from its own atoms and bonds (GenericTemplates; instances of one
+# name with different atom counts get one each). Its N, CA, C and O take the amber14
+# backbone types, so a cap bonded to it keeps the amber14 bond, angle and torsion
+# terms across the junction; every other atom is an uncharged Lennard-Jones sphere of
+# its element. All of it is massless like every non-cap atom: it never moves and only
+# shapes the space the caps relax in. A structure without such residues makes no
+# bond and never calls the generator, so its output is byte for byte what it was.
+# Measured on the 92 fixed.pdb and cutout.pdb files of the 46 HADDOCK structures: the
+# 5 that failed (1E6E cutout, 2BTF and 2MTA both) now minimise, contacts below 1.8 A
+# 6-20 -> 0-3, and the other 87 give the same bytes as before. On the fused 2AJF the
+# full model goes from 7 to 0 such contacts and its cutout from 16 to 1.
+#
+# Covalent radii (A; Cordero et al. 2008, merge_ligand.py's values for C, N, O, S, P
+# and Se) for bonding a residue that OpenMM left without any bond: two atoms closer
+# than r1 + r2 + BOND_SLACK_A are bonded, a hydrogen only to its nearest such atom.
+# Any other element counts as 0.80 A.
+BOND_RADII_A = {"H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "P": 1.07,
+                "S": 1.05, "Cl": 1.02, "Se": 1.20, "Br": 1.20, "I": 1.39}
+BOND_RADIUS_OTHER_A = 0.80
+BOND_SLACK_A = 0.35
+# A peptide bond C(i)-N(i+1) that OpenMM did not make is made below 0.2 nm (the bond
+# is 0.133 nm), and between a cap and its neighbour wherever PDBFixer put the cap.
+PEPTIDE_BOND_MAX_NM = 0.2
+# amber14 types of a generic residue's backbone, by atom name and element.
+BACKBONE_TYPES = {("N", "N"): "protein-N", ("CA", "C"): "protein-CX",
+                  ("C", "C"): "protein-C", ("O", "O"): "protein-O"}
+# Lennard-Jones sigma (nm) and epsilon (kJ/mol) of every other generic atom, by
+# element: amber14 HC, CT, N and S, parm10 OS, F and P, GAFF cl, br and i, Se as S.
+# Any other element, or an atom without one, is a carbon-sized sphere.
+GENERIC_LJ = {"H": (0.2649532787749369, 0.0656888), "C": (0.3399669508423535, 0.4577296),
+              "N": (0.3249998523775958, 0.71128), "O": (0.3000012343465, 0.71128),
+              "F": (0.3118145513, 0.255224), "P": (0.3741774616, 0.8368),
+              "S": (0.35635948725613575, 1.046), "Cl": (0.3470941, 1.10876),
+              "Se": (0.35635948725613575, 1.046), "Br": (0.3955590, 1.33888),
+              "I": (0.4187224, 1.6736)}
+GENERIC_LJ_OTHER = GENERIC_LJ["C"]
+
+
+def make_missing_bonds(topology, positions):
+    """Make the bonds OpenMM left out, so that every residue reaches the template
+    generator with its real graph: inside each residue that has no bond at all, by
+    covalent distance, and the peptide bond C(i)-N(i+1) of a chain where there is
+    none, when the two atoms lie within PEPTIDE_BOND_MAX_NM or one of the residues is
+    a cap. Returns the number of bonds made."""
+    xyz = np.array([p.value_in_unit(unit.nanometer) for p in positions])
+    have = {tuple(sorted((a.index, b.index))) for a, b in topology.bonds()}
+    bonded_inside = {a.residue.index for a, b in topology.bonds() if a.residue is b.residue}
+    new = []
+
+    def bond(a, b):
+        key = tuple(sorted((a.index, b.index)))
+        if key not in have:
+            have.add(key)
+            new.append((a, b))
+
+    def radius(atom):
+        return BOND_RADII_A.get(atom.element.symbol if atom.element else "", BOND_RADIUS_OTHER_A)
+
+    for res in topology.residues():
+        atoms = list(res.atoms())
+        if len(atoms) < 2 or res.index in bonded_inside:
+            continue
+        heavy = [a for a in atoms if a.element is None or a.element.symbol != "H"]
+        for i, a in enumerate(heavy):
+            for b in heavy[i + 1:]:
+                d = 10.0 * np.linalg.norm(xyz[a.index] - xyz[b.index])
+                if d < radius(a) + radius(b) + BOND_SLACK_A:
+                    bond(a, b)
+        for h in atoms:
+            if h.element is None or h.element.symbol != "H" or not heavy:
+                continue
+            d, k = min((10.0 * np.linalg.norm(xyz[h.index] - xyz[a.index]), k)
+                       for k, a in enumerate(heavy))
+            if d < radius(h) + radius(heavy[k]) + BOND_SLACK_A:
+                bond(h, heavy[k])
+    for chain in topology.chains():
+        residues = list(chain.residues())
+        for r1, r2 in zip(residues, residues[1:]):
+            c = [a for a in r1.atoms() if a.name == "C"]
+            n = [a for a in r2.atoms() if a.name == "N"]
+            if len(c) != 1 or len(n) != 1:
+                continue
+            if (np.linalg.norm(xyz[c[0].index] - xyz[n[0].index]) < PEPTIDE_BOND_MAX_NM
+                    or r1.name in cap_residue_names or r2.name in cap_residue_names):
+                bond(c[0], n[0])
+    for a, b in new:
+        topology.addBond(a, b)
+    return len(new)
+
+
+class GenericTemplates:
+    """ForceField template generator: a residue that matches no amber14 template
+    gets one built from its own atoms and bonds, typed as described above. OpenMM
+    calls it once per residue graph it cannot match, so the four NG1 of 2AJF share
+    one template and a truncated instance of an NCAA gets its own. A residue it
+    cannot template is named in self.failed, and createSystem then raises."""
+
+    def __init__(self):
+        self.names = []        # residue name of each template made, in order
+        self.failed = []       # 'NAME CHAIN NUM: reason' of each residue it could not template
+        self.types = set()     # generic atom types registered so far
+        self.count = 0
+
+    def __call__(self, forcefield, residue):
+        self.count += 1
+        try:
+            xml, new_types = self.ffxml(forcefield, residue)
+            forcefield.loadFile(StringIO(xml))
+        except Exception as e:
+            self.failed.append("%s %s %s%s: %s" % (residue.name, residue.chain.id, residue.id,
+                                                   residue.insertionCode.strip(), e))
+            return False
+        self.types.update(new_types)
+        self.names.append(residue.name)
+        return True
+
+    def ffxml(self, forcefield, residue):
+        """The template as force field XML, with any generic atom type not yet
+        registered first, and the names of those types. Atoms are named by index:
+        OpenMM matches templates by element and bond graph, so the residue's own
+        names (which may repeat) need not be valid here."""
+        atoms = list(residue.atoms())
+        index = {a.index: i for i, a in enumerate(atoms)}
+        types, new_types = [], []
+        for a in atoms:
+            symbol = a.element.symbol if a.element is not None else None
+            t = BACKBONE_TYPES.get((a.name, symbol))
+            if t is None:
+                t = "gscap-%s" % (symbol or "X")
+                if t not in self.types and t not in [n for n, _ in new_types]:
+                    new_types.append((t, a.element))
+            types.append(t)
+        xml = ["<ForceField>"]
+        if new_types:
+            xml.append("<AtomTypes>")
+            for t, el in new_types:
+                xml.append('<Type name="%s" class="%s"%s mass="%r"/>'
+                           % (t, t, ' element="%s"' % el.symbol if el is not None else "",
+                              el.mass.value_in_unit(unit.dalton) if el is not None else 12.0))
+            xml.append("</AtomTypes>")
+        xml.append('<Residues><Residue name="GSCAP%d_%s">' % (self.count, residue.name))
+        for i, t in enumerate(types):
+            xml.append('<Atom name="a%d" type="%s" charge="0"/>' % (i, t))
+        inside, outside = set(), set()
+        for a, b in residue.chain.topology.bonds():
+            ia, ib = index.get(a.index), index.get(b.index)
+            if ia is not None and ib is not None:
+                inside.add(tuple(sorted((ia, ib))))
+            elif ia is not None or ib is not None:
+                outside.add((ia, b.index) if ia is not None else (ib, a.index))
+        xml += ['<Bond from="%d" to="%d"/>' % p for p in sorted(inside)]
+        xml += ['<ExternalBond from="%d"/>' % p[0] for p in sorted(outside)]
+        xml.append("</Residue></Residues>")
+        if new_types:
+            nb = [g for g in forcefield.getGenerators() if isinstance(g, mmapp.forcefield.NonbondedGenerator)][0]
+            xml.append('<NonbondedForce coulomb14scale="%r" lj14scale="%r">' % (nb.coulomb14scale, nb.lj14scale))
+            for t, el in new_types:
+                sigma, epsilon = GENERIC_LJ.get(el.symbol if el is not None else "", GENERIC_LJ_OTHER)
+                xml.append('<Atom type="%s" charge="0" sigma="%r" epsilon="%r"/>' % (t, sigma, epsilon))
+            xml.append("</NonbondedForce>")
+        xml.append("</ForceField>")
+        return "\n".join(xml), [t for t, _ in new_types]
+
+    def summary(self):
+        """'NG1' or 'TRQ (2 templates), CYM': the templated residue names in order."""
+        order = list(dict.fromkeys(self.names))
+        return ", ".join(n if self.names.count(n) == 1 else "%s (%d templates)" % (n, self.names.count(n))
+                         for n in order)
+
+
 if cap_atom_indices:
-    # Build modeller with hydrogens for AMBER14 compatibility
-    # May fail for exotic residues not in AMBER14 templates — fall back gracefully
+    # Build modeller with hydrogens for AMBER14 compatibility. A residue amber14 has
+    # no template for gets a generic one (see above); a failure that remains, such
+    # as a residue the generator cannot template, falls back to the raw caps and says so.
+    generic = GenericTemplates()
     try:
         ff_mm = mmapp.ForceField('amber14-all.xml')
+        ff_mm.registerTemplateGenerator(generic)
+        n_made = make_missing_bonds(fixer.topology, fixer.positions)
+        if n_made:
+            print(f"Cap minimization: made {n_made} bond(s) OpenMM left out")
         modeller = mmapp.Modeller(fixer.topology, fixer.positions)
-        modeller.addHydrogens(ff_mm)
+        modeller.addHydrogens(ff_mm, platform=CPU)
 
         # Build mapping: fixer atom index -> modeller atom index (by residue index + atom name)
         # Modeller.addHydrogens() inserts H atoms between existing atoms, so indices don't match
@@ -181,44 +388,47 @@ if cap_atom_indices:
             if key in mm_atom_lookup:
                 fixer_to_mm[atom.index] = mm_atom_lookup[key]
 
-        # Identify cap atoms in the modeller topology
-        cap_indices_mm = set()
-        for atom in modeller.topology.atoms():
-            if atom.residue.name in cap_residue_names:
-                cap_indices_mm.add(atom.index)
-
-        system = ff_mm.createSystem(modeller.topology, nonbondedMethod=mmapp.NoCutoff,
+        # A 1 nm cutoff: only cap atoms move, and an atom beyond 1 nm of a cap
+        # cannot clash with it. With all pairs (v1.4's NoCutoff) one thread took
+        # 56-66 s per call on the 2FD6 full model, with the cutoff about 30 s; the
+        # cap atoms differ between the two by a median 0.03 A, at most 0.27 A.
+        system = ff_mm.createSystem(modeller.topology, nonbondedMethod=mmapp.CutoffNonPeriodic,
+                                    nonbondedCutoff=1.0*unit.nanometer,
                                     constraints=None, rigidWater=False)
+        if generic.names:
+            print(f"Cap minimization: generic templates for {generic.summary()}")
 
-        # Restrain all non-cap atoms with a strong harmonic potential
-        restraint = openmm.CustomExternalForce("0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)")
-        restraint.addGlobalParameter("k", 1000.0 * unit.kilojoules_per_mole / unit.nanometer**2)
-        restraint.addPerParticleParameter("x0")
-        restraint.addPerParticleParameter("y0")
-        restraint.addPerParticleParameter("z0")
-        mm_positions = modeller.positions
-        for i in range(system.getNumParticles()):
-            if i not in cap_indices_mm:
-                pos = mm_positions[i]
-                restraint.addParticle(i, [pos.x, pos.y, pos.z])
-        system.addForce(restraint)
+        # Only cap atoms move. Every atom of a non-cap residue is massless, which
+        # the minimizer never moves, and only cap positions are copied back below.
+        # v1.4 held the protein with a 1000 kJ/mol/nm^2 restraint in vacuum and
+        # copied every minimized position back: on 2FD6 non-cap heavy atoms moved
+        # by a median 0.15 A, 99th percentile 0.9 A, at most 2.6 A, and those
+        # coordinates fed pdb2gmx's His assignment and make_cutout's 0.6/2.0 nm
+        # cut-offs. The hydrogens Modeller adds to non-cap residues are only
+        # stand-ins for clash relief (pdb2gmx -ignh rebuilds all hydrogens), so
+        # they stay where Modeller put them too.
+        for atom in modeller.topology.atoms():
+            if atom.residue.name not in cap_residue_names:
+                system.setParticleMass(atom.index, 0.0)
 
         integrator = openmm.LangevinIntegrator(300*unit.kelvin, 1/unit.picosecond, 0.002*unit.picoseconds)
-        context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName('CPU'))
-        context.setPositions(mm_positions)
+        context = openmm.Context(system, integrator, CPU, {'Threads': '1'})
+        context.setPositions(modeller.positions)
         openmm.LocalEnergyMinimizer.minimize(context, tolerance=10.0, maxIterations=200)
 
-        # Map minimized positions back to fixer topology using residue+name mapping
+        # Map minimized cap positions back to fixer topology using residue+name mapping
         min_positions = context.getState(getPositions=True).getPositions()
         new_positions = list(fixer.positions)
         for fixer_idx, mm_idx in fixer_to_mm.items():
-            new_positions[fixer_idx] = min_positions[mm_idx]
+            if fixer_idx in cap_atom_indices:
+                new_positions[fixer_idx] = min_positions[mm_idx]
         fixer.positions = new_positions
 
         n_caps = len([r for r in fixer.topology.residues() if r.name in cap_residue_names])
         print(f"Minimized {n_caps} cap residue(s) to resolve steric clashes")
     except Exception as e:
-        print(f"Warning: Cap minimization failed ({e}), using PDBFixer positions as-is")
+        why = str(e) + "".join("; no generic template for %s" % f for f in generic.failed)
+        print(f"Warning: Cap minimization failed ({why}), using PDBFixer positions as-is")
 
 # Build mapping: for each PDBFixer chain, determine if it belongs to protein B
 # All original residues in a PDBFixer chain share the same protein membership

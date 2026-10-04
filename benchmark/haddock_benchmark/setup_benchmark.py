@@ -9,6 +9,9 @@ import os
 import urllib.request
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from glycan_chains import linked_glycan_chains  # noqa: E402
+
 # Read the benchmark CSV
 structures = []
 with open('benchmark.csv', 'r') as f:
@@ -71,6 +74,10 @@ with open('sp.gs', 'w') as sp:
         if comp_col is None:
             comp_col = col_idx.get('_atom_site.auth_comp_id')
         seq_col = col_idx.get('_atom_site.auth_seq_id')
+        # Insertion code (PDB column 27). Without it Kabat 82/82A/82B/82C arrived as
+        # four residues numbered 82, and 2FD6 chain H and 1IQD chain B each lost a
+        # Ser downstream (utils/renumber_pdb.py residue_keys).
+        ins_col = col_idx.get('_atom_site.pdbx_PDB_ins_code')
         x_col = col_idx.get('_atom_site.Cartn_x')
         y_col = col_idx.get('_atom_site.Cartn_y')
         z_col = col_idx.get('_atom_site.Cartn_z')
@@ -242,12 +249,17 @@ with open('sp.gs', 'w') as sp:
             if changed:
                 print(f"Chain remap: {changed}", end=" ")
 
+        # The oligosaccharides linked to the kept chains: each has a chain of its own
+        # since the wwPDB carbohydrate remediation, and was dropped with it while a single
+        # sugar stayed (2AJF lost its NAG-NAG-BMA on ASN A 90; benchmark/glycan_chains.py).
+        glycan_asyms = linked_glycan_chains(cif_content, chains_to_keep)
+
         # Write PDB from mmCIF records (using auth chain IDs)
         pdb_lines = []
         prev_chain = None
         for rec in atom_records:
             fields = rec.split()
-            if len(fields) <= max(x_col, y_col, z_col, auth_chain_col):
+            if len(fields) <= max(x_col, y_col, z_col, auth_chain_col, label_chain_col):
                 continue
             # Only first model
             if model_col is not None and fields[model_col] != '1':
@@ -256,13 +268,15 @@ with open('sp.gs', 'w') as sp:
             if alt_col is not None and fields[alt_col] not in ('.', 'A', '?'):
                 continue
             auth_ch = fields[auth_chain_col]
-            if auth_ch not in chains_to_keep:
+            if auth_ch not in chains_to_keep and fields[label_chain_col] not in glycan_asyms:
                 continue
 
             group = fields[group_col] if group_col is not None else 'ATOM'
             atom_name = fields[atom_name_col].strip('"')
             comp = fields[comp_col].strip('"')
             seq_id = fields[seq_col] if seq_col is not None else '1'
+            icode = fields[ins_col] if ins_col is not None and len(fields) > ins_col else '?'
+            icode = ' ' if icode in ('?', '.') else icode[0]
             x = float(fields[x_col])
             y = float(fields[y_col])
             z = float(fields[z_col])
@@ -282,7 +296,7 @@ with open('sp.gs', 'w') as sp:
                 atom_name_fmt = f"{atom_name:<4s}"
 
             serial = len(pdb_lines) + 1
-            record = f"{group:<6s}{serial:5d} {atom_name_fmt} {comp:>3s} {auth_ch}{int(seq_id):4d}    " \
+            record = f"{group:<6s}{serial:5d} {atom_name_fmt} {comp:>3s} {auth_ch}{int(seq_id):4d}{icode}   " \
                      f"{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{bfactor:6.2f}          {element:>2s}"
             pdb_lines.append(record)
 
@@ -295,7 +309,9 @@ with open('sp.gs', 'w') as sp:
         with open(input_pdb, 'w') as out:
             out.write('\n'.join(pdb_lines) + '\n')
 
-        print(f"OK ({len(pdb_lines)-1} atoms, chains: {','.join(sorted(chains_to_keep))})")
+        print(f"OK ({len(pdb_lines)-1} atoms, chains: {','.join(sorted(chains_to_keep))}"
+              + (f", linked oligosaccharides (label_asym_id): {','.join(sorted(glycan_asyms))}" if glycan_asyms else "")
+              + ")")
 
         # Add to sp.gs with comma-separated chain IDs (using auth chain IDs from PDB)
         chain_id_2_formatted = ','.join(actual_chain_id_2)

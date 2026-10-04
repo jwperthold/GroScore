@@ -1,10 +1,11 @@
-; holdbfwd1_fe.mdp - 1 ns equilibrium hold at u = 0, lambda = 0.25.
-; delta-lambda = 0 and pull rate 0, so it contributes NO work and the stage
-; works still sum exactly to the work of the whole ramp. It exists so the
-; stages either side of it can be estimated SEPARATELY and their estimates
-; added, which is only legitimate if the ensemble here is equilibrated:
-; summing their per-cycle works instead would reproduce the unstaged
-; distribution exactly and gain nothing.
+; holdbfwd1_fe.mdp - 1 ns equilibrium hold inside the bound restraint switch, u = 0,
+; lambda = 0.25. delta-lambda = 0 and pull rate 0 under the bound block of
+; the sub-legs either side, so it contributes NO work and the bound sub-leg
+; works still sum exactly to the work of the whole bound switch. It exists
+; so the sub-legs either side of it can be estimated SEPARATELY and their
+; estimates added, which is only legitimate if the ensemble here is
+; equilibrated: summing their per-cycle works instead would reproduce the
+; unstaged distribution exactly and gain nothing.
 ;
 ; nsteps 250000 * dt 0.004 = 1000 ps.
 

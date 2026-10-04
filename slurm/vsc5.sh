@@ -5,6 +5,15 @@
 #SBATCH --time=72:00:00
 #SBATCH --gres=gpu:1
 
+# CLASSIC LEG TIMEOUT. job.run stops a 5 ns pull or push leg, or a minimisation, that
+# has not finished after GROSCORE_LEG_TIMEOUT, whose default of 24h is sized for a
+# slow CPU run. A classic pull leg takes about 45-60 min on one of these GPUs, so 180m
+# lets a hung mdrun cost 3 h of the allocation instead of 24. A directive rather than
+# an export line: groscore.py appends #SBATCH lines after this template, and sbatch
+# ignores every one that follows a command. It adds to the submission environment
+# (ALL) and overrides a value set there; edit it here. job_fe.run has its own limits.
+#SBATCH --export=ALL,GROSCORE_LEG_TIMEOUT=180m
+
 # SLOW NODES, EXCLUDED. Measured, not guessed: every switching leg writes its own
 # ns/day, and over test13/14/15 the a40x2 pool splits cleanly in two -- a fast group
 # around 980 ns/day and these six around 377, i.e. 2.6x slower for the same work.

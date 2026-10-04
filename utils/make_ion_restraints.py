@@ -114,9 +114,17 @@ with open(args.chainmap) as f:
             except (ValueError, IndexError):
                 pass
 
-# Add ligand residue numbers to residues_b if their chain is part of protein B
-# ligand_residues.gs lists residue numbers in the same order as ligand_manifest.gs
-# ligand_manifest.gs GRO column encodes the chain: ligand_NAME_CHAIN.gro
+# Ligand residues on protein B's side. merge_ligand.py already appends them to
+# chain_map.gs; here each residue number of ligand_residues.gs is matched to its own
+# manifest line: by the residue number merge_ligand.py writes into column 9, checked
+# against the residue name the coordinates carry there (merge_ligand.py writes the
+# first five characters of the molecule name). This used to pair line k of
+# ligand_residues.gs with line k of the manifest, which held only while both were in
+# the same order: the moleculetype sort puts X_10 before X_9, and a manifest in another
+# order put a chain-A IMD on protein B and lost its Mg-N3 coordination restraint
+# (review checked_ok, RV/ligands/ionpair). A manifest without column 9 (written before
+# v1.5) is matched by molecule name alone, unique matches only. The chain is manifest
+# column 6, or the last field of the ligand_NAME_CHAIN.gro name in older manifests.
 base_dir = os.path.dirname(args.chainmap) or "."
 ligand_res_path = os.path.join(base_dir, "ligand_residues.gs")
 manifest_path = os.path.join(base_dir, "ligand_manifest.gs")
@@ -129,6 +137,26 @@ with open(args.chainmap) as f:
             b_chains = set(c.strip() for c in line.split("chain(s):")[1].strip().split(",") if c.strip())
             break
 
+
+def gro_resnames(path):
+    """{residue number: residue name} of a GRO file, by fixed columns."""
+    names = {}
+    if not os.path.isfile(path):
+        return names
+    with open(path) as f:
+        lines = f.readlines()
+    try:
+        n = int(lines[1].strip())
+    except (IndexError, ValueError):
+        return names
+    for line in lines[2:2 + n]:
+        try:
+            names.setdefault(int(line[0:5]), line[5:10].strip())
+        except ValueError:
+            pass
+    return names
+
+
 if b_chains and os.path.isfile(ligand_res_path) and os.path.isfile(manifest_path):
     lig_resnums = []
     with open(ligand_res_path) as f:
@@ -138,14 +166,32 @@ if b_chains and os.path.isfile(ligand_res_path) and os.path.isfile(manifest_path
                     lig_resnums.append(int(line.strip()))
                 except (ValueError, IndexError):
                     pass
-    lig_chains = []
+    by_resnum, by_name = {}, {}
     with open(manifest_path) as f:
         for line in f:
-            parts = line.strip().split("\t")
-            if len(parts) >= 4:
-                # Extract chain from GRO filename: ligand_NAME_CHAIN.gro
-                lig_chains.append(parts[3].replace(".gro", "").rsplit("_", 1)[-1])
-    for resnum, chain in zip(lig_resnums, lig_chains):
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            chain = parts[5] if len(parts) > 5 and parts[5] else parts[3].replace(".gro", "").rsplit("_", 1)[-1]
+            if len(parts) > 8 and parts[8].strip().isdigit():
+                by_resnum[int(parts[8])] = (parts[0], chain)
+            by_name.setdefault(parts[0][:5], []).append((parts[0], chain))
+    resname_at = gro_resnames(args.input)
+    for resnum in lig_resnums:
+        here = resname_at.get(resnum)
+        if resnum in by_resnum:
+            name, chain = by_resnum[resnum]
+            if here is not None and here != name[:5]:
+                print(f"Warning: ligand residue {resnum} is {here} in {args.input} but {name} in "
+                      f"{manifest_path}; its side is left to chain_map.gs")
+                continue
+        else:
+            cands = by_name.get(here or "", [])
+            if len({c for _, c in cands}) != 1:
+                print(f"Warning: ligand residue {resnum} ({here or '?'}) matches {len(cands)} manifest line(s); "
+                      f"its side is left to chain_map.gs")
+                continue
+            name, chain = cands[0]
         if chain in b_chains:
             residues_b.add(resnum)
 

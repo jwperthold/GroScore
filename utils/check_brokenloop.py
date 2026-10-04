@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 #
+# check_brokenloop.py - stage-0 gate of job.run and job_fe.run on conf.gro.
+# Prints 1 when a chain break (consecutive CA atoms more than 0.42 nm apart) has
+# both ends within 0.4 nm of the other protein, else 0.
+#
+# Prints 2 and exits 1 when the check cannot be made: a missing or unreadable
+# frame, a side without CA atoms, any internal error. The runners test
+# '[[ $bl -eq 0 ]]', which an empty output passes, so a crash used to read as
+# 'no broken loop'; '2' fails that test (the structure stops) and is neither verdict.
 
-import os, sys, re, argparse
+import os, sys, argparse
 import numpy as np
 from scipy.spatial.distance import cdist
+
+import pbc_tools as pbc
 
 #------------------------------------------------------
 
@@ -11,6 +21,11 @@ parser = argparse.ArgumentParser(description="Check for broken loops at protein-
 parser.add_argument('-f','--confile', type=str, default="conf.gro", required=True, help="GROMACS coordinate file.")
 parser.add_argument('-m','--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B.")
 args=parser.parse_args()
+
+def fail(msg):
+  print("2")
+  sys.stderr.write("check_brokenloop: ERROR - %s\n" % msg)
+  sys.exit(1)
 
 #------------------------------------------------------
 
@@ -27,59 +42,39 @@ def read_chain_map(filepath):
             pass
   return residues_b
 
-residues_b = read_chain_map(args.chainmap)
-
 #------------------------------------------------------
 
-# Read coordinate file in a single pass, collecting both CA and all atoms
-ca1_resnums = []
-ca1_coords = []
-ca2_resnums = []
-ca2_coords = []
-all1_resnums = []
-all1_coords = []
-all2_resnums = []
-all2_coords = []
+def read_sides(path, residues_b):
+  """CA atoms (resnum, xyz) and all atoms (resnum, xyz) of each side, file order.
 
-linecount = 0
-if os.path.isfile(args.confile):
-  with open(args.confile, "r") as f:
-    for line in f:
-      if not line.strip().startswith("#"):
-        tmp = line.split()
-        try:
-          s = re.search(r"\d+(\.\d+)?", tmp[0])
-          resnum = int(s.group(0))
-          x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-          atomname = tmp[1]
+  Fixed .gro columns by position (pbc_tools). The str.split() parse this replaces
+  merged the atom name and number from atom 10000 on ('CA10000') and dropped every
+  later atom: on conf.gro it saw 9999 of 14958 atoms of 1HE8 and none of protein
+  A's 166 CA, and 30 of 174 CA of 2AJF's protein B (audit SH6). CA atoms are taken
+  from protein residues only (N, CA and C present), not from Ca2+ ions (residue CA,
+  atom CA), whose distance from the chain read as a break."""
+  frame = pbc.read_gro(path)
+  head, xyz = frame.head, frame.xyz
+  ca = {1: ([], []), 2: ([], [])}
+  allat = {1: ([], []), 2: ([], [])}
+  for s, e in pbc.residue_blocks(head):
+    resnum = int(head[s][0:5])
+    names = [h[10:15].strip() for h in head[s:e]]
+    side = 2 if resnum in residues_b else 1
+    protein = {"N", "CA", "C"} <= set(names)
+    for i, n in zip(range(s, e), names):
+      allat[side][0].append(resnum)
+      allat[side][1].append(xyz[i])
+      if protein and n == "CA":
+        ca[side][0].append(resnum)
+        ca[side][1].append(xyz[i])
+  as_arr = lambda c: np.array(c, dtype=float) if c else np.empty((0, 3))
+  return ({k: (v[0], as_arr(v[1])) for k, v in ca.items()},
+          {k: (v[0], as_arr(v[1])) for k, v in allat.items()})
 
-          if resnum not in residues_b:
-            if atomname == "CA":
-              ca1_resnums.append(resnum)
-              ca1_coords.append([x, y, z])
-            if linecount > 1:
-              all1_resnums.append(resnum)
-              all1_coords.append([x, y, z])
-          else:
-            if atomname == "CA":
-              ca2_resnums.append(resnum)
-              ca2_coords.append([x, y, z])
-            if linecount > 1:
-              all2_resnums.append(resnum)
-              all2_coords.append([x, y, z])
-        except (ValueError, IndexError, AttributeError):
-          pass
-        linecount += 1
-
-# Convert to numpy arrays
-ca1_coords = np.array(ca1_coords) if ca1_coords else np.empty((0, 3))
-ca2_coords = np.array(ca2_coords) if ca2_coords else np.empty((0, 3))
-all1_coords = np.array(all1_coords) if all1_coords else np.empty((0, 3))
-all2_coords = np.array(all2_coords) if all2_coords else np.empty((0, 3))
-
-# Find broken loops (consecutive CAs > 0.4 nm apart)
+# Find broken loops (consecutive CAs > 0.42 nm apart)
 def find_broken_loops(resnums, coords):
-  """Find pairs of residue numbers where consecutive CAs are > 0.4 nm apart."""
+  """Find pairs of residue numbers where consecutive CAs are > 0.42 nm apart."""
   broken = []
   if len(coords) < 2:
     return broken
@@ -94,9 +89,6 @@ def find_broken_loops(resnums, coords):
     broken.append((resnums[idx], resnums[idx + 1]))
 
   return broken
-
-foundbrokenloops1 = find_broken_loops(ca1_resnums, ca1_coords)
-foundbrokenloops2 = find_broken_loops(ca2_resnums, ca2_coords)
 
 # Check if both ends of a broken loop are near atoms of the other protein
 def check_broken_loop_near_other(broken_loops, own_resnums, own_coords, other_coords, cutoff=0.4):
@@ -135,14 +127,34 @@ def check_broken_loop_near_other(broken_loops, own_resnums, own_coords, other_co
 
   return False
 
-# Check broken loops in protein 1 against protein 2
-bothnear = check_broken_loop_near_other(foundbrokenloops1, all1_resnums, all1_coords, all2_coords)
+def main():
+  if not os.path.isfile(args.confile):
+    fail("coordinate file %s does not exist" % args.confile)
+  residues_b = read_chain_map(args.chainmap)
+  try:
+    ca, allat = read_sides(args.confile, residues_b)
+  except (OSError, ValueError) as e:
+    fail("cannot read %s: %s" % (args.confile, e))
+  for side, label in ((1, "receptor"), (2, "ligand (chain_map.gs)")):
+    if len(ca[side][0]) == 0:
+      fail("no protein CA atom on the %s side of %s" % (label, args.confile))
 
-# If not found, check broken loops in protein 2 against protein 1
-if not bothnear:
-  bothnear = check_broken_loop_near_other(foundbrokenloops2, all2_resnums, all2_coords, all1_coords)
+  foundbrokenloops1 = find_broken_loops(*ca[1])
+  foundbrokenloops2 = find_broken_loops(*ca[2])
 
-if bothnear:
-  print("1")
-else:
-  print("0")
+  # Check broken loops in protein 1 against protein 2
+  bothnear = check_broken_loop_near_other(foundbrokenloops1, allat[1][0], allat[1][1], allat[2][1])
+
+  # If not found, check broken loops in protein 2 against protein 1
+  if not bothnear:
+    bothnear = check_broken_loop_near_other(foundbrokenloops2, allat[2][0], allat[2][1], allat[1][1])
+
+  print("1" if bothnear else "0")
+
+if __name__ == "__main__":
+  try:
+    main()
+  except SystemExit:
+    raise
+  except Exception as e:      # an internal error must never read as a verdict
+    fail("%s: %s" % (type(e).__name__, e))

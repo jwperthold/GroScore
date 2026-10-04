@@ -118,9 +118,51 @@ def get_resname(line):
     """Extract residue name from PDB ATOM/HETATM line."""
     return line[17:20].strip()
 
-# First pass: collect all unique (chain, resnum) pairs, atom coordinates,
+def residue_keys(path):
+    """The residue each ATOM/ion line belongs to, by line number.
+
+    A residue is (chain, number, insertion code, split): the split counter starts a
+    new residue when the residue name changes or an atom name repeats under the same
+    number and insertion code, and metal-cluster atoms are residues of their own.
+    Keying by (chain, number) alone merged Kabat 82/82A/82B/82C into one residue:
+    the benchmark inputs carried no insertion-code column, OpenMM's reader in
+    fix_pdb.py then fused the two consecutive Ser and kept only the second copy's
+    atoms, and 2FD6 chain H (212 -> 211 CA) and 1IQD chain B (200 -> 199) each lost
+    a Ser 16-21 A from the antigen, with only 'duplicate atom' warnings. Alternate
+    locations other than blank/A never start a residue: they repeat names by design.
+    """
+    keys = {}
+    base_prev, split, names, name_prev = None, 0, set(), None
+    with open(path) as f:
+        for n, line in enumerate(f):
+            if not is_atom_or_ion(line):
+                continue
+            try:
+                orig = int(line[22:26].strip())
+            except ValueError:
+                continue
+            chain, resname, atomname = line[21], get_resname(line), line[12:16].strip()
+            altloc = line[16] if len(line) > 16 else " "
+            icode = line[26] if len(line) > 26 else " "
+            if resname in METAL_CLUSTERS:
+                keys[n] = (chain, orig, atomname)
+                base_prev = None
+                continue
+            base = (chain, orig, icode)
+            if base != base_prev:
+                base_prev, split, names, name_prev = base, 0, set(), resname
+            elif altloc in (" ", "A") and (resname != name_prev or (atomname, altloc) in names):
+                split += 1
+                names, name_prev = set(), resname
+            names.add((atomname, altloc))
+            keys[n] = base + (split,)
+    return keys
+
+line_keys = residue_keys(args.pdbfile)
+
+# First pass: collect all unique residues (residue_keys), atom coordinates,
 # and assign sequential numbers
-seen_residues = {}  # (chain, resnum) -> new_resnum
+seen_residues = {}  # residue key -> new_resnum
 current_resnum = 0
 last_key = None
 prev_chain = None
@@ -133,16 +175,17 @@ residues_b = set()
 # Track which new residue numbers are ions
 ion_resnums = set()
 
-# Track gaps in residue numbering (potential chain breaks)
-numbering_gaps = set()  # Set of (chain, orig_resnum) keys that follow a gap
+# Track gaps in residue numbering (potential chain breaks):
+# residue key that follows a gap -> the residue before it in the file
+numbering_gaps = {}
 
 # Collect C and N atom coordinates for peptide bond distance checking
-c_atoms = {}   # (chain, resnum) -> (x, y, z) for backbone C atom
-n_atoms = {}   # (chain, resnum) -> (x, y, z) for backbone N atom
+c_atoms = {}   # residue key -> (x, y, z) for backbone C atom
+n_atoms = {}   # residue key -> (x, y, z) for backbone N atom
 
 with open(args.pdbfile, "r") as f:
-    for line in f:
-        if is_atom_or_ion(line):
+    for n, line in enumerate(f):
+        if is_atom_or_ion(line) and n in line_keys:
             chain_id = line[21]
             resname = get_resname(line)
             is_ion = resname in ION_RESIDUES
@@ -150,12 +193,10 @@ with open(args.pdbfile, "r") as f:
             try:
                 orig_resnum = int(line[22:26].strip())
                 atomname = line[12:16].strip()
-                key = (chain_id, orig_resnum)
+                key = line_keys[n]
 
                 # Metal clusters: each atom becomes its own ion residue
                 if is_cluster:
-                    # Use a unique key per atom (not per residue)
-                    key = (chain_id, orig_resnum, atomname)
                     is_ion = True
 
                 # Collect backbone C and N coordinates (skip for ions)
@@ -164,12 +205,12 @@ with open(args.pdbfile, "r") as f:
                         x = float(line[30:38])
                         y = float(line[38:46])
                         z = float(line[46:54])
-                        c_atoms[(chain_id, orig_resnum)] = (x, y, z)
+                        c_atoms[key] = (x, y, z)
                     elif atomname == 'N':
                         x = float(line[30:38])
                         y = float(line[38:46])
                         z = float(line[46:54])
-                        n_atoms[(chain_id, orig_resnum)] = (x, y, z)
+                        n_atoms[key] = (x, y, z)
 
                 if key != last_key:
                     # Detect gaps in original residue numbering within same chain
@@ -177,7 +218,7 @@ with open(args.pdbfile, "r") as f:
                     if (prev_chain == chain_id and prev_orig_resnum is not None
                             and not is_ion and not prev_is_ion):
                         if orig_resnum > prev_orig_resnum + 1:
-                            numbering_gaps.add(key)
+                            numbering_gaps[key] = last_key
                     current_resnum += 1
                     seen_residues[key] = current_resnum
                     if chain_id in chains_b:
@@ -196,30 +237,12 @@ with open(args.pdbfile, "r") as f:
 PEPTIDE_BOND_CUTOFF = 2.0
 chain_breaks = set()
 
-# Build per-chain sorted residue lists for efficient lookup
-chain_resnums = {}
-for key in seen_residues.keys():
-    if len(key) == 2:
-        c, r = key
-    else:
-        c, r, _ = key  # cluster atoms have 3-tuple keys
-    chain_resnums.setdefault(c, []).append(r)
-for c in chain_resnums:
-    chain_resnums[c].sort()
+for key, prev_key in numbering_gaps.items():
+    chain_id, orig_resnum, prev_resnum = key[0], key[1], prev_key[1]
 
-for key in numbering_gaps:
-    chain_id, orig_resnum = key
-    # Find the previous residue in the same chain
-    resnums = chain_resnums.get(chain_id, [])
-    idx = resnums.index(orig_resnum) if orig_resnum in resnums else -1
-    if idx <= 0:
-        chain_breaks.add(key)
-        continue
-    prev_resnum = resnums[idx - 1]
-
-    # Check C-N distance
-    c_coord = c_atoms.get((chain_id, prev_resnum))
-    n_coord = n_atoms.get((chain_id, orig_resnum))
+    # Check C-N distance to the residue before it in the file
+    c_coord = c_atoms.get(prev_key)
+    n_coord = n_atoms.get(key)
 
     if c_coord and n_coord:
         dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(c_coord, n_coord)))
@@ -239,7 +262,7 @@ written_breaks = set()
 last_key = None
 last_was_ion = False
 with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
-    for line in fin:
+    for n, line in enumerate(fin):
         if is_atom_or_ion(line):
             chain_id = line[21]
             resname = get_resname(line)
@@ -251,10 +274,8 @@ with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
 
                 # Metal clusters: each atom has its own key and mapped resname
                 if is_cluster:
-                    key = (chain_id, orig_resnum, atomname)
                     is_ion = True
-                else:
-                    key = (chain_id, orig_resnum)
+                key = line_keys[n]
                 new_resnum = seen_residues.get(key, orig_resnum)
 
                 # Add TER before chain breaks
@@ -282,7 +303,9 @@ with open(args.pdbfile, "r") as fin, open(args.output, "w") as fout:
                     name_fmt = f" {ion_atomname:<3s}" if len(ion_atomname) < 4 else f"{ion_atomname:<4s}"
                     new_line = f"ATOM  {line[6:11]} {name_fmt} {ion_resname:>3s} {chain_id}{new_resnum:4d}" + line[26:]
                 else:
-                    new_line = "ATOM  " + line[6:22] + f"{new_resnum:4d}" + line[26:]
+                    # Every residue has its own number now, so the insertion code
+                    # (column 27) carries no information any more and is cleared.
+                    new_line = "ATOM  " + line[6:22] + f"{new_resnum:4d}" + " " + line[27:]
                 fout.write(new_line)
                 last_key = key
                 last_was_ion = is_ion

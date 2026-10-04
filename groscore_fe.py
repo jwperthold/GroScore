@@ -9,8 +9,8 @@
 #   unrestrained-bound
 #        | +dG_intro     (bound-state restraint introduction; dhdl)
 #   interface-restrained-bound
-#        | +dG_unbind     (interface -> Boresch handoff + separation to 1.5 nm;
-#        |                 pull-force work + dhdl work)
+#        | +dG_unbind     (interface -> Boresch handoff + separation by
+#        |                 fe_protocol.PULL_DIST, 1.0 nm; pull-force work + dhdl work)
 #   Boresch-restrained-unbound
 #        | +dG_release    (analytical Boresch standard-state term, eq. 32)
 #   unrestrained-unbound (1 mol/L standard state)
@@ -23,19 +23,24 @@
 #
 # The unbinding ramp is run in STAGES with an equilibrium hold at every internal
 # boundary, in both directions. How many stages and where the boundaries sit is
-# defined in utils/fe_protocol.py and nowhere else. The stages are separate Crooks
-# processes, each dissipating a fraction of the total, so each has work overlap
-# where the whole ramp has none, and dG_unbind is their sum. The holds do no work,
-# so the stage works also sum to the work of the whole ramp, which is scored too
-# as the assumption-free cross-check (dG_unbind_1s).
+# defined in utils/fe_protocol.py and nowhere else. The stages are scored as
+# separate Crooks processes, each dissipating a fraction of the total, so each has
+# work overlap where the whole ramp has none, and dG_unbind is their sum. That is
+# only as sound as the holds are at equilibrating the interface, and they are
+# measured not to be (score_structure states the numbers). The
+# holds do no work, so the stage works also sum to the work of the whole ramp,
+# which is scored too as the assumption-free cross-check (dG_unbind_1s).
 #
-# job_fe.run writes, per completed cycle, a line to results_fe.gs:
-#   STRUCT_ID cycle W_intro <4 works per stage> W_remove RMSD
-# with the forward stages in order and the reverse stages in the order they run,
-# and, per structure, a line to results_analytical.gs:
+# job_fe.run writes, per completed cycle, one row to results_fe.d/<id>_c<N>.gs:
+# STRUCT_ID, the cycle, the forward bound sub-leg works, the pull and dhdl works of
+# every ramp stage forward and then reverse, the reverse bound sub-leg works, and
+# the rebound RMSD. That is FE_RESULT_NF = 43 fields in v1.5; fe_protocol.works()
+# names the work fields in row order, with the reverse parts in the order they run.
+# The setup writes, per structure, one line to results_analytical.d/<id>.gs:
 #   STRUCT_ID dG_release_kJ_mol
-# All works are in kJ/mol. Rows from every earlier stage count are still read; the
-# count follows from the row width. See read_works.
+# All works are in kJ/mol. A legacy single results_fe.gs or results_analytical.gs
+# is still read, and so are rows of earlier stage counts, whose layout follows from
+# the row width. See read_works.
 #
 # SIGN CONVENTIONS (physical work, all kJ/mol):
 #   * dhdl work (integrate_dhdl.py) is the physical switching work along the ramp:
@@ -63,7 +68,7 @@
 # bidirectional run using that diagnostic (forward and reverse work histograms
 # should overlap around dG). See the SIGN_* constants below.
 
-import math, os, sys, argparse, shutil, glob, subprocess
+import math, os, re, sys, argparse, shutil, glob, subprocess
 from statistics import NormalDist
 import numpy as np
 
@@ -116,7 +121,10 @@ parser.add_argument('--cutout', dest='cutout', action='store_const', const=True,
                     default=None, help="Enable interface cutout (the default).")
 parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_const',
                     const=False, default=None,
-                    help="Disable OpenFF small-molecule parametrization.")
+                    help="Run without small-molecule ligands: none is parametrized or "
+                         "merged, and each is named in the job log. Without it, CHARMM36 "
+                         "and GROMOS 54A8 stop every structure with a ligand in the "
+                         "simulated region as LIGAND_FAIL. Remembered in run_config.gs.")
 parser.add_argument('--ligand-param', dest='ligand_param', action='store_const',
                     const=True, default=None,
                     help="Enable OpenFF small-molecule parametrization (the default).")
@@ -138,7 +146,11 @@ parser.add_argument('--threads-per-job', dest='threads_per_job', type=int, defau
 parser.add_argument('--restart', action='store_true',
                     help="Submit again for an existing run: re-queues missing/failed cycles "
                          "and, with a larger -n, adds new ones.")
-parser.add_argument('--inject-job-run', action='store_true', help="Inject fresh job_fe.run into archived (.tar.gz) structures.")
+parser.add_argument('--inject-job-run', action='store_true',
+                    help="Install this job_fe.run into archived (.tar.gz) structures "
+                         "that get cycles submitted. Without it an archived "
+                         "structure is NOT submitted: the job.run inside its "
+                         "archive is whatever ran it last and may predate this code.")
 parser.add_argument('--temp', type=float, default=None,
                     help="Temperature in K (default: 310). Remembered in "
                          "run_config.gs: it sets RT for pKD and for BAR, so scoring "
@@ -304,12 +316,18 @@ for _attr, _key, _parse, _fmt, _default, _why in REMEMBERED:
     except (KeyError, ValueError):
       setattr(args, _attr, _default())
   elif _key in _cfg and _cfg[_key] != _fmt(_given):
-    print("WARNING: this directory was set up with %s = %s and you asked for %s."
-          % (_key, _cfg[_key], _fmt(_given)))
-    print("  That is %s." % _why)
-    print("  Cycles already built keep the old value; only structures whose setup")
-    print("  re-runs will pick up the new one, and works from the two are not")
-    print("  comparable. Use a fresh directory unless that is what you meant.")
+    if _key == "numruns":
+      # A new cycle target changes no work: a larger -n only raises the total the
+      # jobs run to (GROSCORE_NUMCYCLES), which is how cycles are added. The warning
+      # below said the works of the two values were not comparable (review D10).
+      print("Cycle target %s in %s, now %s; recorded." % (_cfg[_key], RUN_CONFIG, _fmt(_given)))
+    else:
+      print("WARNING: this directory was set up with %s = %s and you asked for %s."
+            % (_key, _cfg[_key], _fmt(_given)))
+      print("  That is %s." % _why)
+      print("  Cycles already built keep the old value; only structures whose setup")
+      print("  re-runs will pick up the new one, and works from the two are not")
+      print("  comparable. Use a fresh directory unless that is what you meant.")
   _now = _fmt(getattr(args, _attr))
   if _cfg.get(_key) != _now:
     _to_write[_key] = _now
@@ -360,6 +378,24 @@ def check_ref_t():
 # scores_fe.gs; the console only needs enough to know what to look at.
 MAX_FLAGGED_SHOWN = 10   # structures listed in the warning
 MAX_CYCLES_SHOWN  = 5    # bad cycles listed per structure
+
+# LOW_RECOVERY, the per-structure rebinding flag beside HIGH_RMSD (decision of
+# 2026-10-04): the median fraction of restrained contacts back within tolerance at
+# the end of rebinding (interface_qc.py, results_qc.d) is below this. Backbone RMSD
+# says nothing about the interface: the 20 pass-2 cycles above 10 A had recovery
+# 0.760-0.974, and Spearman(RMSD, rms_dev) over 450 valid cycles is 0.00. Recovery
+# had an energetic consequence in pass 2: 0.1 less of it moved a typical
+# structure's dG_intro + dG_unbind by about 9 kJ/mol, cycle for cycle, mostly
+# through reverse bound legs that started from the rebound state, which v1.5 no
+# longer does (bm_fe_amber_2/_ana/digest/qc.txt, highrmsd_not_rebinding and
+# rebinding_strain_bias). 0.85 is the cut qc.txt's qc_filter_sensitivity used: pass
+# 2 had a pooled median of 0.934 and five structure medians below 0.85 (1AKJ 1BJ1
+# 1GRN 1WQ1 2JEL, 0.78-0.83). A constant, not an option: it is pre-registered for
+# the pilot readout and must not move after the data are in. Neither flag changes a
+# score. Pass-2 results_qc.d rows of the 19 structures above 99,999 atoms read about
+# 0.001 from the atom-number wrap fixed in v1.5's interface_qc, so a re-score of
+# pass 2 flags all of those as well.
+RECOVERY_WARN = 0.85
 
 # Sign toggles to flip during first-run validation if the diagnostic requires it.
 SIGN_PULL_FWD = -1.0   # W_pull_fwd = SIGN_PULL_FWD * integrate.py(fwd)
@@ -438,16 +474,30 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
 
     staged     sum of the per-stage estimates, each on its own forward/reverse
                pair. Each stage dissipates a fraction of the total, so each has
-               far more work overlap than the whole ramp does; this is the
-               headline, and it is the reason the ramp is split at all.
+               far more work overlap than the whole ramp does; that is the reason
+               the ramp is split at all, and the staged BAR sum is the headline
+               dG_bind as shipped.
     one-shot   the whole ramp from the summed works (`Wtot_f`, `Wtot_r`). The hold
                segments are stationary and do exactly zero work, so the stage
                works sum to the work of the full protocol EXACTLY, and Crooks
                applies to that protocol whatever happens in the middle of it.
 
-  The one-shot value needs no assumption about the holds; the staged value needs
-  them to have equilibrated. So the gap between them is not redundancy, it is the
-  measurement of whether the holds are long enough, which is why both are columns.
+  The one-shot value needs no assumption about the holds. The staged value needs
+  each stage's forward and reverse runs to start from the equilibrium of their own
+  end state, which at an internal boundary means the holds must have equilibrated
+  the interface, and they are measured not to. In pass 2 the
+  forward and reverse states at the same internal ramp boundary differed by a
+  median 7-27 kJ/mol in full-strength spring energy over the 39 sound structures,
+  and the 350 ps holds closed a median of -6 to 49% of that gap, mostly about a
+  tenth (bm_fe_amber_2/_ana/rlx_ramp.py; fe_protocol.py, WHAT THE TAU ARGUMENT DOES
+  NOT COVER). The holds settle dH/dlambda but not the interface, so there the
+  per-stage channels are not valid Crooks pairs, and the staged BAR and CGI sums
+  carry that bias however tight their intervals. The gap between staged and
+  one-shot is therefore not redundancy: it measures how far the holds are from
+  equilibrium, which is why both are columns. The avg estimate is linear in the
+  works, so staged and one-shot avg are the same number, the whole-ramp average.
+  This changes no estimator and not the headline: which estimate the pilot verdict
+  and the paper read is still open.
   """
   Wi = np.asarray(W_intro, float); Wr = np.asarray(W_remove, float)
   Wf = np.asarray(Wtot_f, float);  Wv = np.asarray(Wtot_r, float)
@@ -492,7 +542,16 @@ def score_structure(W_intro, W_remove, Wtot_f, Wtot_r, dG_release,
                     if st else r['unb1s_avg'])
   r['bind_avg']  = -(r['intro_avg'] + r['unb_avg'] + dG_release)
   if ncyc >= 3:                                   # CGI needs the per-cycle variance
-    r['intro_cgi'] = float(_stream_cgi(Wi[None, :], Wr[None, :])[0])
+    # The STAGED sum over the bound sub-legs, like intro_avg above and like the
+    # bootstrap that gives this column its CI. It used to be the one-shot CGI of the
+    # summed switch, so point and interval described two different estimators: on
+    # pass 2 (bm_fe_amber_2/_ana/digest/corr.txt F2) they differed by up to
+    # 8.04 kJ/mol (1E6E, 1.35 pKD), and 4.27 in pass 1 (1A2K).
+    if bd:
+      r['intro_cgi'] = float(sum(_stream_cgi(f[None, :], v[None, :])[0]
+                                 for _, f, v in bd))
+    else:
+      r['intro_cgi'] = float(_stream_cgi(Wi[None, :], Wr[None, :])[0])
     if not st:
       r['unb_cgi'] = float(_stream_cgi(Wf[None, :], Wv[None, :])[0])
     else:
@@ -659,20 +718,150 @@ def sbatch_parsable(path):
 # own check forever without ever clearing what makes it fail.
 LEG_MDPS = tuple(sorted({l["mdp"] for l in P.legs()}))
 
-def setup_is_complete(sid):
-  """True only if setup.done is backed by the artefacts the cycles consume.
+# npt_c's per-structure mdp (v1.5). It ships with 'pull = yes' and no coordinates,
+# which grompp refuses, so a usable copy is one make_boresch.py has finished: it
+# appended the elastic network (a pull-ngroups line) or switched pull off for a
+# structure without one ('pull = no'). The same test as job_fe.run's setup
+# post-condition, so the runner and this file agree on what a finished setup is.
+NPT_C_MDP = "npt_c_fe.mdp"
+_PULL_OFF = re.compile(r"^pull\s*=\s*no(\s|;|$)")
 
-  setup.done used to be enough on its own, which made a bad setup permanent: the
-  marker suppressed the setup job here, and job_fe.run exits early on the same
-  marker, so nothing could ever redo the work. A directory left with a 0-byte
-  numpertres.gs and leg .mdp files carrying no pull block reproduced its failure
-  on every resubmission. When the marker is not backed up, clear it and the
-  half-written restraints so the setup job can run again."""
+#------------------------------------------------------
+#
+# PROTOCOL IDENTITY. A run directory, and every structure in it, must hold the
+# cycles of ONE protocol, and nothing in a result row says which: v1.5 kept the
+# 43-field row of v1.4, so once written a v1.4 row and a v1.5 row look the same. A
+# pass-2 directory reused for the pilot therefore counted its v1.4 rows as finished
+# v1.5 cycles and pooled them with new ones (review CYC-4: structure directories
+# recreated inside bm_fe_amber_2 got 'all 20 cycles complete' and the scorer
+# reported pass-2 numbers), and its set-up structures got cycle tasks that all stop
+# at job_fe.run's npt_c_fe.mdp guard (CYC-3). So the identity is kept beside the
+# rows, in two places, each written once and only compared afterwards:
+#
+#   run_config.gs, key protocol_id: fe_protocol.PROTOCOL_ID at the FIRST submission
+#       into a directory and never later, so a directory that already holds work of
+#       an unknown protocol cannot acquire an id by being touched again
+#   <sid>/protocol_id.gs: written by job_fe.run when a setup completes; a cycle
+#       refuses to run unless it matches the PROTOCOL_ID of the code running it
+#
+# PROTOCOL_ID hashes the leg table and the works layout, so it moves whenever what a
+# cycle simulates or what a row means moves.
+PROTOCOL_KEY = "protocol_id"
+PROTOCOL_FILE = "protocol_id.gs"
+
+def _protocol_token(text):
+  """The id in the text of a protocol_id.gs: the first token of its first line that
+  is not a comment, or None."""
+  for line in text.splitlines():
+    tok = line.split()
+    if tok and not tok[0].startswith("#"):
+      return tok[0]
+  return None
+
+def read_protocol_id(path):
+  """The id in the protocol_id.gs at `path`, or None if it is absent or empty."""
+  try:
+    with open(path) as f:
+      return _protocol_token(f.read())
+  except OSError:
+    return None
+
+def _foreign(done, pid, want):
+  """Why a setup with this (setup.done present, protocol_id.gs content) is not one of
+  protocol `want`, or None. v1.4 and earlier wrote no protocol_id.gs, so a finished
+  setup without one predates v1.5. A protocol_id.gs naming another id marks the
+  directory as that protocol's whether or not its setup finished: a setup rerun on
+  top of it would reuse that protocol's box, ligands and probe."""
+  if pid is not None and pid != want:
+    return "set up for protocol %s" % pid
+  if pid is None and done:
+    return "setup.done but no %s: set up before v1.5" % PROTOCOL_FILE
+  return None
+
+def foreign_setup(d, want):
+  """_foreign() for the structure directory d."""
+  return _foreign(os.path.isfile(os.path.join(d, "setup.done")),
+                  read_protocol_id(os.path.join(d, PROTOCOL_FILE)), want)
+
+def run_dir_history():
+  """What in the current directory shows that work was already submitted or run here.
+
+  Empty is what makes a submission the FIRST one, the only point at which the
+  directory's protocol id is recorded. Each entry is written only by an earlier
+  submission, setup, cycle or scoring pass. run_config.gs is not one of them: every
+  invocation writes it the moment this module is imported."""
+  seen = [f for f in ("struct_map.gs", "array_submit.run", "results_fe.gs",
+                      "results_analytical.gs", "scores_fe.gs") if os.path.isfile(f)]
+  seen += ["%s/" % d for d in ("results_fe.d", "results_analytical.d",
+                               "results_qc.d", "slurm_fe")
+           if os.path.isdir(d) and os.listdir(d)]
+  try:
+    with open("results_0.gs") as f:
+      # main() creates it holding only its header line just before a submission
+      if any(l.strip() and not l.lstrip().startswith("#") for l in f):
+        seen.append("results_0.gs")
+  except OSError:
+    pass
+  return seen
+
+def protocol_gate():
+  """None if this directory may take cycles of fe_protocol.PROTOCOL_ID, else the
+  lines of the refusal, the first of them a one-line summary.
+
+  The id is recorded here, by the first submission into a directory with no history.
+  A directory with history but no recorded id was started before v1.5: its rows,
+  setups and checkpoints belong to an older protocol, and any cycle submitted into
+  it would be counted as done by its rows and pooled with them, or would continue
+  its checkpoints into v1.5 legs (CYC-1). A directory recorded under another id
+  holds cycles of a protocol this code does not run. Either way nothing is
+  submitted, and nothing in the directory is touched."""
+  rec = read_run_config().get(PROTOCOL_KEY)
+  cur = P.PROTOCOL_ID
+  if rec == cur:
+    return None
+  if rec is None:
+    hist = run_dir_history()
+    if not hist:
+      write_run_config(**{PROTOCOL_KEY: cur})
+      print("Recorded FE protocol %s in %s: this directory takes cycles of that "
+            "protocol only.\n" % (cur, RUN_CONFIG))
+      return None
+    return ["ERROR: nothing was submitted: this run directory predates v1.5.",
+            "  It already holds work (%s), but %s records no %s, so its rows,"
+            % (", ".join(hist), RUN_CONFIG, PROTOCOL_KEY),
+            "  setups and checkpoints belong to an older FE protocol. Its rows look",
+            "  exactly like this protocol's, so new cycles here would be counted as done",
+            "  by them and pooled with them, and its set-up structures would carry old",
+            "  checkpoints into new legs. Start a fresh run directory for this code",
+            "  (sp.gs and the structure inputs only). What is here is still scored,",
+            "  below and on every later invocation here; only submitting is refused."]
+  return ["ERROR: nothing was submitted: this run directory holds another FE protocol.",
+          "  %s records %s %s, and this code runs %s. Cycles of two"
+          % (RUN_CONFIG, PROTOCOL_KEY, rec, cur),
+          "  protocols must never be pooled. Start a fresh run directory for this code.",
+          "  What is here is still scored, below and on every later invocation here;",
+          "  only submitting is refused."]
+
+def protocol_warning():
+  """The warning a scoring pass prints when this directory's recorded protocol is not
+  the one this code runs, as lines; [] when it is."""
+  rec = read_run_config().get(PROTOCOL_KEY)
+  if rec == P.PROTOCOL_ID:
+    return []
+  if rec is None:
+    return ["WARNING: %s records no %s, so this run directory predates v1.5"
+            % (RUN_CONFIG, PROTOCOL_KEY),
+            "  and its rows cannot be tied to any protocol. They are scored as they",
+            "  are; do not pool these numbers with v1.5 results."]
+  return ["WARNING: this run directory holds FE protocol %s, and this code runs %s."
+          % (rec, P.PROTOCOL_ID),
+          "  Its rows are scored with this code's row layout and estimators."]
+
+def setup_problems(sid):
+  """What the setup in ./sid lacks of what the cycles consume, [] if nothing.
+
+  Looks and changes nothing; setup_is_complete decides what to do about it."""
   d = "./%s" % sid
-  if not os.path.isfile(os.path.join(d, "setup.done")):
-    return False
-  if not os.path.isdir(d):        # archived: the setup job unpacks the tarball
-    return True
   bad = []
   for f in ("numpertres.gs", "boresch_analytical.gs", "boresch_anchors.gs"):
     p = os.path.join(d, f)
@@ -682,34 +871,218 @@ def setup_is_complete(sid):
     p = os.path.join(d, m)
     if not os.path.isfile(p):
       bad.append(m)
-    elif not any(l.startswith("pull-ngroups") for l in open(p)):
-      bad.append("%s (no pull block)" % m)
+      continue
+    with open(p) as fh:
+      if not any(l.startswith("pull-ngroups") for l in fh):
+        bad.append("%s (no pull block)" % m)
+  p = os.path.join(d, NPT_C_MDP)
+  if not os.path.isfile(p):
+    bad.append(NPT_C_MDP)
+  else:
+    with open(p) as fh:
+      if not any(l.startswith("pull-ngroups") or _PULL_OFF.match(l) for l in fh):
+        bad.append("%s (no elastic-network block and not pull = no)" % NPT_C_MDP)
+  return bad
+
+def setup_is_complete(sid):
+  """True only if setup.done is backed by the artefacts the cycles consume, and the
+  setup is one of THIS protocol.
+
+  setup.done used to be enough on its own, which made a bad setup permanent: the
+  marker suppressed the setup job here, and job_fe.run exits early on the same
+  marker, so nothing could ever redo the work. A directory left with a 0-byte
+  numpertres.gs and leg .mdp files carrying no pull block reproduced its failure
+  on every resubmission. When the marker is not backed up, clear it and the
+  half-written restraints so the setup job can run again.
+
+  A setup of another protocol, or from before v1.5, is never complete here, and it
+  is never cleared either. A v1.4 directory passed the old test, since every leg mdp
+  it names carries a pull block there (CYC-3), and clearing its setup.done would
+  rebuild only the restraints, on the v1.4 box, ligands and probe, after which its
+  unfinished cycles continue their v1.4 checkpoints into v1.5 legs (CYC-1).
+  setup_and_submit holds such a structure back before it gets here."""
+  d = "./%s" % sid
+  if not os.path.isfile(os.path.join(d, "setup.done")):
+    return False
+  if foreign_setup(d, P.PROTOCOL_ID):
+    return False
+  bad = setup_problems(sid)
   if not bad:
     return True
   print("  %s: setup.done is present but the restraints are not (%s); "
         "redoing setup." % (sid, ", ".join(bad)))
   for f in ("setup.done", "numpertres.gs", "numpertres.tmp",
-            "boresch_failed.gs") + LEG_MDPS:
+            "boresch_failed.gs", NPT_C_MDP) + LEG_MDPS:
     try:
       os.remove(os.path.join(d, f))
     except OSError:
       pass
   return False
 
+def hold_reason(sid, have, wants):
+  """(TOKEN, detail) if the structure directory ./sid must get no job, else None.
+
+  `have` is the set of cycles results_fe.d already holds for it and `wants` whether
+  anything would be submitted. Looks and changes nothing.
+
+    OTHER_PROTOCOL      its setup belongs to another protocol or predates v1.5.
+                        Held even with nothing to submit: this code must not even
+                        install its job.run there.
+    ROWS_WITHOUT_SETUP  results_fe.d holds rows for it, but its directory holds no
+                        record of any setup, neither setup.done nor protocol_id.gs:
+                        a structure directory recreated inside a run directory that
+                        already ran it (CYC-4). The setup it would get starts from a
+                        new probe and builds new restraints, and its cycles would be
+                        counted as done by the old rows and pooled with them.
+                        job_fe.run cannot see this, since the rows live up here.
+
+  A directory whose protocol_id.gs names this protocol is not held, with or without
+  setup.done: there job_fe.run decides. It lets a setup run again over existing
+  cycles only while the solvated system it built is still there, and then rebuilds
+  the same restraints (make_boresch.py has no random input), which is also the case
+  setup_is_complete creates when it clears setup.done over a missing restraint."""
+  d = "./%s" % sid
+  why = foreign_setup(d, P.PROTOCOL_ID)
+  if why:
+    return ("OTHER_PROTOCOL", why)
+  if (have and wants and not os.path.isfile(os.path.join(d, "setup.done"))
+      and not os.path.isfile(os.path.join(d, PROTOCOL_FILE))):
+    return ("ROWS_WITHOUT_SETUP", "%d result rows, but no setup.done and no %s"
+            % (len(have), PROTOCOL_FILE))
+  return None
+
+def inject_job_run(sid, job_src):
+  """Install job_src as job.run inside ./<sid>.tar.gz. None on success.
+
+  (TOKEN, detail) when the archived setup belongs to another protocol or predates
+  v1.5, by the same test hold_reason applies to a directory; the archive is then
+  left exactly as it was. Rewriting streams the whole archive anyway, so reading
+  its protocol_id.gs on the way costs nothing extra. The new job.run goes straight
+  from job_src into the archive: the old code staged it in ./<sid>/, the very path
+  an unpacked structure lives at, and a failure part way left that directory
+  behind to be taken for one."""
+  import io, tarfile
+  arc, new = "./%s.tar.gz" % sid, "./%s_new.tar.gz" % sid
+  done, pid = False, None
+
+  def executable(ti):
+    ti.mode = 0o755
+    return ti
+
+  try:
+    with tarfile.open(arc, "r:gz") as old_tar, tarfile.open(new, "w:gz") as new_tar:
+      for m in old_tar:
+        name = m.name[2:] if m.name.startswith("./") else m.name
+        if name.endswith("/job.run"):
+          continue
+        if name == "%s/setup.done" % sid:
+          done = True
+        if m.isreg() and name == "%s/%s" % (sid, PROTOCOL_FILE):
+          data = old_tar.extractfile(m).read()
+          pid = _protocol_token(data.decode("utf-8", "replace"))
+          new_tar.addfile(m, io.BytesIO(data))
+          continue
+        new_tar.addfile(m, old_tar.extractfile(m) if m.isreg() else None)
+      new_tar.add(job_src, arcname="./%s/job.run" % sid, filter=executable)
+  except (OSError, tarfile.TarError) as e:
+    try:
+      os.remove(new)
+    except OSError:
+      pass
+    return ("INJECT_FAILED", "%s.tar.gz not rewritten: %s" % (sid, e))
+  why = _foreign(done, pid, P.PROTOCOL_ID)
+  if why:
+    os.remove(new)
+    return ("OTHER_PROTOCOL", "archived, " + why)
+  os.replace(new, arc)
+  print("Injected job_fe.run into %s.tar.gz" % sid)
+  return None
+
+# What to do about each reason a structure was held back, printed once per reason
+# that occurred, after the per-structure list.
+HOLD_HELP = {
+  "OTHER_PROTOCOL": (
+    "Their setup belongs to another FE protocol, or predates v1.5: the box, ligands,",
+    "probe and restraints are that protocol's, and unfinished cycles would carry its",
+    "checkpoints into this protocol's legs. Set them up again from their inputs, in",
+    "a fresh run directory. Do not just remove setup.done: the setup would rebuild",
+    "only the restraints, on the old box, ligands and probe."),
+  "ROWS_WITHOUT_SETUP": (
+    "They have result rows in results_fe.d, but their directory holds no setup at",
+    "all, as after recreating it. A new setup builds new restraints on a new probe,",
+    "and its cycles would be counted and pooled with these rows. Move their rows",
+    "out of results_fe.d/ and results_qc.d/ first, or use a fresh run directory."),
+  "ARCHIVED": (
+    "They are archived with cycles still missing. The job.run inside an archive is",
+    "the one that last ran there and may predate this code. Pass --inject-job-run",
+    "to install this job_fe.run into the archive and submit the missing cycles."),
+  "INJECT_FAILED": (
+    "Their archive could not be rewritten and was left as it was.",),
+}
+
+def report_held(held):
+  """Print the structures held back from submission, [(sid, TOKEN, detail), ...]."""
+  if not held:
+    return
+  print("NOT SUBMITTED: %d structure%s held back and left untouched."
+        % (len(held), "" if len(held) == 1 else "s"))
+  for token in HOLD_HELP:
+    hits = [(s, d) for s, t, d in held if t == token]
+    if not hits:
+      continue
+    print("  %s:" % token)
+    for s, d in hits:
+      print("    %-10s %s" % (s, d))
+    for line in HOLD_HELP[token]:
+      print("    " + line)
+  print("")
+
 def setup_and_submit(structids, structchains):
-  """Write per-structure run.gs, copy job_fe.run, build and submit the jobs."""
+  """Write per-structure run.gs, install job_fe.run, build and submit the jobs.
+
+  Called only once protocol_gate() has let this directory take cycles. A structure
+  whose continuation would mix protocols or setups is held back and left untouched
+  (hold_reason, inject_job_run), and so is an archived one without
+  --inject-job-run; report_held lists them all, with what to do, at the end."""
   script_dir = os.path.dirname(os.path.abspath(__file__))
   job_src = os.path.join(script_dir, "job_fe.run")
   if not os.path.isfile(job_src):
     print("Error: job_fe.run not found in %s" % script_dir); sys.exit(1)
+  # Checked before anything is written, so a mistyped --slurm leaves no structure
+  # half prepared.
+  slurm_template = os.path.join(script_dir, "slurm", args.slurm + ".sh")
+  if not os.path.isfile(slurm_template):
+    print("Error: SLURM template not found: %s" % slurm_template); sys.exit(1)
+  with open(slurm_template) as t:
+    template = t.read().rstrip("\n")
 
   with open("struct_map.gs", "w") as f:
     f.write("# Array_Index Structure_ID\n")
     for i, sid in enumerate(structids):
       f.write("%d %s\n" % (i, sid))
 
+  # -n is the TOTAL number of cycles wanted, so re-running with a larger -n adds
+  # cycles. Only the cycles that have no complete result yet are submitted, so
+  # topping up a structure costs one array task per missing cycle rather than
+  # re-walking everything. Cycles whose result contains NaN count as missing and
+  # are recomputed. The total is passed via GROSCORE_NUMCYCLES because run.gs
+  # cannot be rewritten inside an archived structure.
+  done_cycles = {}
+  for sid, rows_ in read_works("results_fe.gs").items():
+    done_cycles[sid] = {int(r[0]) for r in rows_}
+
+  live, held = [], []
   for i, sid in enumerate(structids):
+    have = done_cycles.get(sid, set())
+    lack = [c for c in range(1, args.numruns + 1) if c not in have]
+    # --sequential runs whatever a structure lacks inside one job, so there every
+    # structure has work; the array path submits only the missing cycles.
+    wants = args.sequential or bool(lack)
     if os.path.isdir("./%s" % sid):
+      why = hold_reason(sid, have, wants)
+      if why:
+        held.append((sid,) + why)
+        continue
       print("Setting up %s." % sid)
       if not args.restart:
         with open("./%s/run.gs" % sid, "w") as f:
@@ -727,41 +1100,39 @@ def setup_and_submit(structids, structchains):
       shutil.copy(job_src, tmp)
       os.chmod(tmp, 0o755)
       os.replace(tmp, dst)
+      live.append(sid)
     elif os.path.isfile("./%s.tar.gz" % sid):
-      if args.inject_job_run:
-        import tarfile
-        tmpdir = "./%s" % sid
-        os.makedirs(tmpdir, exist_ok=True)
-        shutil.copy(job_src, os.path.join(tmpdir, "job.run"))
-        os.chmod(os.path.join(tmpdir, "job.run"), 0o755)
-        arc = "./%s.tar.gz" % sid
-        new = "./%s_new.tar.gz" % sid
-        with tarfile.open(arc, "r:gz") as old_tar, tarfile.open(new, "w:gz") as new_tar:
-          for m in old_tar:
-            if m.name.endswith("/job.run"):
-              continue
-            new_tar.addfile(m, old_tar.extractfile(m) if m.isreg() else None)
-          new_tar.add(os.path.join(tmpdir, "job.run"), arcname="./%s/job.run" % sid)
-        os.replace(new, arc)
-        shutil.rmtree(tmpdir)
-        print("Injected job_fe.run into %s.tar.gz" % sid)
-      else:
-        print("Skipping %s.tar.gz (archived, use --inject-job-run)." % sid)
+      # An archive with work to do is submitted only with this code's runner in it.
+      # The setup job unpacks it and its cycles then run the job.run inside, which
+      # is whatever ran there last: v1.4's would run the v1.5 legs as a plain chain,
+      # npt_c without the network and boundrev2 straight after bindrevA (CYC-2). Up
+      # to v1.4 this branch printed that it was skipping the archive and then
+      # submitted it anyway.
+      if not lack:
+        # Nothing to run. The array path below says so; --sequential, which would
+        # unpack and re-archive it for nothing, leaves it out.
+        if args.sequential:
+          print("  %s: all %d cycles complete, nothing to submit." % (sid, args.numruns))
+        else:
+          live.append(sid)
+        continue
+      if not args.inject_job_run:
+        held.append((sid, "ARCHIVED", "%d of %d cycles missing" % (len(lack), args.numruns)))
+        continue
+      why = inject_job_run(sid, job_src)
+      if why:
+        held.append((sid,) + why)
+        continue
+      live.append(sid)
     else:
       print("Structure %s: directory doesn't exist." % sid)
       with open("results_0.gs", "a") as f:
         f.write("%s NODIR\n" % sid)
 
-  slurm_template = os.path.join(script_dir, "slurm", args.slurm + ".sh")
-  if not os.path.isfile(slurm_template):
-    print("Error: SLURM template not found: %s" % slurm_template); sys.exit(1)
-  with open(slurm_template) as t:
-    template = t.read().rstrip("\n")
-
-  live = [sid for sid in structids
-          if os.path.isdir("./%s" % sid) or os.path.isfile("./%s.tar.gz" % sid)]
   if not live:
-    print("No structures to submit.\n"); return
+    print("No structures to submit.\n")
+    report_held(held)
+    return
 
   def extract_snippet(sid):
     # A structure archived after finishing its cycles is unpacked again when more
@@ -773,22 +1144,36 @@ def setup_and_submit(structids, structchains):
 
   if args.sequential:
     # Legacy layout: one task per structure, running setup + all cycles
-    # sequentially inside a single job.
+    # sequentially inside a single job. The total goes along as GROSCORE_NUMCYCLES,
+    # as on the array path: --restart never rewrites run.gs, so without it
+    # '-n <more> --restart --sequential' ran the old total and added no cycle
+    # (review PY-5).
     if args.run_local:
       jobs = [{"name": sid, "dir": sid, "argv": ["./job.run"],
+               "env": {"GROSCORE_NUMCYCLES": str(args.numruns)},
                "archive": "%s.tar.gz" % sid, "log": "job_local.out"} for sid in live]
       launch_local(jobs, args.ngpus, args.jobs_per_gpu, args.threads_per_job)
       print("")
+      report_held(held)
       return
+    # The array runs over struct_map.gs indices, so it lists the live ones only: it
+    # used to span 0..N-1, which ran every held-back structure as well.
+    keep = set(live)
+    idx = [i for i, sid in enumerate(structids) if sid in keep]
     with open("array_submit.run", "w") as f:
       f.write(template + "\n")
-      f.write("#SBATCH --array=0-%d\n\n" % (len(structids) - 1))
+      f.write("#SBATCH --array=%s\n\n" % compact_ranges(idx))
+      f.write("export GROSCORE_NUMCYCLES=%d\n" % args.numruns)
       f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
       f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
       f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n  rm \"${STRUCT_ID}.tar.gz\"\nfi\n")
       f.write("cd $STRUCT_ID\n./job.run\n")
+    # Flushed first: sbatch writes to the same stdout, and into a redirected log its
+    # line otherwise lands above everything printed so far.
+    sys.stdout.flush()
     os.system("sbatch array_submit.run")
-    print("Submitted 1 array of %d structures (sequential cycles).\n" % len(structids))
+    print("Submitted 1 array of %d structures (sequential cycles).\n" % len(idx))
+    report_held(held)
     return
 
   # Default: per structure, a one-off setup job plus a job array over cycles.
@@ -802,16 +1187,6 @@ def setup_and_submit(structids, structchains):
   if not args.run_local:
     os.makedirs("slurm_fe", exist_ok=True)
   throttle = ("%%%d" % args.array_throttle) if args.array_throttle > 0 else ""
-
-  # -n is the TOTAL number of cycles wanted, so re-running with a larger -n adds
-  # cycles. Only the cycles that have no complete result yet are submitted, so
-  # topping up a structure costs one array task per missing cycle rather than
-  # re-walking everything. Cycles whose result contains NaN count as missing and
-  # are recomputed. The total is passed via GROSCORE_NUMCYCLES because run.gs
-  # cannot be rewritten inside an archived structure.
-  done_cycles = {}
-  for sid, rows_ in read_works("results_fe.gs").items():
-    done_cycles[sid] = {int(r[0]) for r in rows_}
 
   local_jobs = []
   n_setup = n_array = 0
@@ -868,6 +1243,7 @@ def setup_and_submit(structids, structchains):
       if jid:
         dep = "--dependency=afterany:%s " % jid
         n_setup += 1
+    sys.stdout.flush()            # sbatch's own line after this file's, as above
     if os.system("sbatch %s%s" % (dep, cycles_path)) == 0:
       n_array += 1
       print("  %s: submitting %d of %d cycles (%s)"
@@ -879,11 +1255,13 @@ def setup_and_submit(structids, structchains):
       print("  (--array-throttle is ignored locally; --jobs-per-gpu sets the limit)")
     launch_local(local_jobs, args.ngpus, args.jobs_per_gpu, args.threads_per_job)
     print("")
+    report_held(held)
     return
 
   print("Submitted %d setup job(s) + %d cycle array(s), target %d cycles/structure%s.\n"
         % (n_setup, n_array, args.numruns,
            " (max %d concurrent)" % args.array_throttle if args.array_throttle > 0 else ""))
+  report_held(held)
 
 #------------------------------------------------------
 
@@ -894,7 +1272,9 @@ def read_status(filepath, structids):
   then fixed carries both lines. Only the last one for a structure describes the
   current state; keeping the last FAILING one instead makes an old failure permanent
   and reports a working directory as broken. SETUP_RUNNING and OK are both
-  "not finished, not failed" and are not statuses to report.
+  "not finished, not failed" and are not statuses to report. Everything else
+  (FAILED, PROBE_FAIL, LIGAND_FAIL from v1.5 on, ...) keeps the structure out of
+  scoring under its own name, with no list here to keep in step.
   """
   last = {}
   if os.path.isfile(filepath):
@@ -1015,11 +1395,14 @@ def read_works(filepath, workdir="results_fe.d"):
       1 bound, 1 stage   ->  9 fields   the unstaged ramp, before 2026-08-14
       1 bound, 2 stages  -> 13 fields   split at u = 0.3
       1 bound, 3 stages  -> 17 fields   split at u = 0.3 and u = 0.5
-      2 bound, 6 stages  -> 31 fields   current
+      2 bound, 6 stages  -> 31 fields   2026-08-17 to 08-18 (_PAST)
+      2 bound, 5 stages  -> 27 fields   until 2026-08-25 (_PAST)
+      2 bound, 9 stages  -> 43 fields   current, fe_protocol.result_nf()
 
-  The width of the CURRENT protocol is taken from fe_protocol; anything else falls
-  back to the old nstages = (NF - 5) / 4 rule, which assumed exactly one bound
-  sub-leg per direction and cannot express a split bound leg. Rows of any of those
+  The width of the CURRENT protocol is taken from fe_protocol and the shipped
+  widths of earlier two-sub-leg protocols from _PAST; anything else falls back to
+  the old nstages = (NF - 5) / 4 rule, which assumed exactly one bound sub-leg per
+  direction and cannot express a split bound leg. Rows of any of those
   widths are read, so a directory from an older protocol still scores, and the
   layout travels with each row so a structure whose cycles straddle a reshaping is
   scored on what its rows contain rather than on what the current protocol expects.
@@ -1120,9 +1503,9 @@ def read_works(filepath, workdir="results_fe.d"):
 def read_interface_qc(workdir="results_qc.d"):
   """-> {struct_id: [(cycle, {metric: value}), ...]} from utils/interface_qc.py.
 
-  A SIDECAR, deliberately not part of the result row. The row width encodes the
-  ramp stage count as (NF - 5)/4, so appending QC fields would make that
-  arithmetic non-integral and read_works would silently reject every row. It is
+  A SIDECAR, deliberately not part of the result row. read_works decodes the bound
+  sub-leg and ramp stage counts from the row width (_layout), so appended QC fields
+  would match no layout and read_works would silently reject every row. It is
   also diagnostic: a cycle with a wrecked interface is still a valid work
   measurement and must keep contributing to the free energy.
 
@@ -1420,12 +1803,132 @@ def leg_stats(fwd, rev):
           # cannot change its shape, so the raw reverse works are tested as-is.
           'p_fwd': _normality(f), 'p_rev': _normality(v)}
 
+# THE v1.5 ACCEPTANCE CHECK on the bound leg. A sub-leg whose forward and reverse
+# runs both start from equilibrium has mean dissipation (<W_f> + <W_r>)/2 >= 0,
+# because <W> >= dG holds for each direction on its own. Below zero by more than
+# its noise, the two directions are not time-reverse pairs, and dG_intro is biased
+# by whatever separates them however tight its interval is. Pass 2 had sub-leg 2
+# negative in 39 of 43 structures (median -4.46 kJ/mol) and sub-leg 1 in 30
+# (bm_fe_amber_2/_ana/digest/qc.txt, extra findings); the likely causes were the
+# reverse bound legs starting from a strained rebound state and the bound holds
+# running the unbinding Hamiltonian, both changed in v1.5. This is the check that
+# the change worked, so it is reported for every structure rather than left to
+# the diss column of the Gaussian table, where pass 2 printed the negative values
+# without anyone flagging them.
+#
+# THE CUT IS A STUDENT t QUANTILE, NOT 2 SE (decision of 2026-10-04 on review QC-3).
+# se comes from the same n cycles as diss, so at zero true dissipation diss/se
+# follows t with n - 1 degrees of freedom, not a normal. The 2-se cut this check
+# shipped with therefore fired far more often than the 2.3% it suggests: 9.5% per
+# sub-leg at n = 3, 5.8% at 5, 3.9% at 10 and 2.9% at 20 (20,000 draws per n through
+# this function, v15_work/RV/qc/negdiss_fpr.py, matching the t distribution's
+# 9.2/5.8/3.8/3.0%), so a pilot read at three to five cycles would have flagged
+# 11-18% of exactly reversible structures. Cut at the lower end of the two-sided 95%
+# t interval instead, a sub-leg with exactly zero dissipation is flagged 2.5% of the
+# time at every n, and the report states how many flags that predicts, so the count
+# can be read against chance rather than against zero. Ten cycles at least: the sd
+# behind se is then good to about a quarter (1/sqrt(2(n-1)) = 0.24), where at three
+# it is good to a half, and an sd from three cycles is the fluke this check must
+# not rest on.
+NEG_DISS_CONF = 0.95   # two-sided t interval; NEG_DISS is its lower tail, 2.5%
+N_MIN_DISS = 10        # below this many cycles there is no verdict
+
+def neg_diss_crit(n):
+  """The t below which a sub-leg of n cycles is NEG_DISS: the (1 + CONF)/2 quantile
+  of Student's t with n - 1 degrees of freedom, 2.262 at n = 10 and 2.093 at n = 20.
+  nan below N_MIN_DISS. scipy is imported here, as in _normality, so that
+  submitting jobs never pays for it."""
+  if n < N_MIN_DISS:
+    return float('nan')
+  from scipy.stats import t
+  return float(t.ppf(0.5 + NEG_DISS_CONF / 2.0, n - 1))
+
+def neg_diss_flag(diss, se, crit):
+  """NEG_DISS: the mean dissipation lies more than crit standard errors below
+  zero, strictly. None when there is no verdict (crit is nan)."""
+  if not np.isfinite(crit):
+    return None
+  return bool(diss < -crit * se)
+
+def bound_dissipation(bound_w):
+  """[(name, n, diss, se, crit, flagged), ...] for bound_w = [(name, fwd, rev), ...].
+
+  diss is the mean over cycles of d_c = (W_f + W_r)/2 with W_r the RAW reverse
+  work, i.e. (mean f - mean b)/2 with b = -W_r the sign-aligned reverse. se is the
+  standard error of that mean from the per-cycle d_c, so it is paired by cycle,
+  the unit every bootstrap in this file resamples, and carries whatever
+  correlation the two directions of one cycle have. crit is neg_diss_crit(n), and
+  flagged is None below N_MIN_DISS cycles."""
+  out = []
+  for name, f, v in bound_w:
+    d = (np.asarray(f, float) + np.asarray(v, float)) / 2.0
+    n = len(d)
+    diss = float(d.mean()) if n else float('nan')
+    se = float(d.std(ddof=1) / math.sqrt(n)) if n >= 2 else float('nan')
+    crit = neg_diss_crit(n)
+    out.append((name, n, diss, se, crit, neg_diss_flag(diss, se, crit)))
+  return out
+
+def print_bound_dissipation(per_struct):
+  """The acceptance-check block of the report. per_struct is [(sid, rows), ...]
+  with rows from bound_dissipation()."""
+  if not per_struct:
+    return
+  alpha = (1.0 - NEG_DISS_CONF) / 2.0         # one tail of the two-sided interval
+  print("")
+  print("Bound-leg dissipation per sub-leg, (<W_f> + <W_r>)/2 paired by cycle "
+        "(v1.5 acceptance check):")
+  print("  With both directions started from equilibrium its expectation cannot be")
+  print("  negative. NEG_DISS marks a sub-leg whose mean lies more than t_crit standard")
+  print("  errors below zero, t_crit the two-sided %g%% Student t quantile at n - 1"
+        % (100.0 * NEG_DISS_CONF))
+  print("  degrees of freedom, so a sub-leg with exactly zero dissipation is flagged")
+  print("  %g%% of the time. Below %d cycles there is no verdict (n/a). A flagged"
+        % (100.0 * alpha, N_MIN_DISS))
+  print("  sub-leg's forward and reverse runs are not time-reverse pairs, and dG_intro")
+  print("  is biased however tight its interval.")
+  print("  %-10s %-9s %4s %9s %9s %8s %7s   %s"
+        % ("structure", "sub-leg", "n", "diss", "se", "z", "t_crit", "flag"))
+  flagged, tested_structs, tested, hits = [], 0, 0, 0
+  for sid, rows in per_struct:
+    hit = judged = False
+    for name, n, diss, se, crit, flag in rows:
+      z = diss / se if (np.isfinite(se) and se > 0) else float('nan')
+      tok = "n/a" if flag is None else ("NEG_DISS" if flag else "-")
+      if flag is not None:
+        judged = True
+        tested += 1
+        hits += int(flag)
+      hit = hit or bool(flag)
+      print("  %-10s %-9s %4d %9s %9s %8s %7s   %s"
+            % (sid, name, n, _cell(diss, 9), _cell(se, 9), _cell(z, 8),
+               _cell(crit, 7, 3), tok))
+    tested_structs += int(judged)
+    if hit:
+      flagged.append(sid)
+  untested = len(per_struct) - tested_structs
+  more = (" (%d more with fewer than %d cycles)" % (untested, N_MIN_DISS)
+          if untested else "")
+  if flagged:
+    print("  NEG_DISS in %d of %d tested structures%s: %s."
+          % (len(flagged), tested_structs, more, ", ".join(flagged)))
+  else:
+    print("  NEG_DISS in none of %d tested structures%s." % (tested_structs, more))
+  # Expected flags at zero dissipation, by linearity: exact whatever the correlation
+  # between the two sub-legs of one structure, which is why it is counted in
+  # sub-legs. It also bounds the expected number of flagged structures.
+  if tested:
+    print("  Chance alone, with zero true dissipation in every one of the %d tested"
+          % tested)
+    print("  sub-legs, flags %.2f of them (%g%% each); observed %d."
+          % (alpha * tested, 100.0 * alpha, hits))
+
 def check_legs(legs):
   """[(sid, leg_name, stats), ...] for every leg of every structure, in order.
 
   `legs` is [(sid, [(name, fwd, rev, plot), ...]), ...]. EVERY channel is checked,
   including the ones the figure does not draw: on a staged run the whole undivided
-  ramp is reported here even though only its two stages get panels, because its
+  ramp is reported here even though only its stages get panels, because its
   overlap and dissipation are what the split is measured against."""
   out = []
   for sid, channels in legs:
@@ -1700,9 +2203,9 @@ def plot_works(legs, stats):
   imported here rather than at module scope so that submitting jobs never pays for
   it.
 
-  A row gets one panel per channel with plot=True, so a staged run draws its two
-  ramp stages side by side: whether the split bought the overlap it was meant to
-  is a question about the two stages, and the answer is the picture. The number of
+  A row gets one panel per channel with plot=True, so a staged run draws its ramp
+  stages side by side: whether the split bought the overlap it was meant to is a
+  question about the stages, and the answer is the picture. The number of
   columns is the widest row on the PAGE, so a page mixing staged and unstaged
   structures leaves the spare cells empty rather than misaligning the grid."""
   import matplotlib
@@ -1849,8 +2352,14 @@ def print_gaussian_report(stats):
 
   bad = [(sid, leg, st) for sid, leg, st in stats if st['flags']]
   thin = [(sid, leg, st) for sid, leg, st in stats if st['skipped']]
+  tested = [(sid, leg, st) for sid, leg, st in stats if len(st['skipped']) < len(CHECKS)]
   print("")
-  if not bad:
+  if not bad and not tested:
+    # Not the pass below: with every check abstaining nothing was measured, and a
+    # one-cycle run printed that its crossings were measured (review E1).
+    print("No leg had the cycles for any check, so no CGI crossing is tested yet (see")
+    print("n/a below).")
+  elif not bad:
     print("No leg failed a check it had the cycles to answer. Where testable, both work")
     print("distributions are Gaussian and the two overlap, so the CGI crossings are")
     print("measured rather than extrapolated.")
@@ -1893,9 +2402,10 @@ def print_gaussian_report(stats):
     print("  More cycles will not clear these flags. They shrink the CI around whatever")
     print("  the estimator converges to, but do not reduce the hysteresis. That needs a")
     print("  slower switch, i.e. a longer stage: each stage's rate is DERIVED from its")
-    print("  own mdp as stage_span / stage_time, so raising nsteps in utils/make_fe_mdps.py")
-    print("  and regenerating lowers the rate to match. There is no rate to set by hand;")
-    print("  --pull-rate only survives as the legacy single-ramp fallback.")
+    print("  own mdp as stage_span / stage_time, so lengthening the stage in the RAMP")
+    print("  table of utils/fe_protocol.py and regenerating with utils/make_fe_mdps.py")
+    print("  lowers the rate to match. There is no rate to set by hand; --pull-rate")
+    print("  only survives as the legacy single-ramp fallback.")
     print("")
     print("  Run utils/fe_leg_efficiency.py before spending anything. It measures whether")
     print("  this leg's dissipation really falls as 1/t and prices both options.")
@@ -1927,18 +2437,39 @@ def print_gaussian_report(stats):
 
 #------------------------------------------------------
 
+def recovery_by_cycle(iqc_rows):
+  """{cycle: recovered} from one structure's read_interface_qc() rows, the last line
+  of a cycle winning as for the result rows, finite values only."""
+  out = {}
+  for cyc, rec in iqc_rows:
+    v = rec.get("recovered", float('nan'))
+    if np.isfinite(v):
+      out[cyc] = v
+    else:
+      out.pop(cyc, None)
+  return out
+
 def score(structids):
   check_ref_t()          # RT feeds pKD and BAR; warn if it does not match the mdp
+  # First, so the report opens with it: a directory whose rows cannot be tied to the
+  # protocol this code runs is still scored, but says so.
+  for line in protocol_warning():
+    print(line)
+  rec_protocol = read_run_config().get(PROTOCOL_KEY)
   status = read_status("results_0.gs", structids)
   analytical = read_analytical("results_analytical.gs")
   works = read_works("results_fe.gs")
   iqc = read_interface_qc()
 
   rows = []  # (sid, result_dict_or_None, dG_release_or_None, ncyc, note)
+  why_not = {}      # sid -> why a structure with result rows got no score
   bad_cycles = {}   # sid -> [(cycle, rmsd), …] that failed the rebinding check
   all_rmsds = []    # every measured cycle, for the summary statistics
+  low_rec = {}      # sid -> (median recovery, cycles) below RECOVERY_WARN
+  n_rec = 0         # structures with a recovery median at all
   legs = []         # (sid, [(name, fwd, rev, plot), ...]) for the diagnostic
   conv = []         # (sid, Wi, Wr, Wtf, Wtr, stage_w, dG_release, staged, bound_w)
+  bdiss = []        # (sid, bound_dissipation rows), the v1.5 acceptance check
   for sid in structids:
     if sid in status:
       rows.append((sid, None, None, 0, status[sid]))
@@ -1949,12 +2480,45 @@ def score(structids):
     for row in cycles:
       by_cycle[row[0]] = row
     cycles = [by_cycle[c] for c in sorted(by_cycle)]
+
+    # PROTOCOL IDENTITY (see protocol_gate). Where the directory records its
+    # protocol, a structure whose own directory says it was set up for another one,
+    # or before v1.5, is never scored, whatever rows it has: they would be pooled
+    # into one table, and maybe into one structure, with this protocol's. Only
+    # unpacked directories are checked. An archived structure keeps protocol_id.gs
+    # inside a tarball of up to 13 GB (test29's 2KTF.tar.gz is 12.7), minutes to
+    # stream on every scoring pass; its rows are vouched for by what wrote them
+    # instead, since every cycle refuses to run unless protocol_id.gs matches its
+    # code, and nothing is submitted into this directory under any other id.
+    if rec_protocol is not None and os.path.isdir(sid):
+      why = foreign_setup(sid, rec_protocol)
+      if why:
+        rows.append((sid, None, None, len(cycles), "PROTOCOL_MISMATCH"))
+        why_not[sid] = "%s; this run directory holds %s" % (why, rec_protocol)
+        continue
+
+    # ONE ROW LAYOUT PER STRUCTURE. Cycles whose rows carry different bound sub-leg
+    # or ramp stage counts come from differently shaped protocols: their stages
+    # cannot be paired, and neither can their summed works, since each shape
+    # dissipates differently and a pool of two work distributions is not the work
+    # distribution of either protocol. Such a structure used to be promised a
+    # score from the summed works and instead stopped the whole scoring pass with
+    # an IndexError in score_structure's bootstrap (review QC-6). It is now not
+    # scored, and the report says which cycles carry which layout.
+    layouts = {}
+    for c in cycles:
+      layouts.setdefault((len(c[1]), c[3]), []).append(c[0])
+    if len(layouts) > 1:
+      rows.append((sid, None, None, len(cycles), "MIXED_LAYOUT"))
+      why_not[sid] = "; ".join("%d bound + %d stages in cycles %s"
+                               % (nb, ns, compact_ranges(cs))
+                               for (nb, ns), cs in sorted(layouts.items()))
+      continue
     if cycles:
+      nbound, nstages = next(iter(layouts))
       # Bound sub-leg works. One channel per sub-leg, exactly as for the ramp; a
       # run from before the bound leg was staged has one of them and behaves as it
-      # always did. Only cycles that agree on the count can be paired up.
-      bcounts = {len(c[1]) for c in cycles}
-      nbound = bcounts.pop() if len(bcounts) == 1 else 0
+      # always did.
       bound_w = []
       for i in range(nbound):
         f = [c[1][i][0] for c in cycles]
@@ -1964,12 +2528,10 @@ def score(structids):
       # between them do none; that sum is what dG_intro is compared against.
       W_intro  = [sum(x) for x in zip(*[f for _, f, _ in bound_w])] if bound_w else []
       W_remove = [sum(x) for x in zip(*[v for _, _, v in bound_w])] if bound_w else []
+      if bound_w:
+        bdiss.append((sid, bound_dissipation(bound_w)))
 
-      # How many ramp stages these cycles carry. A structure whose cycles straddle
-      # a reshaping of the ramp cannot have its stages paired up, so it is scored
-      # on the summed works alone, which are valid whatever the shape.
-      counts = {c[3] for c in cycles}
-      nstages = counts.pop() if len(counts) == 1 else 0
+      # How many ramp stages these cycles carry: one count, checked above.
       staged = nstages > 1
 
       # Physical stage works. Each stage's forward and reverse pair up directly:
@@ -2058,16 +2620,25 @@ def score(structids):
     #
     # Diagnostic only. A low-overlap structure still reports its free energies,
     # exactly as a high-RMSD one does; this says which rows to believe.
+    #
+    # Below N_MIN_OVL cycles a channel has no min..max range for a work to fall in,
+    # so the count is 0 whatever the works do. That is nan here, as in the Gaussian
+    # table, and not the 0.00 of a structure that really lost its overlap: a
+    # one-cycle row read 0.00 in the column the pilot sorts on (review E1).
     ov = []
     for _n, _f, _v in (list(bound_w) + list(stage_w)):
+      if len(_f) < N_MIN_OVL:
+        ov.append(float('nan'))
+        continue
       c = est.overlap_count(_f, _v)
-      ov.append(100.0 * c / (2 * len(_f)) if len(_f) else float('nan'))
+      ov.append(100.0 * c / (2 * len(_f)))
     r['ovl_mean'] = float(np.mean(ov)) if ov else float('nan')
     r['ovl_min'] = float(np.min(ov)) if ov else float('nan')
 
-    # Rebinding sanity check: the thermodynamic cycle only closes if the
-    # rebinding leg put the partners back into the pose the bound leg started
-    # from. Diagnostic only -- the free energies are reported either way.
+    # Rebinding sanity check: did the reverse ramp put the partners back into the
+    # bound pose? Since v1.5 no leg starts from that state (boundrev2 branches from
+    # holdfwd0), so a high value marks a dissipative reverse ramp, not a cycle that
+    # failed to close. Diagnostic only: the free energies are reported either way.
     rmsds = [(c[0], c[2]) for c in cycles if not math.isnan(c[2])]
     r['rmsd_mean'] = float(np.mean([v for _, v in rmsds])) if rmsds else float('nan')
     r['rmsd_max']  = float(np.max([v for _, v in rmsds])) if rmsds else float('nan')
@@ -2075,7 +2646,29 @@ def score(structids):
     bad = [(c, v) for c, v in rmsds if v > args.rmsd_warn]
     if bad:
       bad_cycles[sid] = bad
-    rows.append((sid, r, dG_release, len(cycles), "HIGH_RMSD" if bad else ""))
+    # Contact recovery at the end of rebinding, per structure, beside HIGH_RMSD:
+    # the median over the cycles scored here, so it describes the same cycles the
+    # free energy and the RMSD come from. Diagnostic only, like HIGH_RMSD.
+    rec = recovery_by_cycle(iqc.get(sid, []))
+    rec = [rec[c[0]] for c in cycles if c[0] in rec]
+    if rec:
+      n_rec += 1
+      med = float(np.median(rec))
+      if med < RECOVERY_WARN:
+        low_rec[sid] = (med, len(rec))
+    flags = []
+    if not np.isfinite(r['bind_avg']):
+      # Rows, but no number. avg is the estimator defined on any data, so when it
+      # is not finite nothing is, and the report must say why rather than leave
+      # the structure out of both 'Scored' and 'Not scored' (review QC-5).
+      flags.append("NO_SCORE")
+      why_not[sid] = ("dG_release is %s" % dG_release if not np.isfinite(dG_release)
+                      else "a work average is not finite")
+    if bad:
+      flags.append("HIGH_RMSD")
+    if sid in low_rec:
+      flags.append("LOW_RECOVERY")
+    rows.append((sid, r, dG_release, len(cycles), ",".join(flags)))
 
   # Report binding free energies in kJ/mol and as pKD (never kcal/mol).
   # dG_bind = -RT ln(Ka) = RT ln(KD)  =>  pKD = -log10(KD) = -dG_bind / (RT ln 10).
@@ -2092,23 +2685,27 @@ def score(structids):
   rows_valid.sort(key=lambda row: row[1]['bind_avg'])
 
   # dG_bind, dG_intro and dG_unbind are each reported under all three estimators,
-  # each with its own 95% CI. BAR leads because it is the headline: it makes no
-  # distributional assumption, where CGI assumes both work histograms are Gaussian
-  # and reads dG off where they cross. avg and CGI are retained so the three can
-  # be compared per structure, which is the cheapest available check on whether a
-  # leg has converged. A BAR column reading nan is not a failure to compute; it
-  # means the leg had no forward/reverse overlap, and Note says which one.
+  # each with its own 95% CI. BAR leads because it is the headline as shipped: it
+  # makes no distributional assumption, where CGI assumes both work histograms are
+  # Gaussian and reads dG off where they cross. avg and CGI are retained so the
+  # three can be compared per structure, which is the cheapest available check on
+  # whether a leg has converged. A BAR column reading nan is not a failure to
+  # compute; it means the leg had no forward/reverse overlap, and Note says which.
   # The dG_bind CIs come from the joint cycle bootstrap (they include the
   # dG_intro/dG_unbind covariance, so they are NOT the quadrature of the
   # component CIs).
-  # dG_unbind_* is the STAGED estimate, dG_A + dG_B. The three columns after it
-  # are the audit trail for that sum: the two stages separately, and dG_unbind_1s,
-  # the same free energy taken from the whole ramp in one shot. 1s assumes nothing
-  # about the hold at u=U_SPLIT and is expected to read nan for want of overlap,
-  # which is why the ramp is staged; where it does resolve, 1s minus staged
-  # measures how far the hold is from equilibrium.
+  # dG_unbind_* is the STAGED estimate, the sum over the ramp stages. The columns
+  # after it are the audit trail for that sum: each stage separately, and
+  # dG_unbind_1s, the same free energy taken from the whole ramp in one shot. 1s
+  # assumes nothing about the holds and is expected to read nan for want of
+  # overlap, which is why the ramp is staged; where it does resolve, 1s minus staged
+  # measures how far the holds are from equilibrium, and they are measured to be
+  # far from it (score_structure). dG_unbind_avg is the same
+  # number staged or not, since avg is linear in the works.
   # RMSD_mean/RMSD_max are the rebinding sanity check (Angstrom); a structure with
-  # any cycle above --rmsd-warn additionally carries HIGH_RMSD in Note.
+  # any cycle above --rmsd-warn additionally carries HIGH_RMSD in Note, and one
+  # whose median contact recovery is below RECOVERY_WARN carries LOW_RECOVERY. A
+  # structure with rows but no finite score carries NO_SCORE.
   #
   # N_NUMERIC is DERIVED, not written out. It used to be a literal 19 repeated in
   # the pending-row branch below, which silently had to be kept in step with this
@@ -2198,11 +2795,35 @@ def score(structids):
 
   done = len(rows_valid)
   print("Scored %d/%d structures with complete cycles. Wrote scores_fe.gs." % (done, len(structids)))
+  # Every structure without a score, by reason: a status the setup wrote (FAILED,
+  # PROBE_FAIL, LIGAND_FAIL, ...), no rows yet (PENDING), rows that must not be
+  # pooled (PROTOCOL_MISMATCH, MIXED_LAYOUT), and rows that gave no finite number
+  # (NO_SCORE). A structure with a status is never scored, whatever result rows an
+  # earlier setup may have left behind: read_status runs first. The NO_SCORE kind
+  # used to be named neither under 'Scored' nor here, with '-' as its Note (review
+  # QC-5). Where a reason has detail, it follows on a line per structure.
+  valid = {row[0] for row in rows_valid}
+  unscored = {}
+  for sid, r, _gr, _n, note in rows:
+    if sid in valid:
+      continue
+    token = (note or "PENDING") if r is None else note.split(",")[0]
+    unscored.setdefault(token, []).append(sid)
+  if unscored:
+    print("Not scored: %s." % "; ".join("%s %s" % (k, ", ".join(v))
+                                        for k, v in sorted(unscored.items())))
+    for token, sids in sorted(unscored.items()):
+      for sid in sids:
+        if sid in why_not:
+          print("  %s %s: %s" % (token, sid, why_not[sid]))
 
   # ── rebinding sanity check summary ──────────────────────────────────────────
-  # Every cycle separates the partners and pushes them back; the backbone RMSD
-  # between the bound equilibration and the end of the rebinding leg says whether
-  # the cycle actually closed on the state it started from.
+  # Every cycle separates the partners and pushes them back. The backbone RMSD
+  # between the bound equilibration and the end of the reverse ramp says whether
+  # that ramp re-formed the bound pose. Since v1.5 nothing starts from that state
+  # (boundrev2 branches from holdfwd0), so a high value marks a dissipative reverse
+  # path rather than a cycle that failed to close. Contact recovery, the other
+  # per-structure flag, follows it.
   print("")
   print("Rebinding sanity check (backbone RMSD of the re-bound structure, warn > %.1f A):"
         % args.rmsd_warn)
@@ -2231,13 +2852,30 @@ def score(structids):
       if len(worst) > MAX_FLAGGED_SHOWN:
         print("    ... and %d more (grep HIGH_RMSD scores_fe.gs for the full list)"
               % (len(worst) - MAX_FLAGGED_SHOWN))
+  if n_rec:
+    print("")
+    print("  Contact recovery per structure, the median over its scored cycles of the")
+    print("  restrained contacts back within tolerance (flag below %.2f):" % RECOVERY_WARN)
+    if not low_rec:
+      print("  LOW_RECOVERY in none of %d structures." % n_rec)
+    else:
+      print("  LOW_RECOVERY in %d of %d structures (flagged in scores_fe.gs; no score"
+            % (len(low_rec), n_rec))
+      print("  changes):")
+      lowest = sorted(low_rec.items(), key=lambda kv: kv[1][0])
+      for sid, (med, k) in lowest[:MAX_FLAGGED_SHOWN]:
+        print("    %-20s median %.3f over %d cycles" % (sid, med, k))
+      if len(lowest) > MAX_FLAGGED_SHOWN:
+        print("    ... and %d more (grep LOW_RECOVERY scores_fe.gs for the full list)"
+              % (len(lowest) - MAX_FLAGGED_SHOWN))
   print("")
   # ── interface recovery ──────────────────────────────────────────────────────
   # The RMSD above says the partners came back to roughly the right place. This
   # says whether the CONTACTS re-formed and the side chains re-packed, which is
   # what the interface restraints hold and what capping the restraint list per
-  # residue-residue contact puts at risk. Diagnostic only; nothing is flagged and
-  # no free energy changes.
+  # residue-residue contact puts at risk. Pooled over every cycle and diagnostic
+  # only; the per-structure flag on it is LOW_RECOVERY above, and no free energy
+  # changes either way.
   if iqc:
     rows_q = [(sid, c, r) for sid, lst in iqc.items() for c, r in lst]
     print("")
@@ -2261,11 +2899,13 @@ def score(structids):
       print("  restrained pairs checked           %d" % int(np.median(n_p)))
     print("  A reduction in the restraint count is safe only if these hold up;")
     print("  they exist so that can be measured rather than argued.")
+  print_bound_dissipation(bdiss)
   print("")
 
   # ── work distributions and their Crooks/Gaussian consistency ────────────────
-  # The RMSD check says the cycle closed on the state it started from; this says
-  # whether the numbers extracted from it converged. Both are diagnostic only.
+  # The rebinding checks say whether the reverse ramp re-formed the bound pose;
+  # this says whether the numbers extracted from the works converged. Both are
+  # diagnostic only.
   if not legs:
     print("No cycle has finished yet, so there are no work distributions to check.")
     print("")
@@ -2314,18 +2954,30 @@ def main():
            " (remembered from %s; override with -n)" % RUN_CONFIG
            if NUMRUNS_REMEMBERED else ""))
 
-  # Submit jobs on first invocation (or on --restart).
+  # Submit jobs on first invocation (or on --restart), into a directory whose
+  # protocol is this code's. A refusal touches nothing and submits nothing; what is
+  # here is still scored below, and the invocation then exits 1, because what it
+  # was asked to do did not happen.
+  refused = None
   if args.restart or not os.path.isfile("struct_map.gs"):
-    if not os.path.isfile("results_0.gs"):
-      with open("results_0.gs", "w") as f:
-        f.write("# Stage-0 setup status\n")
-    setup_and_submit(structids, structchains)
+    refused = protocol_gate()
+    if refused:
+      print("\n".join(refused) + "\n")
+    else:
+      if not os.path.isfile("results_0.gs"):
+        with open("results_0.gs", "w") as f:
+          f.write("# Stage-0 setup status\n")
+      setup_and_submit(structids, structchains)
 
   # Progress of a --run-local run. No-op when the jobs went to SLURM instead.
   print_local_status()
 
   # Score whatever results are currently available.
   score(structids)
+  if refused:
+    # Again at the end, where it is read: the report above can run to pages.
+    print(refused[0])
+    sys.exit(1)
 
 if __name__ == "__main__":
   main()

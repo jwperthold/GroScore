@@ -1,8 +1,10 @@
-; npt_fe.mdp - 20 ns NPT equilibration of the unrestrained bound state before
-; each FE cycle. Its output is the configuration boundfwd starts from, and the
-; Crooks analysis assumes those are drawn from the true NPT ensemble, so it uses
-; C-rescale and runs straight off the NVT ladder (C-rescale is first order and
-; needs no weak-coupling stage in front of it).
+; npt_fe.mdp - 20 ns NPT of the bound state with no pull code: the physics of the
+; per-cycle npt_c, which since v1.5 runs npt_c_fe.mdp, i.e. this file plus the
+; elastic network if the structure has one. Kept as the pull-free reference that
+; file is checked against.
+; The Crooks analysis assumes the states boundfwd1 starts from are drawn from the
+; true NPT ensemble, so it uses C-rescale and runs straight off the NVT ladder
+; (C-rescale is first order and needs no weak-coupling stage in front of it).
 ;
 ; nsteps 5000000 * dt 0.004 = 20000 ps.
 

@@ -7,9 +7,12 @@
 # self-contained COM-pull block into each leg .mdp so that all restraint
 # generation lives in one place with consistent pull-group numbering.
 #
-# Two leg families are produced:
+# Two leg families are produced, and the elastic network once more on its own.
+# WHICH legs carry which family is fe_protocol.legs()'s "block" key, never the leg
+# name and never the leg kind; see the leg loop in PART 6.
 #
-#   1. Unbinding / rebinding leg  (bind_fe / bindrev_fe)
+#   1. Unbinding / rebinding leg  (bind_fe / bindrev_fe, and the ramp holds
+#      between them; block "unbind")
 #      - Interface atom-atom umbrella restraints: behave exactly as in the
 #        current engine (reference moves outward at pull-rate -> mechanical
 #        separation work in pullf.xvg), with the ONLY addition being kB = 0 so
@@ -21,15 +24,37 @@
 #        to the Boresch frame as lambda -> 1.
 #      - Elastic network: unchanged, fixed force constant (no lambda dependence).
 #
-#   1b. Hold leg  (nptrev_fe): the Boresch coordinates ONLY, at zero rate. The
-#      interface coordinates are inert there (kB = 0 at lambda = 1) but GROMACS
-#      still enforces its 0.49 * box distance check on them, which killed 8 of 14
-#      holds. See the comment at the write_pull_block call for the detail.
+#   1b. Hold leg at the far end  (nptrev_fe): the six Boresch coordinates AND the
+#      elastic network, at zero rate, without the interface coordinates. Those are
+#      inert there (kB = 0 at lambda = 1) but GROMACS still enforces its
+#      0.49 * box distance check on them, which killed 8 of 14 holds. The network
+#      is not inert: it is part of the lambda = 1 Hamiltonian of the stages on
+#      either side, and v1.3 dropped it together with the springs, so it switched
+#      back on unrecorded at the start of bindrevI with a median 153 kJ/mol of
+#      strain (39 structures of the second HADDOCK pass, per-structure medians up
+#      to 918). See the note at the far-end strip for the detail.
 #
-#   2. Bound-state restraint leg  (boundfwd / boundrev)
+#   2. Bound-state restraint leg  (boundfwd / boundrev, AND the holds inside the
+#      bound lambda schedule, holdbfwd* / holdbrev*; block "bound")
 #      - Interface restraints introduced 0 -> full in the bound state, NO
 #        pulling (rate 0). Pure dhdl. Gives the free energy of introducing the
 #        restraints in the bound ensemble. No Boresch here.
+#      - Elastic network: the same coordinates as family 1.
+#      The holds carry this block because they sit at lambda 0.25 of THIS
+#      schedule. v1.3 picked blocks by kind and gave them the unbind block
+#      (springs at 0.75 k_inter instead of 0.25, plus the Boresch at 25%), so the
+#      Hamiltonian jumped at hold entry and exit by 6.4 and 7.3 kJ/mol of
+#      unrecorded work on average, structure dependent.
+#
+#   3. Bound-state NPT  (npt_c_fe.mdp, the per-cycle 20 ns equilibration that
+#      boundfwd1 starts from): the elastic network ONLY, k = kB = enk, rate 0, no
+#      free-energy block. Without it the network switched on unrecorded at t = 0
+#      of boundfwd1 with a median 299 kJ/mol (single cycles up to 33,549), and 20
+#      of 920 cycles died at that grompp because a network pair had drifted beyond
+#      0.49 box during npt_c. A structure without a network gets 'pull = no'
+#      there, i.e. exactly the npt_fe physics. The network does NOT make a partner
+#      one body: it joins only CAs near cut ends, so the setup log counts the
+#      bodies it leaves per partner (see PART 2).
 #
 # The Boresch standard-state term is computed analytically (Boresch 2003 eq.32)
 # and written to boresch_analytical.gs for groscore_fe.py.
@@ -42,10 +67,17 @@
 # Usage:
 #   python make_boresch.py -f npt_probe_cluster.gro -m chain_map.gs > numpertres.gs
 #
+# -f must be ONE PIECE: job_fe.run writes npt_probe_cluster.gro with
+# utils/assemble_frame.py, and PART 0 stops the setup (INPUT_FRAME_SPLIT) if any
+# polymer residue of -f is not where its contacts put it.
+#
 
 import os, sys, re, argparse, math, itertools, subprocess, traceback, shutil
 import numpy as np
 from scipy.spatial.distance import cdist
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pbc_tools
 
 #------------------------------------------------------
 
@@ -74,8 +106,11 @@ SD_MIN_KEEP = 60          # never let the width ceiling take the set below this
 parser = argparse.ArgumentParser(description="Generate Boresch + interface + elastic-network pull config for the FE protocol.")
 parser.add_argument('-f', '--input', type=str, default="npt_probe_cluster.gro",
                     help="Reference structure the restraints are measured from "
-                         "(default: npt_probe_cluster.gro, the probe equilibration "
-                         "clustered). --topol and --readback-index must match it.")
+                         "(default: npt_probe_cluster.gro, the last probe frame "
+                         "assembled in one piece by utils/assemble_frame.py; a "
+                         "frame whose polymer is split across the periodic "
+                         "boundary stops the setup with INPUT_FRAME_SPLIT). "
+                         "--topol and --readback-index must match it.")
 parser.add_argument('-m', '--chainmap', type=str, required=True, help="Chain map file containing residue numbers for protein B (ligand side).")
 parser.add_argument('-T', '--temp', type=float, default=310.0, help="Temperature in K for the analytical term (default: 310).")
 parser.add_argument('--pull-dist', type=float, default=1.0, help="Maximum COM-COM separation added during unbinding, in nm (default: 1.0).")
@@ -307,21 +342,6 @@ def read_chain_map(filepath):
 
 residues_b = read_chain_map(args.chainmap)
 
-# Ion / ligand residue numbers -> highest structural residue number (everything
-# above is counterion / bulk solvent added by gmx genion).
-extra_residues = set()
-for gs_file in ["ion_residues.gs", "ligand_residues.gs"]:
-  gs_path = os.path.join(os.path.dirname(args.chainmap), gs_file)
-  if os.path.isfile(gs_path):
-    for line in open(gs_path):
-      if not line.strip().startswith("#"):
-        try:
-          extra_residues.add(int(line.strip()))
-        except (ValueError, IndexError):
-          pass
-all_structural = residues_b | extra_residues
-max_structural_resnum = max(all_structural) if all_structural else 0
-
 #------------------------------------------------------
 # Parse the coordinate file. Store per atom: resname (with resnum), resnum,
 # atomname, atomnum (int), coords. Split into receptor (prot1) and ligand (prot2)
@@ -350,28 +370,31 @@ if not os.path.isfile(args.input):
   abort("INPUT_STRUCTURE_MISSING",
         "coordinate file %s does not exist" % args.input)
 
-with open(args.input, "r") as f:
-  for line in f:
-    if not line.strip().startswith("#"):
-      left = line[:15]
-      right = line[15:]
-      tmp = left.split() + right.split()
-      try:
-        s = re.search(r"\d+(\.\d+)?", tmp[0])
-        resnum = int(s.group(0))
-        atomname = tmp[1]
-        atomnum = int(tmp[2])
-        x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-        res3 = re.sub(r'\d+', '', tmp[0])
-        if res3 == "SOL" or resnum > max_structural_resnum:
-          continue
-        rec = (tmp[0], resnum, atomname, atomnum, x, y, z)
-        if resnum not in residues_b:
-          prot1_data.append(rec)
-        else:
-          prot2_data.append(rec)
-      except (ValueError, IndexError, AttributeError):
-        pass
+# Fixed .gro columns and atoms by POSITION (pbc_tools.read_gro), and the solute is
+# everything before the first water, as in make_disres_en.py. The split parse read
+# the residue field '   331PE' (residue 33, ligand 1PE) as residue 331, so the
+# ligand fell out as solvent or onto the wrong side, and its rule of every residue
+# number up to max(chain_map, ion and ligand residues) dropped a receptor chain
+# that a --no-cutout input lists after protein B (v15_work review PY-4, audit R7
+# and R8 of the classic engine). Counterions come after the water (genion), and
+# crystal waters are appended after the protein, ions and ligands. The residue
+# field stays '<resnum><resname>', the key everything below groups residues by.
+try:
+  _frame = pbc_tools.read_gro(args.input)
+except (OSError, ValueError) as e:
+  abort("INPUT_STRUCTURE_UNREADABLE", "cannot read %s: %s" % (args.input, e))
+_n_solute = next((i for i, h in enumerate(_frame.head) if h[5:10].strip() == "SOL"),
+                 len(_frame.head))
+for _i in range(_n_solute):
+  _h = _frame.head[_i]
+  try:
+    _resnum = int(_h[0:5])
+  except ValueError:
+    abort("INPUT_STRUCTURE_UNREADABLE",
+          "unreadable residue number in line %d of %s" % (_i + 3, args.input))
+  rec = ("%d%s" % (_resnum, _h[5:10].strip()), _resnum, _h[10:15].strip(), _i + 1) \
+      + tuple(float(v) for v in _frame.xyz[_i])
+  (prot2_data if _resnum in residues_b else prot1_data).append(rec)
 
 # Load before anything takes a COM. The probe tpr already exists when job_fe.run
 # calls this script, and it is the same system, already repartitioned.
@@ -383,6 +406,16 @@ else:
   sys.stderr.write("make_boresch: WARNING - no masses from %s, falling back to "
                    "element masses; COMs will not match GROMACS exactly\n"
                    % args.tpr[0])
+
+
+def box_matrix(box_line):
+  """The three box vectors of a .gro box line, as the rows of a 3x3 list.
+
+  The line is v1x v2y v3z v1y v1z v2x v2z v3x v3y; a rectangular box writes only
+  the first three and the rest are zero."""
+  f = [float(v) for v in box_line.split()]
+  f += [0.0] * (9 - len(f))
+  return [[f[0], f[3], f[4]], [f[5], f[1], f[6]], [f[7], f[8], f[2]]]
 
 
 def box_vector_norms(box_line):
@@ -401,10 +434,7 @@ def box_vector_norms(box_line):
   where a min-diagonal rule would have predicted 1.47. The check fires at grompp,
   not only at mdrun, and applies at k = 0.
   """
-  f = [float(v) for v in box_line.split()]
-  f += [0.0] * (9 - len(f))
-  v = [(f[0], f[3], f[4]), (f[5], f[1], f[6]), (f[7], f[8], f[2])]
-  return [math.sqrt(sum(c * c for c in u)) for u in v]
+  return [math.sqrt(sum(c * c for c in u)) for u in box_matrix(box_line)]
 
 # The BOX comes from --box-from, NOT from -f, because the reference structure and
 # the box the legs run in need not be the same system. -f supplies geometry; the
@@ -437,6 +467,16 @@ if not BOX_VEC:
 # The distance every pull coordinate is measured against. 4.045 nm on 2KTF.
 PULL_LIMIT = 0.49 * min(BOX_VEC) if BOX_VEC else None
 
+# The box of -f ITSELF, which the single-frame geometry is minimum-imaged in. Not
+# BOX_VEC: that is the production box the limits scale with, while -f comes from
+# the probe system. An unreadable box line gives the zero matrix, under which
+# min_image_vec returns its input unchanged, i.e. the raw coordinates as before.
+try:
+  _l = [x for x in open(args.input).read().split("\n") if x.strip()]
+  INPUT_BOX = np.asarray(box_matrix(_l[-1]), dtype=float)
+except (ValueError, IndexError, OSError):
+  INPUT_BOX = np.zeros((3, 3))
+
 # Fraction of that limit the Boresch distance is allowed to reach at full
 # extension. Named once because THREE places need the same number and two of them
 # used to disagree: the cross-triad search filtered at 0.9 while the final guard
@@ -446,13 +486,286 @@ PULL_LIMIT = 0.49 * min(BOX_VEC) if BOX_VEC else None
 # limit, 73%, while its own r0_release sat at 54%.
 R_LIMIT_FRAC = 0.6
 
-# The file can be present and still yield nothing, e.g. an empty chain_map.gs
-# leaves max_structural_resnum at 0 and filters every atom out. That produced
-# the same degenerate arrays downstream as a missing file.
+# The file can be present and still yield nothing for one side, e.g. an empty
+# chain_map.gs puts every solute atom on the receptor side. That produced the same
+# degenerate arrays downstream as a missing file.
 if not prot1_data or not prot2_data:
   abort("EMPTY_STRUCTURE",
         "%s gave %d receptor and %d ligand atoms (check chain_map.gs)"
         % (args.input, len(prot1_data), len(prot2_data)))
+
+#======================================================
+# Periodic images
+#======================================================
+
+# The 27 single translations of a triclinic cell, built once.
+_IMG = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1)
+                 for k in (-1, 0, 1)], dtype=float)
+
+
+def to_brick(dv, M):
+  """dv moved by whole box vectors into the brick |dz| <= cz/2, |dy| <= by/2,
+  |dx| <= ax/2, the reduction GROMACS's own pbc_dx starts from. GROMACS boxes are
+  lower triangular (v1 = (ax,0,0), v2 = (bx,by,0), v3 = (cx,cy,cz)), so z is
+  settled by v3 alone, then y by v2, then x by v1. A zero diagonal (no periodicity
+  along that axis) leaves that component alone."""
+  for d in (2, 1, 0):
+    den = np.where(M[..., d, d] == 0, np.inf, M[..., d, d])
+    dv = dv - np.round(dv[..., d] / den)[..., None] * M[..., d, :]
+  return dv
+
+
+# THE BRICK FIRST, THEN THE 27 NEIGHBOURS. The search over single translations used
+# to start from the raw difference, and it is exact only when that difference is
+# within one box vector per axis of the true one. A -pbc whole frame does not
+# promise that: each molecule is made whole outward from an atom mdrun had put in
+# the cell, so two atoms of different molecules, or of two unbonded fragments of
+# one cutout, can sit two lattice vectors apart. Measured on short vectors
+# displaced by up to two lattice vectors per axis in the xy-square dodecahedron
+# these setups use, the raw search returned the wrong image for 156,817 of 200,000
+# draws and the brick-first search for none. Over 200,000 arbitrary vectors up to
+# 30 nm the brick-first search also agreed with an exhaustive +-3 search from the
+# brick, in both dodecahedra, the octahedron, a rectangular box and the skewed box
+# [[10,0,0],[5,6,0],[-5,3,5]]. tests/test_boresch_pbc.py repeats the comparison.
+#
+# NOT EXACT IN EVERY BOX GROMACS ACCEPTS. In a flatter box that grompp's box check
+# still allows, the brick plus 27 neighbours can miss the minimum for a vector
+# longer than about half the smallest diagonal element: in [[10,0,0],[5,6,0],
+# [5,3,2]] it returned a longer image for 217 of 12,000 vectors, up to 0.68 nm too
+# long, the shortest failing one 3.02 nm (review R7). Every box this pipeline
+# builds is an editconf dodecahedron scaled isotropically by C-rescale, where it is
+# exact.
+def min_image_vec(dv, M):
+  """The minimum image of dv under box M, exact in the boxes this pipeline builds
+  (see the note above). min_image_dist takes its norm; angles and dihedrals need
+  the vector itself. dv is (..., 3) and M is (3, 3) or (..., 3, 3), broadcast
+  against each other."""
+  dv = to_brick(dv, M)
+  shifts = np.einsum("ij,...jk->...ik", _IMG, M)        # (..., 27, 3)
+  cand = dv[..., None, :] + shifts
+  k = np.argmin((cand ** 2).sum(-1), axis=-1)
+  return np.take_along_axis(cand, k[..., None, None], axis=-2)[..., 0, :]
+
+
+def min_image_dist(dv, M):
+  """Shortest distance equivalent to displacement dv under box M.
+
+  dv is (..., 3) and M is (3, 3) or (..., 3, 3), so a whole trajectory of pair
+  vectors goes through in one call."""
+  dv = to_brick(dv, M)
+  shifts = np.einsum("ij,...jk->...ik", _IMG, M)        # (..., 27, 3)
+  cand = dv[..., None, :] + shifts
+  return np.sqrt((cand ** 2).sum(-1)).min(-1)
+
+
+def shortest_lattice_vector(M):
+  """Length of the shortest non-zero lattice vector of box M (rows a, b, c), or 0
+  for a box with a zero diagonal, i.e. no periodicity to speak of. Searched over
+  every combination of up to two of each box vector, which contains the shortest
+  one of every box GROMACS builds."""
+  M = np.asarray(M, dtype=float)
+  if not np.all(np.diag(M) > 0):
+    return 0.0
+  c = np.array([(i, j, k) for i in range(-2, 3) for j in range(-2, 3)
+                for k in range(-2, 3) if (i, j, k) != (0, 0, 0)], dtype=float)
+  return float(np.sqrt(((c @ M) ** 2).sum(-1)).min())
+
+
+def min_image_cdist(A, B, M):
+  """Pairwise distances between the rows of A and of B under the minimum image of
+  box M, laid out as cdist(A, B).
+
+  A difference no longer than half the shortest lattice vector is its own minimum
+  image, since every other image of it is at least that much longer; cdist's own
+  number is kept for those, so a frame that is one piece gets bit for bit the
+  distances it always got. Only the longer differences are re-measured with
+  min_image_dist, in chunks; on a frame in one piece those are pairs across the
+  complex, far beyond every cutoff they are tested against. A box with a zero
+  diagonal gives plain cdist."""
+  d = cdist(A, B)
+  half = 0.5 * shortest_lattice_vector(M)
+  if half <= 0 or not d.size:
+    return d
+  ii, jj = np.nonzero(d > half)
+  blk = max(1, (256 << 20) // (len(_IMG) * 3 * 8))
+  for s in range(0, len(ii), blk):
+    a, b = ii[s:s + blk], jj[s:s + blk]
+    d[a, b] = min_image_dist(B[b] - A[a], M)
+  return d
+
+
+def nearest_image(X, ref, M):
+  """X (..., 3) moved by whole box vectors to its image nearest ref. A point that
+  is already there comes back bit for bit, because its shift is the difference of
+  two identical vectors."""
+  X = np.asarray(X, dtype=float)
+  dv = X - ref
+  return X + (min_image_vec(dv, M) - dv)
+
+
+FRAG_BOND_NM = 0.2      # backbone neighbours closer than this are covalently bonded
+
+
+def backbone_fragments(xyz, M):
+  """Pieces of one side's backbone that share no backbone bond, as arrays of row
+  indices, largest first (input order among equals).
+
+  The rows are N, CA, C of each residue in input order (caps contribute their N
+  or C), so two backbone atoms can only be bonded if they are neighbours in that
+  order, and neighbours are bonded exactly when they sit within FRAG_BOND_NM:
+  N-CA is 0.147 nm, CA-C 0.153, C-N 0.133, and no two non-bonded heavy atoms come
+  within 0.25 nm. Distances are minimum-imaged in M, so a fragment that -f itself
+  shows split is still one fragment."""
+  if len(xyz) == 0:
+    return []
+  gap = min_image_dist(xyz[1:] - xyz[:-1], M) > FRAG_BOND_NM
+  pieces = np.split(np.arange(len(xyz)), np.flatnonzero(gap) + 1)
+  return sorted(pieces, key=len, reverse=True)
+
+
+#======================================================
+# PART 0 - -f must be one piece
+#
+# Every restraint below is measured on -f: the interface candidates and the elastic
+# network as distances, the anchor groups as COMs, the pull axis and every spring's
+# pull path as vectors. Until this check they were raw coordinate differences, and
+# -f came from gmx trjconv -pbc cluster, which makes a moleculetype whole atom by
+# atom along the sequence. A cutout partner is ONE moleculetype of several capped,
+# unbonded fragments, so a sequence step between two fragments that is longer than
+# half the box puts every later fragment of that partner one box vector off. On the
+# real 1IJK probe the step is NME299 -> ACE300, 7.28 nm in a 9.90 nm box, and ligand
+# residues 300-416 sat one box vector from the rest. Raw distances then found 8076
+# candidate pairs within 1.2 nm where the minimum image finds 19366, all 435 springs
+# landed on ligand residues 201-299, 720 of the 1108 contact pairs inside 0.6 nm got
+# none, and the ligand network lost the 5 pairs that are its only link between
+# 170-299 and 300-416. Nothing in the log said so (review FR1).
+#
+# job_fe.run now writes -f with utils/assemble_frame.py: pbc_tools.assemble, a
+# minimum spanning tree over one anchor atom per residue, places every residue at
+# the image nearest the residue it hangs from, so contact decides the image and the
+# sequence order does not. The same assembly is run here on the solute of -f, for
+# two things:
+#
+#   * THE GUARD. If it moves any POLYMER residue, -f is not one piece and the setup
+#     stops with INPUT_FRAME_SPLIT. A frame from assemble_frame.py never trips it.
+#     The test is by contact and not by fragment centroid: a centroid offset from
+#     the root fragment is ambiguous beyond half a box, and in a frame that IS one
+#     piece a fragment can sit that far from the root's centroid (1RLB: a 5-residue
+#     fragment 5.15 nm from it against a probe half-box of 4.94 nm, in 23% of
+#     orientations; review R2), so a centroid test would stop correct setups.
+#   * THE COORDINATES. Everything below reads the assembled positions, so a ligand
+#     or an ion that -f has in another image (non-polymer residues are moved with a
+#     note, not stopped) is measured where its contacts are. Atoms the assembly does
+#     not move keep their coordinates bit for bit.
+#
+# On top of that the distances that become restraints are minimum-imaged (PART 1
+# and 2, the anchor-group COMs and the springs' pull paths), because the minimum
+# image is what GROMACS pulls on. On a frame in one piece it is the same number,
+# and with it the candidate, spring and network sets no longer depend on how -f is
+# wrapped even if this guard were bypassed: on the split 1IJK frame, with the guard
+# and the assembly both switched off, the 1150 springs and their references and the
+# 226 network pairs came out as on the assembled frame. A
+# vector between two arbitrary residues, which the anchor search and the burial
+# heuristic take, has no minimum image to trust, because the complex is wider than
+# half its probe box (CA extent 7.41 nm against 4.95 on 1IJK, 4.10 against 3.33 on
+# 2KTF); only the assembled frame gives those right.
+#======================================================
+
+def assemble_input(data, M):
+  """Box-vector coefficients that put every residue of `data` where its contacts
+  put it.
+
+  data is prot1_data + prot2_data, M the box of -f. A residue is a run of atoms
+  with the same residue field, in input order. pbc_tools.assemble joins them by a
+  spanning tree over one anchor atom per residue (its CA, else its first atom), the
+  assembly measure_box, interface_qc, rebound_rmsd and assemble_frame.py use, here
+  rooted at the first residue of the largest polymer fragment so that the bulk of
+  the complex stays where -f has it.
+
+  Returns (n, polymer, blocks, longest): n the (atoms, 3) integer coefficients of
+  the box vectors each atom is moved by, all zero for an atom already in place;
+  polymer[k] whether residue k is polymer (an N/CA/C triple, or a cap); blocks the
+  residues as (start, end); longest the longest link of the tree in nm, nan for a
+  box with no periodicity, where nothing is assembled."""
+  xyz = np.array([rec[4:7] for rec in data], dtype=float)
+  blocks, start = [], 0
+  for i in range(1, len(data) + 1):
+    if i == len(data) or data[i][:2] != data[start][:2]:
+      blocks.append((start, i))
+      start = i
+  polymer = [{"N", "CA", "C"} <= {data[i][2] for i in range(s, e)}
+             or re.sub(r"^\d+", "", data[s][0]) in pbc_tools.CAP_RESIDUES
+             for s, e in blocks]
+  n = np.zeros((len(data), 3), dtype=int)
+  if not np.all(np.diag(M) > 0):
+    return n, polymer, blocks, float("nan")
+  anchors = [next((i for i in range(s, e) if data[i][2] == "CA"), s) for s, e in blocks]
+  block_of = np.empty(len(data), dtype=int)
+  for k, (s, e) in enumerate(blocks):
+    block_of[s:e] = k
+  rows = np.array([i for k, (s, e) in enumerate(blocks) if polymer[k]
+                   for i in range(s, e) if data[i][2] in BACKBONE], dtype=int)
+  root = 0
+  if len(rows):
+    root = int(block_of[rows[backbone_fragments(xyz[rows], M)[0][0]]])
+  order = [root] + [k for k in range(len(blocks)) if k != root]
+  asm, longest = pbc_tools.assemble(xyz, M, [blocks[k] for k in order],
+                                    np.array([anchors[k] for k in order]))
+  n = np.rint((asm - xyz) @ np.linalg.inv(M)).astype(int)
+  return n, polymer, blocks, longest
+
+
+def describe_moved(data, n, blocks, which, len_first):
+  """'ligand 300-416 by (0,-1,1)'-style runs of the residues `which`, one run per
+  side, box-vector shift and stretch of consecutive residue numbers."""
+  runs = []
+  for k in which:
+    s = blocks[k][0]
+    key = ("receptor" if s < len_first else "ligand", tuple(int(v) for v in n[s]))
+    if runs and runs[-1][0] == key and data[s][1] == runs[-1][2] + 1:
+      runs[-1][2] = data[s][1]
+    else:
+      runs.append([key, data[s][1], data[s][1]])
+  out = ["%s %s by (%d,%d,%d)" % ((key[0], "%d" % lo if lo == hi else "%d-%d" % (lo, hi))
+                                  + key[1]) for key, lo, hi in runs]
+  return "; ".join(out[:8]) + ("; and %d more" % (len(out) - 8) if len(out) > 8 else "")
+
+
+def apply_shifts(data, n, M):
+  """data with every atom moved by its box vectors, untouched where n is zero."""
+  L = n @ M
+  return [rec[:4] + tuple(float(v) for v in np.array(rec[4:7], dtype=float) + L[i])
+          if n[i].any() else rec for i, rec in enumerate(data)]
+
+
+_all_data = prot1_data + prot2_data
+_shift_n, _polymer, _blocks, _longest = assemble_input(_all_data, INPUT_BOX)
+_moved = [k for k, (s, e) in enumerate(_blocks) if _shift_n[s:e].any()]
+_moved_poly = [k for k in _moved if _polymer[k]]
+if _moved_poly:
+  abort("INPUT_FRAME_SPLIT",
+        "%s is not one piece: %d polymer residue(s) sit whole box vectors from "
+        "where their contacts put them (%s; longest contact link %.3f nm). "
+        "job_fe.run writes -f with utils/assemble_frame.py, which never leaves a "
+        "frame like this; gmx trjconv -pbc cluster does, for unbonded fragments "
+        "farther apart than half the box"
+        % (args.input, len(_moved_poly),
+           describe_moved(_all_data, _shift_n, _blocks, _moved_poly, len(prot1_data)),
+           _longest))
+if _moved:
+  sys.stderr.write("make_boresch: %d non-polymer residue(s) of %s sat whole box "
+                   "vectors from their contacts and are measured where the contacts "
+                   "put them: %s\n"
+                   % (len(_moved), args.input,
+                      describe_moved(_all_data, _shift_n, _blocks, _moved, len(prot1_data))))
+  _all_data = apply_shifts(_all_data, _shift_n, INPUT_BOX)
+  prot1_data, prot2_data = _all_data[:len(prot1_data)], _all_data[len(prot1_data):]
+if math.isnan(_longest):
+  sys.stderr.write("make_boresch: WARNING - %s has no periodic box line, so it is "
+                   "taken as it stands and nothing is minimum-imaged\n" % args.input)
+else:
+  sys.stderr.write("make_boresch: %s is one piece: %d residues joined by contact, "
+                   "longest link %.3f nm\n" % (args.input, len(_blocks), _longest))
 
 len1 = len(prot1_data)
 len2 = len(prot2_data)
@@ -461,18 +774,52 @@ prot1_coords = np.array([(d[4], d[5], d[6]) for d in prot1_data], dtype=np.float
 prot2_coords = np.array([(d[4], d[5], d[6]) for d in prot2_data], dtype=np.float64) if len2 else np.empty((0, 3))
 
 #======================================================
-# PART 1 - Interface atom-atom restraints (identical selection to make_disres_en)
+# PART 1 - Interface atom-atom restraints (identical selection to make_disres_en:
+# heavy atoms, not the MN* dummy masses of virtual sites, and an ion's lone atom
+# always)
 #======================================================
 
-prot1_valid = np.array([i for i in range(len1) if prot1_data[i][2][0] != "H" and prot1_data[i][2][:2] != "MN"])
-prot2_valid = np.array([i for i in range(len2) if prot2_data[i][2][0] != "H" and prot2_data[i][2][:2] != "MN"])
+# Same list as make_disres_en.py, renumber_pdb.py and cap_termini.py: single-atom
+# ion residues.
+ION_RESIDUES = {"BA", "CA", "CD", "CL", "CO", "CS", "CU", "CU1", "FE", "FE2", "HG", "K",
+                "LI", "MG", "MN", "NA", "NI", "PB", "SD", "SR", "ZN"}
+
+
+def residue_atom_names(prot_data):
+  """{residue field ('<resnum><resname>'): set of its atom names}."""
+  names = {}
+  for rec in prot_data:
+    names.setdefault(rec[0], set()).add(rec[2])
+  return names
+
+
+def interface_atoms(prot_data):
+  """Indices of the atoms that may carry an interface spring. The name tests drop
+  hydrogens and the MN* dummy masses of virtual sites, and with them the lone atom
+  of an Mn2+ (MN) or Hg2+ (HG) ion; an ion is therefore kept by its residue, as in
+  make_disres_en.py. Without that the FE engine left out the Mn2+ of 1T6B, the metal
+  bridging the two partners, that the classic engine restrains (review PY-3)."""
+  ions = {rn for rn, nm in residue_atom_names(prot_data).items()
+          if len(nm) == 1 and re.sub(r"^\d+", "", rn) in ION_RESIDUES}
+  return np.array([i for i, rec in enumerate(prot_data)
+                   if rec[0] in ions or (rec[2][0] != "H" and rec[2][:2] != "MN")], dtype=int)
+
+
+prot1_valid = interface_atoms(prot1_data)
+prot2_valid = interface_atoms(prot2_data)
 
 # CANDIDATES, at CANDIDATE_CUT rather than interfacecutoff. The contact cutoff is
 # applied later, to the ensemble mean, so that this frame decides only what gets
 # MEASURED and the trajectory decides what gets restrained.
+#
+# MINIMUM-IMAGED in -f's own box, the distance GROMACS will pull on, so the set
+# does not depend on how -f is wrapped. Raw distances on the split 1IJK frame of the
+# first v1.5 round found 8076 pairs within 1.2 nm against 19366 and put all 435
+# springs on one ligand fragment (PART 0). On a frame in one piece the two agree bit
+# for bit; see min_image_cdist.
 interdis = []  # (i, j, dist) indices into prot1_data / prot2_data
 if len(prot1_valid) > 0 and len(prot2_valid) > 0:
-  d = cdist(prot1_coords[prot1_valid], prot2_coords[prot2_valid])
+  d = min_image_cdist(prot1_coords[prot1_valid], prot2_coords[prot2_valid], INPUT_BOX)
   for i_idx, i in enumerate(prot1_valid):
     for j_idx, j in enumerate(prot2_valid):
       if d[i_idx, j_idx] <= CANDIDATE_CUT:
@@ -556,7 +903,7 @@ def _cap_per_contact(cands, cap):
     i, j, _ = rec
     a = np.array(prot1_data[i][4:7], float)
     b = np.array(prot2_data[j][4:7], float)
-    return 0.5 * (a + b)
+    return a + 0.5 * min_image_vec(b - a, INPUT_BOX)
 
   def has_sidechain(rec):
     i, j, _ = rec
@@ -602,28 +949,69 @@ _snap_of = {(i, j): dist for i, j, dist in interdis}
 # interface_contacts.gs all belong to that step and are set there.
 
 #======================================================
-# PART 2 - Elastic network (identical to make_disres_en.build_elastic_network)
+# PART 2 - Elastic network (the selection of make_disres_en.build_elastic_network,
+# with its distances minimum-imaged like the interface candidates above)
+#
+# WHAT THE NETWORK HOLDS, AND WHAT IT DOES NOT. Its nodes are the CAs of amino-acid
+# residues (those with N, CA and C) within 0.9 nm of a cut-end residue (the residue
+# next to an ACE or NME cap, or one carrying a terminal atom, all but the first and
+# last of them) and its pairs are those nodes 0.4-0.9 nm apart. It therefore ties
+# together fragment ends that happen to lie near each other and nothing else; it
+# does not make a partner one body. On the real 1AKJ setup the receptor's fragments
+# form two bodies under it, residues 1-261 and the tail 262-347 that carries 250 of
+# the 1257 interface contacts, and the two ligand chains share no pair (critic, D3).
+# On 1IJK the ligand is one body only through 5 pairs from residues 202-206 to 372,
+# the pairs a split -f lost. In npt_c and nptrev the network holds each body
+# together, not the bodies to each other, so bodies can drift apart there. This is
+# not redesigned here; network_bodies() puts the number of bodies per partner and
+# their residue spans in the setup log, so the pilot shows where it matters.
 #======================================================
+
+# Atom names that mark a fragment end without a cap next to it, as in
+# make_disres_en.py: the C-terminal carboxyl of GROMOS (OT), CHARMM36 (OT1/OT2, its
+# COOH patch) and AMBER (OXT), and the N-terminal H2. With only OT and H2 no
+# CHARMM36 C-terminal cut end was an anchor: the CHARMM36 1A2K setup got 158
+# network pairs where the classic engine gets 346 (review PY-2).
+TERMINAL_ATOMS = {"OT", "OT1", "OT2", "OXT", "H2"}
+
+
+def amino_acid_residues(prot_data):
+  """Residue fields of the residues with N, CA and C. That leaves out the ions and
+  the caps, which have atoms named CA too: a Ca2+ ion (residue CA, atom CA) and,
+  under GROMOS, the ACE methyl that cap_termini.py --rename-ace-carbon names CA.
+  Both used to become network nodes and anchors, as in make_disres_en.py before its
+  audit R4: the GROMOS 1A2K setup had 8 ACE carbons in a network of 372 pairs where
+  the classic engine has 331 (review PY-1)."""
+  return {rn for rn, nm in residue_atom_names(prot_data).items() if {"N", "CA", "C"} <= nm}
+
+
+def polymer_backbone(prot_data):
+  """Atom numbers of the backbone atoms (N, CA, C) of the polymer: the amino-acid
+  residues and the caps, which contribute their N or C to the backbone chain. Not
+  an ion's atom named CA, which as a backbone row would join the self-fit, break the
+  chain into spurious fragments and could trip RMSF_SPLIT if the ion moves."""
+  poly = amino_acid_residues(prot_data) | {
+      rec[0] for rec in prot_data if re.sub(r"^\d+", "", rec[0]) in pbc_tools.CAP_RESIDUES}
+  return [rec[3] for rec in prot_data if rec[0] in poly and rec[2] in BACKBONE]
+
 
 def build_elastic_network(prot_data, prot_coords):
   prot_len = len(prot_data)
+  amino = amino_acid_residues(prot_data)
   anchor_resnames = set()
   resname_to_type = {}
+  resnum_of = {}
   for i in range(prot_len):
     resname_to_type[prot_data[i][0]] = prot_data[i][0][-3:]
+    resnum_of[prot_data[i][0]] = prot_data[i][1]
   for i in range(prot_len):
-    if prot_data[i][2] in ("OT", "H2"):
+    if prot_data[i][2] in TERMINAL_ATOMS:
       anchor_resnames.add(prot_data[i][0])
-  resnum_to_resname = {}
-  for resname in resname_to_type:
-    s = re.search(r"\d+", resname)
-    if s:
-      resnum_to_resname[int(s.group(0))] = resname
+  # Residue numbers from the parsed number field, not from the digits of the
+  # residue field, which for '331PE' (residue 33, ligand 1PE) would give 331.
+  resnum_to_resname = {num: rn for rn, num in resnum_of.items()}
   for resname, res3 in resname_to_type.items():
-    s = re.search(r"\d+", resname)
-    if not s:
-      continue
-    num = int(s.group(0))
+    num = resnum_of[resname]
     if res3 == "ACE":
       nxt = resnum_to_resname.get(num + 1)
       if nxt and resname_to_type.get(nxt) not in ("ACE", "NME"):
@@ -632,20 +1020,21 @@ def build_elastic_network(prot_data, prot_coords):
       prv = resnum_to_resname.get(num - 1)
       if prv and resname_to_type.get(prv) not in ("ACE", "NME"):
         anchor_resnames.add(prv)
-  anchor_indices = [i for i in range(prot_len) if prot_data[i][2] == "CA" and prot_data[i][0] in anchor_resnames]
+  anchor_indices = [i for i in range(prot_len) if prot_data[i][2] == "CA"
+                    and prot_data[i][0] in anchor_resnames and prot_data[i][0] in amino]
   anchor_indices = anchor_indices[1:-1] if len(anchor_indices) >= 2 else []
   if not anchor_indices:
     return [], []
   anchor_coords = prot_coords[anchor_indices]
-  ca_indices = [i for i in range(prot_len) if prot_data[i][2] == "CA"]
+  ca_indices = [i for i in range(prot_len) if prot_data[i][2] == "CA" and prot_data[i][0] in amino]
   if not ca_indices:
     return [], []
   ca_coords = prot_coords[ca_indices]
-  keep_mask = np.any(cdist(ca_coords, anchor_coords) <= 0.9, axis=1)
+  keep_mask = np.any(min_image_cdist(ca_coords, anchor_coords, INPUT_BOX) <= 0.9, axis=1)
   protkeep = [ca_indices[i] for i in range(len(ca_indices)) if keep_mask[i]]
   if len(protkeep) < 2:
     return [], protkeep
-  keep_distances = cdist(prot_coords[protkeep], prot_coords[protkeep])
+  keep_distances = min_image_cdist(prot_coords[protkeep], prot_coords[protkeep], INPUT_BOX)
   en_pairs = []
   for i in range(len(protkeep)):
     for j in range(i + 1, len(protkeep)):
@@ -657,6 +1046,90 @@ en1dis, protkeep1 = build_elastic_network(prot1_data, prot1_coords)
 en2dis, protkeep2 = build_elastic_network(prot2_data, prot2_coords)
 numen1dis = len(en1dis)
 numen2dis = len(en2dis)
+
+SS_BOND_NM = 0.25       # SG-SG of a disulfide is 0.20 nm, of two free cysteines >= 0.35
+
+
+def residue_spans(resnums):
+  """'1-261,270-280' for a set of residue numbers."""
+  out, lo, prev = [], None, None
+  for r in sorted(resnums):
+    if lo is None:
+      lo = prev = r
+    elif r == prev + 1:
+      prev = r
+    else:
+      out.append("%d" % lo if lo == prev else "%d-%d" % (lo, prev))
+      lo = prev = r
+  if lo is not None:
+    out.append("%d" % lo if lo == prev else "%d-%d" % (lo, prev))
+  return ",".join(out)
+
+
+def network_bodies(prot_data, keep, pairs):
+  """The bodies one partner's polymer makes under the elastic network.
+
+  Its fragments are backbone_fragments of the polymer residues (an N/CA/C triple,
+  or a cap) in -f, and two fragments are one body when a network pair or a
+  disulfide joins them. Returns (fragments, network pairs between fragments,
+  disulfides between fragments, bodies as sorted lists of residue numbers)."""
+  names = {}
+  for rec in prot_data:
+    names.setdefault(rec[1], set()).add(rec[2])
+  poly = {r for r, nm in names.items() if {"N", "CA", "C"} <= nm} | \
+         {rec[1] for rec in prot_data if re.sub(r"^\d+", "", rec[0]) in pbc_tools.CAP_RESIDUES}
+  rows = [k for k, rec in enumerate(prot_data) if rec[1] in poly and rec[2] in BACKBONE]
+  if not rows:
+    return 0, 0, 0, []
+  frags = backbone_fragments(np.array([prot_data[k][4:7] for k in rows], dtype=float),
+                             INPUT_BOX)
+  frag_of = {}
+  for f, piece in enumerate(frags):
+    for r in piece:
+      frag_of.setdefault(prot_data[rows[r]][1], f)
+  parent = list(range(len(frags)))
+
+  def find(x):
+    while parent[x] != x:
+      x = parent[x]
+    return x
+
+  def join(a, b):
+    """Put fragments a and b in one body; True if they are two fragments."""
+    if a is None or b is None or a == b:
+      return False
+    parent[find(a)] = find(b)
+    return True
+
+  n_en = sum(1 for i, j, _ in pairs
+             if join(frag_of.get(prot_data[keep[i]][1]), frag_of.get(prot_data[keep[j]][1])))
+  sg = [rec for rec in prot_data if rec[2] == "SG" and rec[1] in frag_of]
+  n_ss = 0
+  if len(sg) > 1:
+    xyz = np.array([rec[4:7] for rec in sg], dtype=float)
+    d = min_image_cdist(xyz, xyz, INPUT_BOX)
+    for p, q in zip(*np.nonzero(np.triu(d <= SS_BOND_NM, 1))):
+      n_ss += join(frag_of[sg[p][1]], frag_of[sg[q][1]])
+  bodies = {}
+  for r, f in frag_of.items():
+    bodies.setdefault(find(f), []).append(r)
+  return len(frags), n_en, n_ss, sorted(sorted(b) for b in bodies.values())
+
+
+# One line per partner, so the pilot can see which structures run npt_c and nptrev
+# as several network bodies (see the note at the top of PART 2).
+for _label, _data, _keep, _pairs in (("receptor", prot1_data, protkeep1, en1dis),
+                                     ("ligand", prot2_data, protkeep2, en2dis)):
+  _nf, _nen, _nss, _bodies = network_bodies(_data, _keep, _pairs)
+  sys.stderr.write("make_boresch: elastic network, %s: %d pairs; %d backbone "
+                   "fragment(s), %d network pair(s) and %d disulfide(s) between them, "
+                   "%d bod%s: %s%s\n"
+                   % (_label, len(_pairs), _nf, _nen, _nss, len(_bodies),
+                      "y" if len(_bodies) == 1 else "ies",
+                      " | ".join(residue_spans(b) for b in _bodies),
+                      "" if len(_bodies) < 2 else
+                      "; npt_c and nptrev hold each body together, not the bodies "
+                      "to each other"))
 
 #======================================================
 # PART 3 - Boresch anchor selection (snapshot-only heuristic, backbone-COM triads)
@@ -755,9 +1228,53 @@ def tri_area(p, q, r):
 # it: the point of running N of them for twice this long is that everything is
 # measured on the second half of each, after they have forgotten the shared
 # minimisation they all started from.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fe_protocol as P
 TRAJ_SKIP_PS = P.NPT_INIT_PS * P.PROBE_SKIP_FRAC
+
+# ONE PULL DISTANCE, IN ONE UNIT. fe_protocol gives every u_from/u_to in nm (lambda
+# is u/PULL_DIST there), and build_coords, pair_displacement, the stage rates and
+# the far-end hold test use them as nm. The first v1.5 round read them as fractions
+# of --pull-dist and multiplied by it once more, which agreed only while both
+# numbers were 1.0: with PULL_DIST = 1.5, the ramp rescaled to end at 1.5 nm and
+# --pull-dist 1.5, nptrev's Boresch r sat at ref_r + 2.25 nm while eq.32 released at
+# ref_r + 1.50, and bindfwdI moved its references 0.8505 nm in a 0.567 nm stage
+# (review R4). --pull-dist must still equal PULL_DIST: eq.32 releases the restraint
+# at ref_r + --pull-dist, which is the state the legs end in only if the ramp ends
+# at that distance too.
+if abs(args.pull_dist - P.PULL_DIST) > 1e-9:
+  abort("PULL_DIST_MISMATCH",
+        "--pull-dist %g nm differs from fe_protocol.PULL_DIST %g nm. The ramp ends "
+        "at PULL_DIST and eq.32 releases the Boresch restraint at ref_r + "
+        "--pull-dist, so the two must be the same distance"
+        % (args.pull_dist, P.PULL_DIST))
+
+# The bound-state NPT every cycle runs before boundfwd1. job_fe.run copies its
+# template into the structure directory with the leg mdps, and the elastic-network
+# block is written into it at the end of PART 6. Checked here, before anything is
+# measured, because a setup that cannot write it must not finish: npt_c would run
+# without the network and switch it on at boundfwd1, the v1.3 defect.
+NPT_C_MDP = "npt_c_fe.mdp"
+
+# Which pull block each leg carries, keyed by fe_protocol.legs()'s "block". Every
+# leg must name one, and every leg's mdp must already be here: write_pull_block
+# appends, so a missing file would otherwise be CREATED holding nothing but a pull
+# block, and only the cycle's grompp would notice.
+PULL_BLOCKS = ("unbind", "bound")
+_unblocked = [l.get("name", "?") for l in P.legs() if l.get("block") not in PULL_BLOCKS]
+if _unblocked:
+  abort("PROTOCOL_BLOCK_MISSING",
+        "fe_protocol.legs() gives no valid 'block' (one of %s) for %s; the pull "
+        "block a leg carries is never inferred from its name or kind"
+        % ("/".join(PULL_BLOCKS), ", ".join(_unblocked)))
+_absent = sorted({l["mdp"] for l in P.legs() if not os.path.isfile(l["mdp"])})
+if _absent:
+  abort("LEG_MDP_MISSING",
+        "leg mdp(s) not in %s: %s" % (os.getcwd(), " ".join(_absent)))
+if not os.path.isfile(NPT_C_MDP):
+  abort("NPT_C_MDP_MISSING",
+        "%s is not in %s; job_fe.run copies it with the leg mdps, and npt_c must "
+        "carry the elastic network" % (NPT_C_MDP, os.getcwd()))
+
 R_GROUP = 0.70          # nm, radius of a candidate group about its seed CA
 N_MIN_ATOMS = 18        # backbone-only, so 18 atoms is 6 residues
 # Escalating ceilings on a group's COM RMSF, in nm, tried IN ORDER, first success
@@ -847,9 +1364,7 @@ def read_multi_gro(path, natoms, with_box=False):
       break
     out.append([[float(L[i + 2 + k][20:28]), float(L[i + 2 + k][28:36]),
                  float(L[i + 2 + k][36:44])] for k in range(n)])
-    b = [float(v) for v in L[i + 2 + n].split()] + [0.0] * 9
-    #                 v1              v2              v3
-    box.append([[b[0], b[3], b[4]], [b[5], b[1], b[6]], [b[7], b[8], b[2]]])
+    box.append(box_matrix(L[i + 2 + n]))
     i += n + 3
   if not out:
     return (None, None) if with_box else None
@@ -859,52 +1374,68 @@ def read_multi_gro(path, natoms, with_box=False):
   return arr, np.asarray(box, dtype=float)
 
 
-# The 27 translations of a triclinic cell, built once. Brute force over them is
-# exact for any box shape and costs nothing at these sizes; the alternative,
-# rounding by the inverse box, is only correct for cells that are nearly
-# rectangular and fails quietly on the dodecahedra this pipeline usually builds.
-_IMG = np.array([(i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1)
-                 for k in (-1, 0, 1)], dtype=float)
+# Every atom's coordinates in args.input, by atom number, as PART 0 left them (one
+# piece). The reference structure the anchor groups, their pbcatoms and the
+# snapshot geometry are all taken from.
+XYZ_OF = {rec[3]: np.array(rec[4:7], dtype=float) for rec in prot1_data + prot2_data}
+# Each atom's position in args.input, the order pbcatom_of takes members in.
+INPUT_ORDER = {rec[3]: k for k, rec in enumerate(prot1_data + prot2_data)}
 
 
-def min_image_vec(dv, M):
-  """Shortest vector equivalent to dv under box M. min_image_dist takes its norm;
-  angles and dihedrals need the vector itself."""
-  shifts = np.einsum("ij,...jk->...ik", _IMG, M)        # (..., 27, 3)
-  cand = dv[..., None, :] + shifts
-  k = np.argmin((cand ** 2).sum(-1), axis=-1)
-  return np.take_along_axis(cand, k[..., None, None], axis=-2)[..., 0, :]
+def pbcatom_of(atoms):
+  """The reference atom GROMACS is given for a multi-atom pull group: the member
+  closest to the group's own centre in args.input (see PBCATOM in PART 5, which
+  writes exactly this into every mdp). Members are taken in input order, the order
+  that choice has always used, so a tie resolves the same way. They are put at
+  their images nearest the first member before the centre is taken, so the choice
+  does not depend on how -f is wrapped; for a group in one piece, which every
+  anchor group is, nothing moves."""
+  anums = sorted((a for a in set(atoms) if a in XYZ_OF), key=INPUT_ORDER.get)
+  if not anums:
+    return None
+  a = np.array([XYZ_OF[x] for x in anums])
+  a = nearest_image(a, a[0], INPUT_BOX)
+  return int(anums[int(np.argmin(np.linalg.norm(a - a.mean(axis=0), axis=1)))])
 
 
-def min_image_dist(dv, M):
-  """Shortest distance equivalent to displacement dv under box M.
+def gromacs_com(X, M, w, pbc_row):
+  """COM of one pull group per frame, taken the way GROMACS takes it for a group
+  with a pbcatom: every member moved to its periodic image closest to the pbcatom,
+  then the mass-weighted mean. X is (frames, natoms, 3) for the group's members,
+  M is (frames, 3, 3), w the masses and pbc_row the pbcatom's row in X.
 
-  dv is (..., 3) and M is (3, 3) or (..., 3, 3), so a whole trajectory of pair
-  vectors goes through in one call."""
-  shifts = np.einsum("ij,...jk->...ik", _IMG, M)        # (..., 27, 3)
-  cand = dv[..., None, :] + shifts
-  return np.sqrt((cand ** 2).sum(-1)).min(-1)
+  A plain mean of the raw coordinates is what this replaces, and it is only right
+  while every member already sits in one image. -pbc whole cannot promise that for
+  a cutout: a group of residues from two unbonded fragments of one moleculetype is
+  split whenever trjconv leaves the fragments in different images, and its COM
+  then lands between the images, nowhere near the residues."""
+  ref = X[:, pbc_row, :]
+  d = min_image_vec(X - ref[:, None, :], M[:, None, :, :])
+  return ref + (d * w[None, :, None]).sum(1) / w.sum()
 
 
 def load_backbone_trajectory(atom_numbers):
-  """Backbone coordinates over time, or None if the trajectory is unavailable.
+  """Backbone coordinates and box over time, or (None, None) if the trajectory is
+  unavailable.
 
   trjconv renumbers a subset on output, so the index is written here and the
   row order is known by construction.
 
   -pbc whole, not cluster: trjconv refuses to cluster a backbone-only index
-  ("Molecule N marked for clustering but not atom 1 in it"). whole is what the
-  per-protein fit below needs anyway, since that fit removes rigid-body motion
-  and so does not care where the other protein sits. The cross-protein reference
-  geometry does care, and is minimum-imaged where it is computed.
+  ("Molecule N marked for clustering but not atom 1 in it"). whole makes every
+  covalently connected piece whole and nothing more, so a side built from several
+  unbonded cutout fragments can come out with its fragments in different images.
+  The boxes are returned so reassemble_backbone() can put them back together
+  before the per-protein fit; the cross-protein geometry is minimum-imaged where
+  it is computed.
 
   ALL REPLICAS ARE CONCATENATED, so anchor rigidity, the eps ranking and the frame
   rotation are ensemble quantities rather than properties of whichever single
   equilibration happened to run. That is the whole reason there are five of them."""
   if not atom_numbers or not TRAJ_PAIRS:
-    return None
+    return None, None
   ndx, gro = ".bb_sel.ndx", ".bb_traj.gro"
-  out = []
+  out, boxes = [], []
   try:
     write_ndx_group(ndx, "bbsel", atom_numbers)
     for traj, tpr in TRAJ_PAIRS:
@@ -915,18 +1446,123 @@ def load_backbone_trajectory(atom_numbers):
       r = subprocess.run(cmd, input="bbsel\n", capture_output=True, text=True)
       if trjconv_failed(r, traj, gro, "backbone"):
         continue
-      part = read_multi_gro(gro, len(atom_numbers))
+      part, pbox = read_multi_gro(gro, len(atom_numbers), with_box=True)
       if part is not None:
-        out.append(part)
+        out.append(part); boxes.append(pbox)
     if not out:
-      return None
-    return np.concatenate(out, axis=0)
+      return None, None
+    return np.concatenate(out, axis=0), np.concatenate(boxes, axis=0)
   except (OSError, ValueError, IndexError):
-    return None
+    return None, None
   finally:
     for f in (ndx, gro):
       if os.path.isfile(f):
         os.remove(f)
+
+
+# PUTTING THE BACKBONE BACK TOGETHER before it is fitted. A cutout side is a merge
+# of capped, unbonded fragments, and -pbc whole leaves each fragment where mdrun
+# wrapped it, so in some frames a fragment sits a box vector away from the rest.
+# The per-side self-fit then reads that as motion: in 40 of the 46 setups of the
+# second HADDOCK pass the backbone RMSF came out at 2.9-6.9 nm against the 1.0 nm
+# guard (RMSF_SPLIT), the measured anchor search was abandoned, and every one of
+# those structures was anchored by the burial heuristic, which carries no
+# fluctuation information at all. All 36 setups with two or more merge points fell
+# back; of the 10 with at most one, 6 got measured anchors.
+#
+# BY CONTACT, NOT BY CENTROID. Each fragment is moved by whole box vectors only, so
+# no distance inside a fragment changes. Which box vector is decided by one contact
+# chosen in -f, which PART 0 has made one piece: the fragment's backbone atom
+# closest to anything already placed, and the atom it is closest to. In every frame
+# the fragment goes to the image that puts that pair at its minimum image. A
+# contact is well under 1 nm in a packed complex and stays so in every frame, far
+# inside half a box, so the choice is never close, however the complex tumbles and
+# however far the fragment sits from the root. The first v1.5 version placed each
+# fragment by its centroid's offset from the root's, after fitting the root to -f,
+# and that is ambiguous once the offset nears half a box, which happens in
+# complexes that are one piece: a synthetic rigid side in the real 2KTF probe box
+# (half-box 3.36 nm), a 5-residue fragment 3.6 nm from the root, came out non-physical
+# in 198-200 of 200 frames, at RMSF 0.88 nm with the root group's eps 0.238 nm
+# (above every EPS_LADDER rung) under 30 degrees of tumbling, and at 1.42 nm, over
+# the guard, under 90 (review R2). Either way a rigid side fell back to burial.
+#
+# Both partners go into one tree, rooted at the largest fragment, so a fragment
+# that touches only the other partner hangs from that contact rather than from a
+# distant piece of its own side. The per-side fit downstream takes out each side's
+# own translation, so the partners' relative image does not matter there. A
+# fragment that really leaves its partner (the probe runs without the elastic
+# network) is not hidden: it is put at its nearest image and its RMSF still trips
+# the guard.
+
+
+def contact_links(xyz, M, frags):
+  """How to put fragments together by contact, decided on one frame.
+
+  xyz (n, 3) is that frame and M its box; frags are the fragments as arrays of row
+  indices, the root first. Prim's algorithm: the unplaced fragment closest to
+  anything already placed is attached next, through its closest pair. Returns
+  [(f, a, b, d)] in placement order: fragment f (an index into frags) hangs from
+  row a of an already placed fragment through its own row b, d nm apart at the
+  minimum image."""
+  best, placed, links = {}, {0}, []
+
+  def offer(g):
+    for f in range(len(frags)):
+      if f in placed:
+        continue
+      sub = min_image_cdist(xyz[frags[g]], xyz[frags[f]], M)
+      i, j = np.unravel_index(int(np.argmin(sub)), sub.shape)
+      cand = (float(sub[i, j]), int(frags[g][i]), int(frags[f][j]))
+      if f not in best or cand[0] < best[f][0]:
+        best[f] = cand
+
+  if len(frags) < 2:
+    return links
+  offer(0)
+  while best:
+    f = min(best, key=lambda q: (best[q][0], q))
+    d, a, b = best.pop(f)
+    links.append((f, a, b, d))
+    placed.add(f)
+    offer(f)
+  return links
+
+
+def reassemble_backbone(X, M, ref, ref_box, n_first):
+  """Backbone frames with every fragment moved by whole box vectors to the image
+  its contact in -f puts it at.
+
+  X is (frames, n, 3) in input order, M (frames, 3, 3), ref the same atoms in -f
+  (one piece, PART 0) and ref_box its box. The first n_first rows are one side, the
+  receptor, and the rest the other; fragments are found per side, so none spans
+  both. Returns (X, fragments per side, frames per side in which that side's
+  fragments were not all in one image). Frames that need no move come back bit for
+  bit."""
+  frags, side_of = [], []
+  for s, rows in enumerate((np.arange(n_first), np.arange(n_first, len(ref)))):
+    for f in backbone_fragments(ref[rows], ref_box):
+      frags.append(rows[f])
+      side_of.append(s)
+  nfrag = [side_of.count(0), side_of.count(1)]
+  if len(frags) < 2:
+    return X, nfrag, [0, 0]
+  # Largest first, the receptor's first among equals: the root is the bulk.
+  order = sorted(range(len(frags)), key=lambda k: -len(frags[k]))
+  frags, side_of = [frags[k] for k in order], [side_of[k] for k in order]
+  out = np.array(X, dtype=float, copy=True)
+  shift = np.zeros((len(X), len(frags), 3))
+  for f, a, b, _d in contact_links(ref, ref_box, frags):
+    dv = out[:, b, :] - out[:, a, :]
+    s = min_image_vec(dv, M) - dv                 # exactly 0 where already in place
+    out[:, frags[f], :] += s[:, None, :]
+    shift[:, f, :] = s
+  moved = []
+  for side in (0, 1):
+    ks = [k for k in range(len(frags)) if side_of[k] == side]
+    sh = shift[:, ks, :]
+    moved.append(int(np.any(np.abs(sh - sh[:, :1, :]) > 1e-6, axis=(1, 2)).sum())
+                 if len(ks) > 1 else 0)
+  return out, nfrag, moved
 
 
 # --sd-max, or None when the user disabled it with a non-positive value. Bound
@@ -1134,9 +1770,13 @@ def make_group(residues, by_res, idx_of, xyz_of, fit):
   trajectory is only -pbc whole, so the two proteins can sit in different periodic
   images in any given frame, and every cross-protein quantity built from it (r,
   the two angles, the three dihedrals, dG_release) would then be wrong.
-  args.input is clustered, and is also the snapshot the interface restraints and
-  the elastic network use, so the whole restraint set refers to one structure.
-  eps and relative_rotation stay on com_t: both are insensitive to imaging."""
+  args.input is one piece (PART 0 stops the setup otherwise), and it is also the
+  snapshot the interface restraints and the elastic network are measured on, so
+  the whole restraint set refers to one structure. The COM is still taken about
+  the group's pbcatom, as GROMACS takes it, so it does not depend on how -f is
+  wrapped either; for a group in one piece that is the plain weighted mean, bit
+  for bit. eps and relative_rotation stay on com_t: both are insensitive to
+  imaging."""
   atoms = [by_res[r][a] for r in residues for a in BACKBONE]
   if len(atoms) < N_MIN_ATOMS:
     return None
@@ -1145,6 +1785,7 @@ def make_group(residues, by_res, idx_of, xyz_of, fit):
   com_t = (fit[:, cols, :] * w[None, :, None]).sum(1) / w.sum()
   eps = float(np.sqrt(((com_t - com_t.mean(0)) ** 2).sum(-1).mean()))
   xyz = np.array([xyz_of[a] for a in atoms])
+  xyz = nearest_image(xyz, xyz[atoms.index(pbcatom_of(atoms))], INPUT_BOX)
   atomnames = [a for _r in residues for a in BACKBONE]
   return {"atoms": atoms, "atomnames": atomnames,
           "com": (xyz * w[:, None]).sum(0) / w.sum(),
@@ -1297,21 +1938,23 @@ def ensemble_cross_r(cand):
   closes that dead band, exactly as matching R_LIMIT_FRAC closed the earlier one
   between 0.9 and 0.6.
 
-  `cand` maps a key to a group dict with "atoms" and "atomnames". Returns
-  {(key_a, key_b): mean distance} for every cross pair, or None if the trajectory
-  cannot be read, in which case the caller keeps the snapshot behaviour.
+  `cand` maps a key to a group dict with "atoms" and "atomnames". Returns (COM
+  per key, (frames, 3) each; boxes, (frames, 3, 3)), from which the caller takes
+  every cross distance, or None if the trajectory cannot be read, in which case
+  the caller keeps the snapshot behaviour.
 
   One trjconv pass over the union of candidate atoms serves every pair, so the
-  cost is one extraction per replica per search round, not one per pair.
+  cost is one extraction per replica per search round, not one per pair. Each atom
+  is extracted ONCE however many groups hold it: the groups are kept per triad
+  (see search), which on 1IJK makes 180 groups of largely the same atoms where
+  there were 52, and repeating them would multiply the frames read at 5005 per
+  setup by that much.
   """
   if not TRAJ_PAIRS or not cand:
     return None
   keys = sorted(cand)
-  anums, slices = [], {}
-  for k in keys:
-    a = cand[k]["atoms"]
-    slices[k] = slice(len(anums), len(anums) + len(a))
-    anums += list(a)
+  anums = sorted({a for k in keys for a in cand[k]["atoms"]})
+  row = {a: i for i, a in enumerate(anums)}
   ndx, gro = ".xr_sel.ndx", ".xr_traj.gro"
   Xs, Ms = [], []
   try:
@@ -1339,12 +1982,29 @@ def ensemble_cross_r(cand):
   M = np.concatenate(Ms, axis=0)
   if len(X) < MIN_FRAMES:
     return None
+  # Each COM the way GROMACS will take it once the group is a pull group, about
+  # the pbcatom PBCATOM would give it. The final guard measures r on exactly these
+  # COMs (ensemble_boresch_geometry), so the search has to as well, or the dead
+  # band this function closed reopens for any group whose atoms -pbc whole split.
   com = {}
   for k in keys:
-    a = cand[k]["atoms"]
+    a = list(cand[k]["atoms"])
     w = group_weights(cand[k])
-    com[k] = (X[:, slices[k], :] * w[None, :, None]).sum(1) / w.sum()
+    com[k] = gromacs_com(X[:, [row[x] for x in a], :], M, w, a.index(pbcatom_of(a)))
   return com, M
+
+
+def snapshot_cross_r(gp, gl):
+  """r between two groups in -f, taken exactly as snapshot_boresch_geometry takes
+  it from P3 and L1: each COM about its group's pbcatom, the vector between them
+  minimum-imaged in -f's box. For the pair that wins, this IS SNAP_REF["r"], the
+  value the pose gate falls back to."""
+  com = []
+  for g in (gp, gl):
+    a = list(g["atoms"])
+    X = np.array([[XYZ_OF[x] for x in a]], dtype=float)
+    com.append(gromacs_com(X, INPUT_BOX[None], group_weights(g), a.index(pbcatom_of(a))))
+  return float(np.linalg.norm(min_image_vec(com[1] - com[0], INPUT_BOX[None]), axis=-1)[0])
 
 
 def climb_ladder(search, ladder=EPS_LADDER, rot_max=ROT_MAX_DEG, log=None):
@@ -1381,8 +2041,10 @@ def try_measured_anchors():
   """Anchors chosen from measured rigidity, or None to fall back to burial.
 
   Returns (rec_groups, lig_groups, anchors, frame_rotation_deg)."""
-  bb = [rec[3] for rec in prot1_data + prot2_data if rec[2] in BACKBONE]
-  traj = load_backbone_trajectory(bb)
+  bb1 = polymer_backbone(prot1_data)
+  bb2 = polymer_backbone(prot2_data)
+  bb = bb1 + bb2
+  traj, boxes = load_backbone_trajectory(bb)
   # ndim and the atom axis both matter, not just the frame count: an empty
   # selection gives trjconv a legal zero-element group, which it happily writes
   # as N frames of 0 atoms. That shape passed a frame-count-only check and then
@@ -1393,18 +2055,33 @@ def try_measured_anchors():
                      "(%s, shape %s), falling back to the burial heuristic\n"
                      % (args.traj, None if traj is None else traj.shape))
     return None
+  # Every fragment back into one image before anything is fitted, both partners in
+  # one tree; see reassemble_backbone. The per-side fit below then treats each side
+  # as one body, while the partners stay free relative to each other.
+  ref = np.array([XYZ_OF[a] for a in bb])
+  traj, nfrag, nmoved = reassemble_backbone(traj, boxes, ref, INPUT_BOX, len(bb1))
+  for label, k, anums in (("receptor", 0, bb1), ("ligand", 1, bb2)):
+    if anums:
+      sys.stderr.write("make_boresch: %s backbone is %d fragment(s); %d of %d frames "
+                       "had a fragment in another periodic image and were "
+                       "reassembled before the self-fit\n"
+                       % (label, nfrag[k], nmoved[k], len(traj)))
   row_of = {a: i for i, a in enumerate(bb)}
   a1, fit1, r1 = measure_rigidity(prot1_data, traj, row_of)
   a2, fit2, r2 = measure_rigidity(prot2_data, traj, row_of)
-  # A side that spans several chains can come out of -pbc whole with its chains
-  # in different images. The self-fit is then meaningless in every frame, and it
-  # shows up as backbone RMSF of order the box rather than of order 0.1 nm.
+  # The fragments are reassembled above, so RMSF of order the box no longer means
+  # a split image. What still reaches it is real: a piece of one side moving that
+  # far relative to the rest during the probe (which runs without the elastic
+  # network), or a fragment that strayed more than half a box from where -f puts
+  # it. Either way the side is not one rigid body and the measured search does not
+  # apply.
   worst = max([max(r1.values()) if r1 else 0.0,
                max(r2.values()) if r2 else 0.0])
   if worst > RMSF_SPLIT:
-    sys.stderr.write("make_boresch: backbone RMSF reaches %.2f nm, so a protein "
-                     "is split across periodic images in the trajectory; "
-                     "falling back to the burial heuristic\n" % worst)
+    sys.stderr.write("make_boresch: backbone RMSF reaches %.2f nm even with every "
+                     "fragment reassembled, so part of a partner moves that far "
+                     "relative to the rest; falling back to the burial heuristic\n"
+                     % worst)
     return None
   arm_max = 0.35 * min(BOX_VEC) if BOX_VEC else 1.2
 
@@ -1439,7 +2116,8 @@ def try_measured_anchors():
     return out
 
   def search(eps_max):
-    """One round at a given rigidity threshold. (rot, anchors, g1, g2) or None."""
+    """One round at a given rigidity threshold. (rot, anchors, g1, g2, (ensemble
+    r, snapshot r)) or None."""
     g1 = build_rigid_groups(prot1_data, a1, fit1, eps_max, "receptor")
     g2 = build_rigid_groups(prot2_data, a2, fit2, eps_max, "ligand")
     if len(g1) < 3 or len(g2) < 3:
@@ -1461,13 +2139,19 @@ def try_measured_anchors():
     # because that is what the final guard aborts on. One trjconv pass over every
     # candidate anchor group in this round serves all pairs; if the trajectory
     # cannot be read we fall back to the snapshot, which is the old behaviour.
+    #
+    # EVERY GROUP AS ITS OWN TRIAD BUILT IT. partition_triad splits a seed's
+    # neighbourhood against the other two seeds of the triad, so a seed shared by
+    # several triads has a different group, and a different COM, in each. Keyed by
+    # seed alone, a combination's r was that of whichever triad registered the seed
+    # last, not that of the groups the guard then measures.
     cand = {}
-    for Pt, d1 in D1:
+    for i, (Pt, d1) in enumerate(D1):
       for p in Pt:
-        cand[("P", p)] = d1[p]
-    for Lt, d2 in D2:
+        cand[("P", i, p)] = d1[p]
+    for j, (Lt, d2) in enumerate(D2):
       for l in Lt:
-        cand[("L", l)] = d2[l]
+        cand[("L", j, l)] = d2[l]
     ens = ensemble_cross_r(cand)
     if ens is None:
       sys.stderr.write("make_boresch: cross distances from the SNAPSHOT (no usable "
@@ -1477,18 +2161,18 @@ def try_measured_anchors():
       sys.stderr.write("make_boresch: cross distances from %d pooled frames over "
                        "%d candidate groups\n" % (len(M_e), len(cand)))
 
-    def cross_r(p, l, d1, d2):
+    def cross_r(i, p, j, l):
       if ens is None:
-        return float(np.linalg.norm(d1[p]["com"] - d2[l]["com"]))
+        return snapshot_cross_r(D1[i][1][p], D2[j][1][l])
       return float(np.mean(np.linalg.norm(
-          min_image_vec(com_e[("L", l)] - com_e[("P", p)], M_e), axis=1)))
+          min_image_vec(com_e[("L", j, l)] - com_e[("P", i, p)], M_e), axis=1)))
 
     best = None
     n_over = 0
-    for Pt, d1 in D1:
-      for Lt, d2 in D2:
+    for i, (Pt, d1) in enumerate(D1):
+      for j, (Lt, d2) in enumerate(D2):
         # P3 and L1 carry r: take the closest cross pair of the two triads.
-        pairs = [(cross_r(p, l, d1, d2), p, l) for p in Pt for l in Lt]
+        pairs = [(cross_r(i, p, j, l), p, l) for p in Pt for l in Lt]
         r_cross, P3, L1 = min(pairs)
         # ARM_MIN/arm_max bound the three INTRA-protein edges of each triad;
         # rank_triads never sees a cross pair, so without this r was whatever the
@@ -1504,7 +2188,18 @@ def try_measured_anchors():
         # already reported success. Searching under the budget the guard enforces
         # means the search either returns a usable triad or reports honestly that
         # this rigidity ceiling has none.
-        if PULL_LIMIT and r_cross + args.pull_dist > R_LIMIT_FRAC * PULL_LIMIT:
+        #
+        # ON THE LARGER OF THE TWO r THE SETUP CAN WRITE. The guard checks the r
+        # that is finally emitted: the ensemble mean, or the snapshot's when the
+        # pose gate replaces the mean, which it does for all six coordinates when
+        # any one of them fails. Budgeting the ensemble r alone let a triad through
+        # here whose snapshot r did not fit: 2KTF in a 7.15 nm box (budget 2.102
+        # nm) with the gate set to 2 deg accepted r 1.091 here and then stopped
+        # with BORESCH_R_TOO_LARGE on the snapshot's 1.112, after the five probes
+        # (review R1). Which of the two is written is only known once the gate has
+        # seen all six ensemble means, so the budget takes the larger.
+        r_snap = snapshot_cross_r(d1[P3], d2[L1])
+        if PULL_LIMIT and max(r_cross, r_snap) + args.pull_dist > R_LIMIT_FRAC * PULL_LIMIT:
           n_over += 1
           continue
         rest_p = [k for k in Pt if k != P3]
@@ -1518,7 +2213,7 @@ def try_measured_anchors():
             rot = relative_rotation(d1, d2, (P1, P2, P3), (L1, L2, L3))
             if best is None or rot < best[0]:
               best = (rot, {"P1": P1, "P2": P2, "P3": P3,
-                            "L1": L1, "L2": L2, "L3": L3}, d1, d2)
+                            "L1": L1, "L2": L2, "L3": L3}, d1, d2, (r_cross, r_snap))
     if best is None:
       sys.stderr.write("make_boresch: no anchor set met the angle window at "
                        "eps_max %.3f (%d combinations were over the box budget "
@@ -1527,10 +2222,10 @@ def try_measured_anchors():
                           R_LIMIT_FRAC * PULL_LIMIT if PULL_LIMIT else float('inf')))
     elif n_over:
       sys.stderr.write("make_boresch: %d triad combinations rejected for exceeding "
-                       "the box budget (r + pull_dist > %.3f nm); the accepted set "
-                       "sits at %.3f\n"
-                       % (n_over, R_LIMIT_FRAC * PULL_LIMIT,
-                          cross_r(best[1]["P3"], best[1]["L1"], best[2], best[3])))
+                       "the box budget (the larger of the ensemble and snapshot r, "
+                       "plus pull_dist, > %.3f nm); the accepted set sits at %.3f "
+                       "(snapshot %.3f)\n"
+                       % (n_over, R_LIMIT_FRAC * PULL_LIMIT, best[4][0], best[4][1]))
     return best
 
   # Escalate the rigidity threshold rather than giving up on the measured path.
@@ -1585,7 +2280,7 @@ def try_measured_anchors():
                      "falling back to the burial heuristic\n" % (EPS_LADDER,))
     return None
 
-  rot, anch, g1, g2 = chosen
+  rot, anch, g1, g2 = chosen[:4]
   sys.stderr.write("make_boresch: accepted eps_max %.3f\n" % chosen_eps)
   sys.stderr.write("make_boresch: selected anchors give %.1f deg RMS relative "
                    "frame rotation over the equilibration (limit %.1f)\n"
@@ -1752,6 +2447,149 @@ def circular_mean_deg(a):
   return mean, sd
 
 
+def wrap180(x):
+  return (x + 180.0) % 360.0 - 180.0
+
+
+# THE BORESCH GEOMETRY IS TAKEN THE WAY GROMACS EVALUATES IT, in the snapshot and in
+# every ensemble frame alike. Two rules, both from the pull code:
+#
+#   * a multi-atom group's COM is taken with every member at its image closest to
+#     the group's pbcatom (gromacs_com, with the pbcatom PBCATOM writes);
+#   * each coordinate is built from vectors BETWEEN group COMs, and each of those
+#     vectors is minimum-imaged on its own, from the first group of a pair to the
+#     second. Read off the groups build_coords writes:
+#
+#       r        [P3, L1]                 P3->L1
+#       theta_A  [P3, P2, P3, L1]         P3->P2, P3->L1           angle at P3
+#       theta_B  [L1, P3, L1, L2]         L1->P3, L1->L2           angle at L1
+#       phi_A    [P1, P2, P2, P3, P3, L1] P1->P2, P2->P3, P3->L1
+#       phi_B    [P2, P3, P3, L1, L1, L2] P2->P3, P3->L1, L1->L2
+#       phi_C    [P3, L1, L1, L2, L2, L3] P3->L1, L1->L2, L2->L3
+#
+# v1.4 took raw COMs of -pbc whole frames and minimum-imaged only P3->L1, carrying
+# the rest of each triad along as raw offsets. That is right only while every
+# group and each partner's triad sit in one image, which a cutout made of unbonded
+# fragments does not promise. 1AKJ, 1E6J and 1IQD of the second HADDOCK pass got a
+# dihedral reference 103-115 degrees from their snapshot pose (1AKJ phi_A snapshot
+# -118.4, emitted 138.7, production -113 +- 4), stage I then dissipated 172-449
+# kJ/mol per direction against a median of 18.8, and their pKD intervals came out
+# at +-3.8 to +-25 against a median of +-2.1. On split synthetic frames the v1.4
+# arithmetic moves the references by 29-68 degrees (tests/test_boresch_pbc.py), and
+# on 51 raw 2KTF probe frames it disagrees with GROMACS's own pull evaluation by
+# up to 180 degrees, where this one agrees to 5e-4.
+BORESCH_ROLES = ("P1", "P2", "P3", "L1", "L2", "L3")
+BORESCH_VECTORS = (("P3", "L1"), ("P3", "P2"), ("L1", "P3"), ("L1", "L2"),
+                   ("P1", "P2"), ("P2", "P3"), ("L2", "L3"))
+# The six coordinates in the order build_coords emits them.
+BORESCH_KEYS = ("r", "thA", "thB", "phA", "phB", "phC")
+BORESCH_NAMES = {"r": "r", "thA": "theta_A", "thB": "theta_B",
+                 "phA": "phi_A", "phB": "phi_B", "phC": "phi_C"}
+
+
+def boresch_series(com, M):
+  """The six Boresch coordinates per frame from per-frame group COMs.
+
+  com maps role -> (frames, 3); M is (frames, 3, 3). Returns a dict of arrays: r
+  in nm, theta_A/theta_B (thA, thB) and phi_A/B/C (phA, phB, phC) in degrees.
+  angle_deg and dihedral_deg take POINTS, so each coordinate is handed a chain of
+  points built from its own minimum-imaged vectors, starting at the origin: the
+  same two definitions the snapshot always used, now fed the vectors GROMACS
+  uses. Their argument order is the one the readback verified against GROMACS:
+  angle_deg(a, b, c) is the angle AT b, so theta_A is the angle at P3 between P2
+  and L1 and theta_B the angle at L1 between P3 and L2."""
+  v = {p: min_image_vec(com[p[1]] - com[p[0]], M) for p in BORESCH_VECTORS}
+  o = np.zeros(3)
+  n = len(v[("P3", "L1")])
+
+  def dihedral(b1, b2, b3):
+    return np.array([dihedral_deg(o, b1[i], b1[i] + b2[i], b1[i] + b2[i] + b3[i])
+                     for i in range(n)])
+
+  return {
+      "r": np.linalg.norm(v[("P3", "L1")], axis=-1),
+      "thA": np.array([angle_deg(v[("P3", "P2")][i], o, v[("P3", "L1")][i])
+                       for i in range(n)]),
+      "thB": np.array([angle_deg(v[("L1", "P3")][i], o, v[("L1", "L2")][i])
+                       for i in range(n)]),
+      "phA": dihedral(v[("P1", "P2")], v[("P2", "P3")], v[("P3", "L1")]),
+      "phB": dihedral(v[("P2", "P3")], v[("P3", "L1")], v[("L1", "L2")]),
+      "phC": dihedral(v[("P3", "L1")], v[("L1", "L2")], v[("L2", "L3")]),
+  }
+
+
+def role_slices(groups):
+  """(atom numbers of all six groups concatenated, role -> slice into them)."""
+  anums, slices = [], {}
+  for role in BORESCH_ROLES:
+    a = groups[role]["atoms"]
+    slices[role] = slice(len(anums), len(anums) + len(a))
+    anums += list(a)
+  return anums, slices
+
+
+def group_coms(groups, X, M, slices):
+  """Per-frame COM of every role, about the pbcatom PBCATOM gives that group."""
+  com = {}
+  for role in BORESCH_ROLES:
+    a = list(groups[role]["atoms"])
+    w = group_weights(groups[role])
+    com[role] = gromacs_com(X[:, slices[role], :], M, w, a.index(pbcatom_of(a)))
+  return com
+
+
+def snapshot_boresch_geometry(groups):
+  """The six coordinates in -f alone, taken exactly as every ensemble frame is:
+  COMs about each group's pbcatom and minimum-imaged vectors, in -f's own box.
+  Returns (dict of six floats, the minimum-imaged P3->L1 vector)."""
+  anums, slices = role_slices(groups)
+  X = np.array([[XYZ_OF[a] for a in anums]], dtype=float)
+  M = INPUT_BOX[None, :, :]
+  com = group_coms(groups, X, M, slices)
+  s = boresch_series(com, M)
+  return ({k: float(s[k][0]) for k in s},
+          min_image_vec(com["L1"] - com["P3"], M)[0])
+
+
+# THE POSE GATE. An ensemble mean is only a reference if it is a pose: a circular
+# mean over frames that disagree about the orientation lands where no frame is.
+# Each of the five angles and dihedrals is compared with the bound pose of -f by
+# circular difference, and r by plain difference; if any one is off by more than
+# its limit, ALL SIX snapshot values are emitted, so the restraint still describes
+# one consistent pose of the bound complex rather than a mix of two.
+#
+# 15 degrees is the limit the second HADDOCK pass's QC recommended for the emitted
+# reference against the bound geometry; the four structures it caught were 53-114
+# degrees off, the largest offset among the other 39 was 27 (1OPH phi_A). 0.12 nm
+# is just above the largest |r_ensemble - r_snapshot| any of the 46 setups showed,
+# 0.115 nm (1R0R); r carries the pull and the box budget, so a mean that moves it
+# further than that is not the distance of any frame the anchors were chosen on.
+POSE_GATE_DEG = 15.0
+POSE_GATE_NM = 0.12
+
+
+def pose_gate(ens, snap):
+  """[(coordinate, ensemble value, snapshot value, |difference|)] for every
+  coordinate on which the ensemble mean is further from the snapshot than the
+  gate allows. Empty means the mean is a pose."""
+  bad = []
+  d = abs(ens["r"] - snap["r"])
+  if d > POSE_GATE_NM:
+    bad.append(("r", ens["r"], snap["r"], d))
+  for key in ("thA", "thB", "phA", "phB", "phC"):
+    d = abs(wrap180(ens[key] - snap[key]))
+    if d > POSE_GATE_DEG:
+      bad.append((key, ens[key], snap[key], d))
+  return bad
+
+
+def choose_reference(ens, snap):
+  """(the six references to emit, what pose_gate found). The ensemble mean if it
+  passes the gate, otherwise the snapshot for all six coordinates."""
+  bad = pose_gate(ens, snap)
+  return (dict(snap) if bad else dict(ens)), bad
+
+
 def ensemble_boresch_geometry(groups):
   """Boresch reference geometry averaged over every probe replica.
 
@@ -1761,20 +2599,15 @@ def ensemble_boresch_geometry(groups):
   snapshot used to supply -- only now it is an average over the ensemble the
   production replicas are drawn from rather than one arbitrary configuration.
 
-  The ligand triad is minimum-imaged against P3 before anything is computed:
-  trjconv gives -pbc whole, so each protein is whole but the two can sit in
-  different periodic images, and an un-imaged cross-protein vector is wrong by a
-  box vector in whichever frames that happens.
+  trjconv gives -pbc whole, which leaves the two partners, and the unbonded
+  fragments of one partner, free to sit in different periodic images. Every COM
+  and every vector is therefore taken the way GROMACS takes it; see the note at
+  BORESCH_VECTORS.
 
   Returns (dict of the six references, dict of their spreads, nframes) or
   (None, None, 0) if the trajectory cannot be read.
   """
-  roles = ("P1", "P2", "P3", "L1", "L2", "L3")
-  anums, slices = [], {}
-  for role in roles:
-    a = groups[role]["atoms"]
-    slices[role] = slice(len(anums), len(anums) + len(a))
-    anums += list(a)
+  anums, slices = role_slices(groups)
   if not TRAJ_PAIRS:
     return None, None, 0
   ndx, gro = ".bor_sel.ndx", ".bor_traj.gro"
@@ -1805,41 +2638,19 @@ def ensemble_boresch_geometry(groups):
   if len(X) < MIN_FRAMES:
     return None, None, len(X)
 
-  # Mass-weighted COM per role per frame, with the same weights make_group used.
-  com = {}
-  for role in roles:
-    a = groups[role]["atoms"]
-    w = group_weights(groups[role])
-    com[role] = (X[:, slices[role], :] * w[None, :, None]).sum(1) / w.sum()
-
-  # Everything is expressed relative to P3, with the ligand side imaged onto it.
-  d_L1 = min_image_vec(com["L1"] - com["P3"], M)
-  P3 = np.zeros_like(d_L1)
-  P2 = com["P2"] - com["P3"]
-  P1 = com["P1"] - com["P3"]
-  L1 = d_L1
-  L2 = d_L1 + (com["L2"] - com["L1"])
-  L3 = d_L1 + (com["L3"] - com["L1"])
-
-  r_t   = np.linalg.norm(L1, axis=1)
-  # SAME ARGUMENT ORDER as the snapshot definitions below: angle_deg(a, b, c) is
-  # the angle AT b, so theta_A is angle(P2, P3, L1) and theta_B is angle(P3, L1,
-  # L2). Getting this backwards moved the two angles by 66-78 degrees while the
-  # dihedrals stayed put, which is what gave it away.
-  thA_t = np.array([angle_deg(P2[i], P3[i], L1[i]) for i in range(len(X))])
-  thB_t = np.array([angle_deg(P3[i], L1[i], L2[i]) for i in range(len(X))])
-  phA_t = np.array([dihedral_deg(P1[i], P2[i], P3[i], L1[i]) for i in range(len(X))])
-  phB_t = np.array([dihedral_deg(P2[i], P3[i], L1[i], L2[i]) for i in range(len(X))])
-  phC_t = np.array([dihedral_deg(P3[i], L1[i], L2[i], L3[i]) for i in range(len(X))])
+  # Mass-weighted COM per role per frame, with the same weights make_group used,
+  # each about its group's pbcatom; then the six coordinates from the same
+  # minimum-imaged vectors and the same definitions as the snapshot.
+  s = boresch_series(group_coms(groups, X, M, slices), M)
 
   # Angles are confined to [0, 180] and average arithmetically; dihedrals wrap and
   # do not. Getting that backwards is silent, so the two are not treated alike.
-  ref = {"r": float(r_t.mean()),
-         "thA": float(thA_t.mean()), "thB": float(thB_t.mean())}
-  sd = {"r": float(r_t.std(ddof=1)),
-        "thA": float(thA_t.std(ddof=1)), "thB": float(thB_t.std(ddof=1))}
-  for key, series in (("phA", phA_t), ("phB", phB_t), ("phC", phC_t)):
-    ref[key], sd[key] = circular_mean_deg(series)
+  ref = {"r": float(s["r"].mean()),
+         "thA": float(s["thA"].mean()), "thB": float(s["thB"].mean())}
+  sd = {"r": float(s["r"].std(ddof=1)),
+        "thA": float(s["thA"].std(ddof=1)), "thB": float(s["thB"].std(ddof=1))}
+  for key in ("phA", "phB", "phC"):
+    ref[key], sd[key] = circular_mean_deg(s[key])
   return ref, sd, len(X)
 
 def _grp(name):
@@ -1862,48 +2673,69 @@ L1c, L2c, L3c = gc("L1"), gc("L2"), gc("L3")
 #
 # The snapshot values are still computed, and are used if the trajectory cannot be
 # read, so a setup with no probe still produces a consistent restraint set -- the
-# old behaviour, named as such rather than arrived at silently.
-ref_r   = float(np.linalg.norm(P3c - L1c))          # nm
-ref_thA = angle_deg(P2c, P3c, L1c)                  # deg  theta_A = angle(P2,P3,L1)
-ref_thB = angle_deg(P3c, L1c, L2c)                  # deg  theta_B = angle(P3,L1,L2)
-ref_phA = dihedral_deg(P1c, P2c, P3c, L1c)          # deg  phi_A
-ref_phB = dihedral_deg(P2c, P3c, L1c, L2c)          # deg  phi_B
-ref_phC = dihedral_deg(P3c, L1c, L2c, L3c)          # deg  phi_C
-REF_SOURCE = "single reference frame"
+# old behaviour, named as such rather than arrived at silently. They are also what
+# the pose gate below falls back to.
+_ANCHOR_GROUPS = {role: _grp(role) for role in BORESCH_ROLES}
 
 # The single-frame geometry of args.input, kept whatever the references become.
 # It is what GROMACS can be asked to reproduce, so it is what the readback below
-# compares against; see the note there.
-SNAP_REF = dict(r=ref_r, thA=ref_thA, thB=ref_thB,
-                phA=ref_phA, phB=ref_phB, phC=ref_phC)
+# compares against; see the note there. Taken like every ensemble frame, about
+# each group's pbcatom and with minimum-imaged vectors in -f's own box.
+SNAP_REF, _snap_p3l1 = snapshot_boresch_geometry(_ANCHOR_GROUPS)
 
-_ens, _esd, _enf = ensemble_boresch_geometry(
-    {role: _grp(role) for role in ("P1", "P2", "P3", "L1", "L2", "L3")})
+# The pull axis is P3->L1 of the snapshot, the difference of the two anchor COMs,
+# which leaves every interface path bit for bit what v1.4 wrote. -f is one piece
+# (PART 0), so that difference is the minimum-imaged vector GROMACS measures; it is
+# taken from the minimum image should the two ever disagree.
+#
+# The first v1.5 round warned here when the anchor geometry on raw COMs and the
+# minimum-imaged one disagreed, and said the warning also caught a split -f. It
+# could not: it looked at the six anchor groups only, and the split 1IJK frame
+# passed it in silence with ligand residues 300-416 a box vector off (review FR2).
+# PART 0 checks every polymer residue instead.
+_PULL_VEC = (L1c - P3c) if np.linalg.norm((L1c - P3c) - _snap_p3l1) <= 1e-6 \
+            else _snap_p3l1
+
+ref_r, ref_thA, ref_thB = SNAP_REF["r"], SNAP_REF["thA"], SNAP_REF["thB"]
+ref_phA, ref_phB, ref_phC = SNAP_REF["phA"], SNAP_REF["phB"], SNAP_REF["phC"]
+REF_SOURCE = "single reference frame"
+
+_ens, _esd, _enf = ensemble_boresch_geometry(_ANCHOR_GROUPS)
 if _ens:
-  _snap = dict(SNAP_REF)
-  ref_r, ref_thA, ref_thB = _ens["r"], _ens["thA"], _ens["thB"]
-  ref_phA, ref_phB, ref_phC = _ens["phA"], _ens["phB"], _ens["phC"]
-  REF_SOURCE = "mean over %d frames from %d replica(s)" % (_enf, len(TRAJ_PAIRS))
   # The three dihedral shifts are DIFFERENCES OF ANGLES and have to be wrapped to
   # (-180, 180] like everything else about a dihedral. Unwrapped, test32 reported
   # phi_A as having "moved 353.6 deg" when it moved -6.4, which reads as the
   # reference having been thrown away and is the same wrap the circular mean exists
   # to handle. Diagnostic only, but a diagnostic nobody can believe is worse than
   # none: this line is what a reader checks before trusting dG_release.
-  def _wrap(x):
-    return (x + 180.0) % 360.0 - 180.0
-
   sys.stderr.write(
       "make_boresch: Boresch geometry averaged over %d pooled frames from %d "
       "replica(s). r %.4f -> %.4f nm (sd %.4f); angles/dihedrals moved "
       "%.1f/%.1f/%.1f/%.1f/%.1f deg with circular sd %.1f/%.1f/%.1f on the "
       "dihedrals. A dihedral sd near 90 deg means the frames disagree about the "
       "orientation and the mean is not a pose.\n"
-      % (_enf, len(TRAJ_PAIRS), _snap["r"], ref_r, _esd["r"],
-         ref_thA - _snap["thA"], ref_thB - _snap["thB"],
-         _wrap(ref_phA - _snap["phA"]), _wrap(ref_phB - _snap["phB"]),
-         _wrap(ref_phC - _snap["phC"]),
+      % (_enf, len(TRAJ_PAIRS), SNAP_REF["r"], _ens["r"], _esd["r"],
+         _ens["thA"] - SNAP_REF["thA"], _ens["thB"] - SNAP_REF["thB"],
+         wrap180(_ens["phA"] - SNAP_REF["phA"]), wrap180(_ens["phB"] - SNAP_REF["phB"]),
+         wrap180(_ens["phC"] - SNAP_REF["phC"]),
          _esd["phA"], _esd["phB"], _esd["phC"]))
+  _ref, _gate = choose_reference(_ens, SNAP_REF)
+  if _gate:
+    for _k, _e, _s, _d in _gate:
+      _u, _lim = ("nm", POSE_GATE_NM) if _k == "r" else ("deg", POSE_GATE_DEG)
+      sys.stderr.write("make_boresch: POSE GATE - %s: ensemble mean %.4f %s, bound "
+                       "pose (snapshot) %.4f %s, %.4f %s apart against a %g %s "
+                       "limit\n" % (BORESCH_NAMES[_k], _e, _u, _s, _u, _d, _u,
+                                    _lim, _u))
+    sys.stderr.write("make_boresch: the ensemble mean is not a pose of the bound "
+                     "complex; the SNAPSHOT geometry is emitted for all six "
+                     "Boresch coordinates instead\n")
+    REF_SOURCE = ("single reference frame, the ensemble mean failed the pose "
+                  "gate on %s" % ",".join(BORESCH_NAMES[g[0]] for g in _gate))
+  else:
+    REF_SOURCE = "mean over %d frames from %d replica(s)" % (_enf, len(TRAJ_PAIRS))
+  ref_r, ref_thA, ref_thB = _ref["r"], _ref["thA"], _ref["thB"]
+  ref_phA, ref_phB, ref_phC = _ref["phA"], _ref["phB"], _ref["phC"]
 else:
   sys.stderr.write("make_boresch: Boresch geometry NOT averaged (%d usable frames); "
                    "using the single reference frame\n" % _enf)
@@ -1932,13 +2764,15 @@ r0_release = ref_r + args.pull_dist
 # cap. GROMACS aborts at grompp when any checked pair exceeds PULL_LIMIT, so
 # without this the failure surfaced as a dead cycle rather than a failed setup.
 # 60% leaves room for the fluctuation on top of the switched reference: 2KTF sits
-# at 1.882 against a 2.427 threshold.
+# at 1.882 against a 2.427 threshold. A triad from the measured search cannot
+# reach it any more, since the search budgets the larger of the ensemble and the
+# snapshot r of the very groups measured here; the burial path has no such budget.
 if PULL_LIMIT and r0_release > R_LIMIT_FRAC * PULL_LIMIT:
   abort("BORESCH_R_TOO_LARGE",
-        "ref_r %.3f + pull_dist %.3f = %.3f nm exceeds 60%% of the GROMACS pull "
-        "limit %.3f nm (0.49 * shortest box vector); increase the editconf "
+        "ref_r %.3f (%s) + pull_dist %.3f = %.3f nm exceeds 60%% of the GROMACS "
+        "pull limit %.3f nm (0.49 * shortest box vector); increase the editconf "
         "padding or reselect anchors"
-        % (ref_r, args.pull_dist, r0_release, PULL_LIMIT))
+        % (ref_r, REF_SOURCE, args.pull_dist, r0_release, PULL_LIMIT))
 
 thA0 = ref_thA * DEG2RAD
 thB0 = ref_thB * DEG2RAD
@@ -2187,22 +3021,17 @@ def _write_index_groups_to(path):
 # periodic boundaries. Left unset it uses the middle ENTRY OF THE INDEX LIST,
 # which is an arbitrary atom once a group spans several residues. Pick the atom
 # closest to the group's own centre instead, which is the safest reference and
-# the one least likely to sit on a boundary.
+# the one least likely to sit on a boundary. pbcatom_of() is that choice, and the
+# Boresch geometry above unwraps every group about the same atom, so the
+# references are measured the way GROMACS will evaluate them.
 PBCATOM = {}
 
 def compute_pbcatoms():
   for role in ("P1", "P2", "P3", "L1", "L2", "L3"):
     g = rec_groups.get(anchors[role]) or lig_groups.get(anchors[role])
-    xyz, anums = [], []
-    for src in (prot1_data, prot2_data):
-      for rec in src:
-        if rec[3] in g["atoms"]:
-          xyz.append((rec[4], rec[5], rec[6])); anums.append(rec[3])
-    if not xyz:
-      continue
-    a = np.asarray(xyz)
-    PBCATOM["bor_%s" % role] = int(anums[int(np.argmin(
-        np.linalg.norm(a - a.mean(axis=0), axis=1)))])
+    a = pbcatom_of(g["atoms"])
+    if a is not None:
+      PBCATOM["bor_%s" % role] = a
 
 write_index_groups()
 compute_pbcatoms()
@@ -2239,21 +3068,97 @@ compute_pbcatoms()
 # This does NOT remove the pulling. The springs still have to lag behind their
 # references to drag the partner out, and that lag is the friction the method is
 # measuring. What goes away is the separate demand that the interface deform.
-PULL_AXIS = (L1c - P3c) / np.linalg.norm(L1c - P3c)
+# _PULL_VEC is the snapshot P3->L1, the raw difference unless -f splits it (see
+# where it is set).
+PULL_AXIS = _PULL_VEC / np.linalg.norm(_PULL_VEC)
 
-_pair_vec = np.array([np.array(prot2_data[j][4:7], dtype=float)
-                      - np.array(prot1_data[i][4:7], dtype=float)
-                      for i, j, _ in interdis]) if interdis else np.empty((0, 3))
+# Each spring's pair vector in -f, minimum-imaged like its distance, since that is
+# the vector GROMACS pulls along. A spring is a contact, far shorter than half the
+# box, so on a frame in one piece this is the plain difference bit for bit.
+_pair_vec = min_image_vec(np.array([np.array(prot2_data[j][4:7], dtype=float)
+                                    - np.array(prot1_data[i][4:7], dtype=float)
+                                    for i, j, _ in interdis]), INPUT_BOX) \
+            if interdis else np.empty((0, 3))
 
 
 def pair_displacement(u):
   """How far each interface reference should have moved once the partner has
-  translated u*pull_dist along the pull axis. Zero at u = 0 by construction, so it
+  translated u nm along the pull axis. Zero at u = 0 by construction, so it
   composes with the ensemble-mean reference rather than replacing it."""
   if not len(_pair_vec):
     return np.empty(0)
   d0 = np.linalg.norm(_pair_vec, axis=1)
-  return np.linalg.norm(_pair_vec + (u * args.pull_dist) * PULL_AXIS, axis=1) - d0
+  return np.linalg.norm(_pair_vec + u * PULL_AXIS, axis=1) - d0
+
+
+# THE COMPOSED REFERENCE CAN CROSS ZERO. An interface reference travels
+#
+#     ref_i(u) = dist_i + |r_i + u*L*n| - |r_i|
+#
+# where dist_i is the ensemble mean over the pooled probe replicas and r_i is the
+# pair vector in the single reference frame, the last frame of replica 1. The two
+# disagree in length. For a pair whose frame vector points against the pull axis
+# the second term falls by up to |r_i| - |r_i x n| before it rises again, and when
+# the frame put the pair further apart than its mean by more than its offset from
+# the axis, that fall exceeds dist_i and the reference goes negative. GROMACS
+# refuses that wherever it happens: grompp rejects a negative pull-coordN-init, and
+# mdrun stops at the first step where init + rate*t < 0 with "Pull reference
+# distance for coordinate N (-0.000000) needs to be non-negative". The value prints
+# as -0.000000 because it is one step of rate*dt below zero. The crossing step is
+# fixed by the mdp, so the leg dies at the same step in every cycle and the retry
+# dies with it.
+#
+# The second HADDOCK pass (v1.3) lost 1IBR (pull-coord780 in stage G: frame 0.553
+# nm against a mean of 0.369, 11 degrees off antiparallel), 2B42 (pull-coord666, G)
+# and 1BVN (pull-coord357, H) this way in every cycle, and the first pass lost 1AKJ
+# (pull-coord164, G). 1OPH came within 0.020 nm of it.
+#
+# A FLOOR AT THE STAGE BOUNDARIES IS ENOUGH. A GROMACS reference moves in a straight
+# line within a stage, and a chord between two values at or above the floor stays
+# above it. It leaves u = 0 alone (dist_i is a heavy-atom contact distance) and
+# u = 1 does not matter (kB = 0 there), so the end states and the free energy are
+# unchanged. Only the path of a pair that would otherwise demand a negative distance
+# is reshaped, at a point where its spring is already down to (1 - lambda) of full
+# strength. A chord that stays above the floor keeps its arithmetic bit for bit.
+#
+# NOT ZERO. init is written to 1e-8 nm and rate to ten significant digits, and mdrun
+# evaluates init + rate*t with both read in single precision, so a chord aimed at
+# exactly 0 ends one rounding error below it about half the time and dies on its
+# last step. 0.005 nm is below the lowest boundary reference of every structure that
+# ran (0.012 nm, 1IBR at u = 0.379), so the 43 structures that completed the ramp get
+# the same pull blocks, and the stages the three lost structures completed are
+# unchanged.
+PULL_REF_FLOOR_NM = 0.005
+
+
+def interface_chord(dist, d_from, d_to):
+  """(init, move) of one interface reference across one stage: the chord of
+  dist + pair_displacement(u) between the stage's two boundaries, floored at
+  PULL_REF_FLOOR_NM. A chord that never reaches the floor keeps the original
+  arithmetic exactly."""
+  a, b = dist + d_from, dist + d_to
+  if a >= PULL_REF_FLOOR_NM and b >= PULL_REF_FLOOR_NM:
+    return a, d_to - d_from
+  a = max(a, PULL_REF_FLOOR_NM)
+  return a, max(b, PULL_REF_FLOOR_NM) - a
+
+
+def report_ref_floor():
+  """One line in the setup log: the lowest interface reference at any stage
+  boundary, and how many coordinates the floor holds up."""
+  low, worst = set(), None
+  for u in P.boundaries():
+    d = pair_displacement(u)
+    for n, (_i, _j, dist) in enumerate(interdis):
+      v = dist + float(d[n])
+      if worst is None or v < worst[0]:
+        worst = (v, n + 1, u)
+      if v < PULL_REF_FLOOR_NM:
+        low.add(n + 1)
+  if worst is not None:
+    sys.stderr.write("make_boresch: lowest interface reference on the ramp %.4f nm "
+                     "(pull-coord%d at u = %.3f); %d coordinate(s) floored at %.3f nm\n"
+                     % (worst[0], worst[1], worst[2], len(low), PULL_REF_FLOOR_NM))
 
 
 # Sum-k is a budget split over however many springs there are, so N and k never
@@ -2303,23 +3208,45 @@ def leg_ps(filename):
     return None
 
 
+def elastic_network_coords(gidx):
+  """The elastic network as pull coordinates: every intra-partner CA pair of
+  build_elastic_network, k = kB = enk and rate 0, so it is the same restraint at
+  every lambda. Marked en=True, which is how the far-end hold keeps it.
+
+  One definition for every block that carries it (both leg families, nptrev and
+  npt_c_fe.mdp), so 'the same network' holds by construction. gidx registers the
+  pull groups in the caller's numbering, receptor pairs first, each pair's first
+  atom first, the order the leg blocks have always used."""
+  out = []
+  for data, keep, pairs in ((prot1_data, protkeep1, en1dis),
+                            (prot2_data, protkeep2, en2dis)):
+    for i, j, dist in pairs:
+      g1 = gidx("a_%d" % data[keep[i]][3])
+      g2 = gidx("a_%d" % data[keep[j]][3])
+      out.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
+                      init=dist, rate=0.0, k=enk, kB=enk, en=True))
+  return out
+
+
 def build_coords(family, direction, u_from=None, u_to=None, ps=None):
   """Return (pull_groups, coords) for a leg.
 
   family    : 'unbind'  -> interface(moving, k->0) + EN(fixed) + Boresch(0->full)
               'bound'   -> interface(fixed, 0->full) + EN(fixed), no Boresch
+              'en'      -> EN(fixed) only, for npt_c_fe.mdp
   direction : 'fwd' or 'rev'. With u_from/u_to given this only selects the
               family's endpoint conventions; the geometry comes from u_from/u_to.
 
-  u_from/u_to are the fraction of --pull-dist the reference has travelled at the
-  start and end of THIS stage, so a stage covering 0.3 -> 1.0 starts its moving
-  coordinates already 0.3*pull_dist out and moves the remaining 0.7 over `ps`.
-  pull-coordN-start = no makes init absolute, so this offset is mandatory: without
-  it stage B would jump back to the bound geometry. u_from == u_to gives rate 0,
-  which is what makes a hold contribute no work.
+  u_from/u_to are the distance in nm the reference has travelled at the start and
+  end of THIS stage, as fe_protocol gives them, so a stage covering 0.3 -> 1.0
+  starts its moving coordinates already 0.3 nm out and moves the remaining 0.7 nm
+  over `ps`. pull-coordN-start = no makes init absolute, so this offset is
+  mandatory: without it stage B would jump back to the bound geometry. u_from ==
+  u_to gives rate 0, which is what makes a hold contribute no work. They are never
+  scaled by --pull-dist (see ONE PULL DISTANCE).
 
-  Omitting them reproduces the old single-stage behaviour (0 -> 1 forward,
-  1 -> 0 reverse) at the constant --pull-rate.
+  Omitting them reproduces the old single-stage behaviour (0 -> --pull-dist
+  forward, --pull-dist -> 0 reverse) at the constant --pull-rate.
   """
   pull_groups = []          # list of ndx group names (index = position+1)
   group_index = {}          # ndx name -> pull-group index
@@ -2333,14 +3260,13 @@ def build_coords(family, direction, u_from=None, u_to=None, ps=None):
   coords = []
   sign = 1.0 if direction == "fwd" else -1.0
   if u_from is None:                       # legacy single-stage behaviour
-    u_from = 0.0 if direction == "fwd" else 1.0
-    u_to = 1.0 if direction == "fwd" else 0.0
+    u_from = 0.0 if direction == "fwd" else args.pull_dist
+    u_to = args.pull_dist if direction == "fwd" else 0.0
     stage_rate = sign * args.pull_rate
   else:
     # Rate follows from the distance this stage covers and the time it is given.
-    stage_rate = 0.0 if (u_to == u_from or not ps) else \
-                 (u_to - u_from) * args.pull_dist / ps
-  off = u_from * args.pull_dist            # where this stage's references start
+    stage_rate = 0.0 if (u_to == u_from or not ps) else (u_to - u_from) / ps
+  off = u_from                             # where this stage's references start
 
   if family == "unbind":
     # 1) Interface restraints FIRST (moving) so pull integrator sums them first.
@@ -2354,13 +3280,13 @@ def build_coords(family, direction, u_from=None, u_to=None, ps=None):
     _leg_ps = ps if ps else (args.pull_dist / abs(args.pull_rate)
                              if args.pull_rate else 0.0)
     _d_from, _d_to = pair_displacement(u_from), pair_displacement(u_to)
-    _nominal = (u_to - u_from) * args.pull_dist
+    _nominal = u_to - u_from
     for n, (i, j, dist) in enumerate(interdis):
       g1 = gidx("a_%d" % prot1_data[i][3])
       g2 = gidx("a_%d" % prot2_data[j][3])
-      _move = float(_d_to[n] - _d_from[n])
+      _init, _move = interface_chord(dist, float(_d_from[n]), float(_d_to[n]))
       coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
-                         init=dist + float(_d_from[n]),
+                         init=_init,
                          rate=(_move / _leg_ps if _leg_ps else 0.0),
                          k=k_inter, kB=0.0,
                          weight=(_move / _nominal if _nominal else 1.0)))
@@ -2374,16 +3300,7 @@ def build_coords(family, direction, u_from=None, u_to=None, ps=None):
                        init=ref_r + off, rate=stage_rate, k=0.0, kB=K_R,
                        boresch=True, weight=1.0))
     # 3) Elastic network (fixed, no lambda dependence).
-    for i, j, dist in en1dis:
-      g1 = gidx("a_%d" % prot1_data[protkeep1[i]][3])
-      g2 = gidx("a_%d" % prot1_data[protkeep1[j]][3])
-      coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
-                         init=dist, rate=0.0, k=enk, kB=enk))
-    for i, j, dist in en2dis:
-      g1 = gidx("a_%d" % prot2_data[protkeep2[i]][3])
-      g2 = gidx("a_%d" % prot2_data[protkeep2[j]][3])
-      coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
-                         init=dist, rate=0.0, k=enk, kB=enk))
+    coords += elastic_network_coords(gidx)
     # 4) Boresch angles + dihedrals (fixed reference, k switched 0 -> full).
     gP2 = gidx(boresch_group_ndx("P2"))
     gP1 = gidx(boresch_group_ndx("P1"))
@@ -2415,16 +3332,13 @@ def build_coords(family, direction, u_from=None, u_to=None, ps=None):
       g2 = gidx("a_%d" % prot2_data[j][3])
       coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
                          init=dist, rate=0.0, k=0.0, kB=k_inter))
-    for i, j, dist in en1dis:
-      g1 = gidx("a_%d" % prot1_data[protkeep1[i]][3])
-      g2 = gidx("a_%d" % prot1_data[protkeep1[j]][3])
-      coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
-                         init=dist, rate=0.0, k=enk, kB=enk))
-    for i, j, dist in en2dis:
-      g1 = gidx("a_%d" % prot2_data[protkeep2[i]][3])
-      g2 = gidx("a_%d" % prot2_data[protkeep2[j]][3])
-      coords.append(dict(geometry="distance", dim="Y Y Y", groups=[g1, g2],
-                         init=dist, rate=0.0, k=enk, kB=enk))
+    coords += elastic_network_coords(gidx)
+
+  elif family == "en":
+    coords += elastic_network_coords(gidx)
+
+  else:
+    raise ValueError("unknown pull-block family %r" % family)
 
   return pull_groups, coords
 
@@ -2492,6 +3406,52 @@ def write_pull_block(filename, pull_groups, coords):
       f.write("pull-coord%d-kB          = %.8f\n" % (ci, c["kB"]))
       f.write("\n")
 
+
+# What an mdp's pull-* lines become while its pull code is off.
+_PULL_OFF = "; off while pull = no: "
+
+
+def set_pull_switch(filename, on):
+  """Turn the pull code of an mdp on or off and leave everything else alone.
+
+  Off drops any pull block (from pull-ngroups on, as write_pull_block does) and
+  comments out every other pull-* line: with pull = no, grompp warns once for each
+  pull-* key it still meets, five warnings for the standard print header alone,
+  which would eat half of the -maxwarn 10 every cycle grompp runs with. On restores
+  those lines. The 'pull' line itself is written either way, and appended if the
+  file has none, so the switch never depends on GROMACS's default."""
+  out, seen = [], False
+  for line in open(filename):
+    if line.lstrip().startswith("pull-ngroups"):
+      break
+    if line.startswith(_PULL_OFF):
+      line = line[len(_PULL_OFF):]
+    key = line.split(";")[0].split("=")[0].strip().lower().replace("_", "-")
+    if key == "pull":
+      line = "pull                     = %s\n" % ("yes" if on else "no")
+      seen = True
+    elif key.startswith("pull-") and not on:
+      line = _PULL_OFF + line
+    out.append(line)
+  if out and not out[-1].endswith("\n"):
+    out[-1] += "\n"
+  if not seen:
+    out.append("pull                     = %s\n" % ("yes" if on else "no"))
+  with open(filename, "w") as f:
+    f.writelines(out)
+
+
+# WHICH BLOCK A LEG CARRIES is fe_protocol.legs()'s "block", checked above to be
+# one of PULL_BLOCKS for every leg, and nothing else: not the name, not the kind.
+# v1.3 chose by kind ("every stage and hold gets the unbind block"), which handed
+# the two holds inside the bound lambda schedule, holdbfwd1 and holdbrev1 at
+# lambda 0.25, the unbind block: springs at 0.75 k_inter instead of 0.25 k_inter,
+# plus the six Boresch coordinates at a quarter strength. The Hamiltonian then
+# jumped at every hold entry and exit, and in the 39 structures of the second
+# HADDOCK pass with a sound Boresch reference that switch did 6.4 (forward) and
+# 7.3 (reverse) kJ/mol of unrecorded work on average, range 0.2 to 26.9, so the
+# protocol's "holds do no work" was false exactly where dG_intro is measured.
+#
 # Unbinding / rebinding ramp, in stages with an equilibrium hold at every internal
 # boundary. WHICH stages exist and how long they are is not decided here: it comes
 # from utils/fe_protocol.py, the single definition of the cycle. This loop only
@@ -2509,19 +3469,18 @@ def write_pull_block(filename, pull_groups, coords):
 # hold below, the internal holds KEEP their interface coordinates, because at
 # lambda < 1 the force constant is still (1 - lambda) of full and they are doing
 # real work holding the partly separated interface.
+report_ref_floor()
 stage_rates = {}
-# Where the six Boresch coordinates ended up inside the FIRST stage's block,
-# captured from the coords themselves rather than assumed. The readback below used
-# to take the last six columns, which is only the right answer when the elastic
-# network is empty: build_coords emits interface coords, then the Boresch
-# distance, then the elastic network, then the five angles and dihedrals. A
-# partner with three or more terminal-anchor residues produces a non-empty
-# network, and the readback would then compare the Boresch r against an
-# elastic-network pair distance and abort a setup that is in fact correct.
-boresch_idx = []
-first_stage_mdp = None
+# The FIRST stage's mdp and u_from, for the GROMACS readback below. It finds the
+# six Boresch coordinates in that mdp by their groups (written_boresch). The
+# readback once took the last six columns, which is only the right answer when the
+# elastic network is empty: build_coords emits interface coords, then the Boresch
+# distance, then the elastic network, then the five angles and dihedrals, and with
+# a network it compared the Boresch r against a network pair distance and aborted
+# a setup that was in fact correct.
+first_stage_mdp, first_stage_u = None, 0.0
 for _leg in P.legs():
-  if _leg["kind"] not in ("stage", "hold"):
+  if _leg["block"] != "unbind":
     continue
   _name, _u0, _u1 = _leg["mdp"], _leg["u_from"], _leg["u_to"]
   _ps = leg_ps(_name)
@@ -2530,12 +3489,13 @@ for _leg in P.legs():
           "cannot read nsteps/dt from %s, so its pull rate is undefined" % _name)
   _dir = "fwd" if _u1 >= _u0 else "rev"
   _pg, _co = build_coords("unbind", _dir, u_from=_u0, u_to=_u1, ps=_ps)
-  if _leg["kind"] == "hold" and _u0 >= args.pull_dist:
-    # The HOLD at the far end drops its interface coordinates; see the long note
-    # below. Every other hold keeps them. The kind test is load-bearing: the first
-    # reverse stage also starts at u = pull_dist, and stripping its interface
+  if _leg["kind"] == "hold" and _u0 >= P.PULL_DIST:
+    # The HOLD at the far end drops its interface coordinates and keeps the six
+    # Boresch coordinates and the elastic network; see the long note below. Every
+    # other hold keeps everything. The kind test is load-bearing: the first
+    # reverse stage also starts at u = PULL_DIST, and stripping its interface
     # coordinates would leave it pulling nothing at rate zero.
-    _co = [c for c in _co if c.get("boresch")]
+    _co = [c for c in _co if c.get("boresch") or c.get("en")]
     for c in _co:
       c["rate"] = 0.0
   write_pull_block(_name, _pg, _co)
@@ -2548,10 +3508,28 @@ for _leg in P.legs():
   if _leg["kind"] == "stage":
     write_pull_weights(_leg["name"], _co)
   if _leg["kind"] == "stage" and first_stage_mdp is None:
-    first_stage_mdp = _name
-    boresch_idx = [i for i, c in enumerate(_co) if c.get("boresch")]
-  stage_rates[_leg["name"]] = (0.0 if _u1 == _u0
-                               else (_u1 - _u0) * args.pull_dist / _ps)
+    first_stage_mdp, first_stage_u = _name, _u0
+  stage_rates[_leg["name"]] = 0.0 if _u1 == _u0 else (_u1 - _u0) / _ps
+
+# Bound-state restraint block, for every leg whose block is "bound": the bound
+# sub-legs and the holds between them. The block is identical for all of them,
+# interface coords at k = 0 -> kB = k_inter, rate 0, the elastic network, no
+# Boresch, because only init-lambda and delta-lambda distinguish them, and those
+# come from make_fe_mdps.py. A hold thus sits at its lambda of the SAME
+# Hamiltonian as the sub-legs either side, 0.25 k_inter at lambda 0.25, and the
+# switch into and out of it does no work. So this loops over whatever fe_protocol
+# declares rather than naming files, and a reshaping of BOUND needs no edit here.
+pg_bound, co_bound = build_coords("bound", "fwd")
+for _leg in P.legs():
+  if _leg["block"] != "bound":
+    continue
+  if _leg["u_from"] != _leg["u_to"]:
+    abort("PROTOCOL_BLOCK_INVALID",
+          "%s carries the bound block but moves u %g -> %g; the bound block has "
+          "no moving coordinate" % (_leg["name"], _leg["u_from"], _leg["u_to"]))
+  write_pull_block(_leg["mdp"], pg_bound, co_bound)
+  if _leg["kind"] in ("stage", "hold"):
+    stage_rates[_leg["name"]] = 0.0
 
 # Each stage's rate is recorded next to the geometry, for the same reason the
 # single rate always was: integrate.py turns the time integral of the pull force
@@ -2569,8 +3547,23 @@ with open("boresch_analytical.gs", "a") as f:
             % (_leg["name"], stage_rates[_leg["name"]],
                _leg["u_from"], _leg["u_to"], leg_ps(_leg["mdp"]) or 0.0))
 
-# Hold leg at the unbound restrained state (lambda = 1): only the Boresch
-# coordinates, with zero rate. job_fe.run pins init-lambda = 1, delta-lambda = 0.
+# Hold leg at the unbound restrained state (lambda = 1): the six Boresch
+# coordinates and the elastic network, with zero rate, and no interface
+# coordinates. job_fe.run pins init-lambda = 1, delta-lambda = 0.
+#
+# THE ELASTIC NETWORK STAYS, because the hold must sample the lambda = 1
+# Hamiltonian of the stages on either side of it, and the network is part of that
+# Hamiltonian at every lambda (k = kB = enk). Until v1.5 the strip below kept only
+# the Boresch coordinates and so dropped the network together with the springs,
+# with nothing in this note to justify it. Over 5 ns the network pairs then
+# drifted, and at t = 0 of bindrevI the network came back at full strength
+# with a median 153 kJ/mol of strain (median over 39 structures of the second
+# HADDOCK pass, per-structure medians 7 to 918; 32 of 718 cycles above 1000),
+# where the network sits at 40-52 kJ/mol whenever it stays on. That is unrecorded
+# work on the first state of the reverse ramp, the one the Crooks analysis takes
+# as equilibrium. The network's pairs are intra-partner CA pairs at 0.4-0.9 nm held
+# at 250 kJ/mol/nm^2, so they cannot approach the 0.49 * box limit that is the
+# reason the interface coordinates go.
 #
 # The interface coordinates are deliberately left out. At lambda = 1 their force
 # constant is kB = 0, so they restrain nothing, but GROMACS still evaluates every
@@ -2603,38 +3596,64 @@ with open("boresch_analytical.gs", "a") as f:
 # tether present only in nptrev is absent from the lambda = 1 Hamiltonian of the
 # stages either side of it, so it would bias the starting distribution handed to
 # the reverse leg, which is the equilibrium end state the Crooks analysis assumes.
+# The same argument is why the elastic network stays: what nptrev samples must be
+# H(lambda = 1), and dropping the springs changes nothing in it (k = 0 there)
+# while dropping the network did.
 #
 # The block itself is written by the loop above, which drops the interface
-# coordinates from whichever hold sits at u = pull_dist.
+# coordinates from whichever hold sits at u = PULL_DIST.
 
-# Bound-state restraint leg
-pg_b_fwd, co_b_fwd = build_coords("bound", "fwd")
-pg_b_rev, co_b_rev = build_coords("bound", "rev")
-# One block per bound sub-leg. The block itself is identical for all of them --
-# interface coords at k = 0 -> kB = k_inter, rate 0, no Boresch -- because only
-# init-lambda and delta-lambda distinguish the sub-legs, and those come from
-# make_fe_mdps.py. So this loops over whatever fe_protocol declares rather than
-# naming two files, and a reshaping of BOUND needs no edit here.
-for _leg in P.legs():
-  if _leg["kind"] != "bound":
-    continue
-  _pg, _co = (pg_b_fwd, co_b_fwd) if _leg["dirn"] == "fwd" else (pg_b_rev, co_b_rev)
-  write_pull_block(_leg["mdp"], _pg, _co)
+# THE BOUND-STATE NPT CARRIES THE ELASTIC NETWORK. npt_c is the 20 ns equilibration
+# every cycle runs before boundfwd1, so its end is the start of the forward bound
+# leg, and the Crooks analysis takes that start as drawn from H(lambda = 0) of the
+# bound family: interface springs at k = 0, i.e. absent, plus the network at full
+# strength. Until v1.5 npt_c ran the npt_fe template with no pull code at all, so
+# the network was off for 20 ns and switched on at t = 0 of boundfwd1, unrecorded:
+# a median 299 kJ/mol over the 39 structures with a network in the second HADDOCK
+# pass (per-structure medians 9 to 5569, single cycles up to 33,549), relaxing to
+# 60 by the end of boundfwd1. Worse, the network pairs drifted freely, and in 20 of
+# 920 cycles one drifted beyond 0.49 box, so the boundfwd1 grompp refused the
+# network coordinate and the cycle was lost (1RLB 7, 1OPH 6, 1H1V 2, 1HE8 2, 1AK4,
+# 1IQD, 1T6B).
+#
+# EXACTLY the network the legs carry (elastic_network_coords, the same pairs and
+# references), k = kB = enk, rate 0. npt_c_fe.mdp has no free-energy block, so
+# GROMACS uses k, which is why kB is the same number. A structure without a
+# network gets pull = no, which leaves npt_c exactly the npt_fe physics. The probe
+# NPT (npt_init_fe.mdp) stays without it: the network is built from the probe.
+#
+# What this holds is each network BODY (see PART 2), not each partner: two bodies
+# of one partner that no network pair or disulfide joins stay as free to drift
+# apart in npt_c as before, and the setup log says how many each partner has.
+pg_en, co_en = build_coords("en", "fwd")
+set_pull_switch(NPT_C_MDP, bool(co_en))
+if co_en:
+  write_pull_block(NPT_C_MDP, pg_en, co_en)
+sys.stderr.write("make_boresch: %s carries %s\n"
+                 % (NPT_C_MDP, "the elastic network, %d coordinates at k = kB = "
+                    "%g kJ/mol/nm^2" % (len(co_en), enk) if co_en else
+                    "no pull code (pull = no): this structure has no elastic "
+                    "network"))
 
 
 #======================================================
-# PART 6 - Read the pull block back through GROMACS
+# PART 6 - Read the pull blocks back: from the mdps, and through GROMACS
 #
 # Everything above is open loop: the six Boresch coordinates are measured with
-# this file's own helpers, written into four .mdp files, and never verified. A
+# this file's own helpers, written into the leg .mdp files, and never verified. A
 # one-character sign error in dihedral_deg therefore survived into production and
 # cost days of GPU time, because a mirror-image phi reference is not visibly
 # wrong anywhere. It only shows up as strain once mdrun starts.
 #
-# So grompp the forward block at nsteps = 0 against the same structure the
-# references were measured from, run zero steps, and compare GROMACS's own pullx
-# against what was emitted. This catches sign conventions, group ordering, unit
-# errors and index drift in one test, for about 6 s per setup.
+# So two things are read back. Every leg's mdp, as text: each Boresch coordinate,
+# found by its geometry and its bor_ groups, must carry the reference this setup
+# computed (r displaced by the leg's u_from), the leg's rate and the full force
+# constant as kB; a bound leg and npt_c_fe.mdp must carry none. Then the forward
+# block through GROMACS: grompp it at nsteps = 0 against the structure the
+# references were measured from, run zero steps, and take from pullx both what
+# GROMACS measures and the reference it read from the mdp. This catches sign
+# conventions, group ordering, unit errors and index drift, for about 6 s per
+# setup.
 #
 # The FORWARD block, not the hold: bindrev_fe and nptrev_fe carry
 # init = ref_r + pull_dist, so on the bound reference their distance coordinate
@@ -2643,14 +3662,136 @@ for _leg in P.legs():
 
 CHECK_TOL_DEG = 0.5     # 0.19 sigma at K_ANG_RAD; mass repartitioning alone is 0.96
 CHECK_TOL_NM = 0.005
+# How closely GROMACS's reference column can be compared with the reference this
+# setup computed: pullx prints six significant digits (143.546 for 143.5455630) and
+# the tpr keeps init in single precision. A swapped, mirrored or misplaced
+# reference is off by degrees.
+READ_TOL_DEG = 0.002
+READ_TOL_NM = 2e-5
+
+# Which Boresch coordinate a pull coordinate is, by its geometry and the bor_
+# groups it names in order; the vectors are those of BORESCH_VECTORS.
+BORESCH_SIGNATURES = {
+    ("distance", ("bor_P3", "bor_L1")): "r",
+    ("angle", ("bor_P3", "bor_P2", "bor_P3", "bor_L1")): "thA",
+    ("angle", ("bor_L1", "bor_P3", "bor_L1", "bor_L2")): "thB",
+    ("dihedral", ("bor_P1", "bor_P2", "bor_P2", "bor_P3", "bor_P3", "bor_L1")): "phA",
+    ("dihedral", ("bor_P2", "bor_P3", "bor_P3", "bor_L1", "bor_L1", "bor_L2")): "phB",
+    ("dihedral", ("bor_P3", "bor_L1", "bor_L1", "bor_L2", "bor_L2", "bor_L3")): "phC",
+}
 
 
-def wrap180(x):
-  return (x + 180.0) % 360.0 - 180.0
+def written_boresch(path):
+  """The Boresch coordinates an mdp carries, read from its text: ({key:
+  (coordinate number, init, rate, k, kB)}, [what is wrong]). Wrong is a bor_ group
+  in a coordinate of no Boresch shape, or a Boresch coordinate written twice."""
+  kv = {}
+  for line in open(path):
+    s = line.split(";")[0]
+    if "=" in s:
+      k, v = (x.strip() for x in s.split("=", 1))
+      kv[k.lower().replace("_", "-")] = v
+  name = {i: kv.get("pull-group%d-name" % i)
+          for i in range(1, int(kv.get("pull-ngroups") or 0) + 1)}
+  out, bad = {}, []
+  for c in range(1, int(kv.get("pull-ncoords") or 0) + 1):
+    groups = tuple(name.get(int(g)) or "?" for g in kv.get("pull-coord%d-groups" % c, "").split())
+    if not any(g.startswith("bor_") for g in groups):
+      continue
+    geom = kv.get("pull-coord%d-geometry" % c)
+    key = BORESCH_SIGNATURES.get((geom, groups))
+    if key is None or key in out:
+      bad.append("pull-coord%d (%s %s)" % (c, geom, " ".join(groups)))
+      continue
+    out[key] = (c,) + tuple(float(kv["pull-coord%d-%s" % (c, f)])
+                            for f in ("init", "rate", "k", "kb"))
+  return out, bad
+
+
+def check_written_legs(ref):
+  """Every leg's Boresch coordinates as its mdp carries them, against ref, the
+  references this setup computed (keyed like SNAP_REF). Returns what disagrees."""
+  bad = []
+  for leg in P.legs():
+    got, odd = written_boresch(leg["mdp"])
+    bad += ["%s: %s" % (leg["mdp"], o) for o in odd]
+    if leg["block"] != "unbind":
+      if got:
+        bad.append("%s carries %s, but a %s leg has no Boresch coordinate"
+                   % (leg["mdp"], "/".join(BORESCH_NAMES[k] for k in got), leg["block"]))
+      continue
+    lacks = [BORESCH_NAMES[k] for k in BORESCH_KEYS if k not in got]
+    if lacks:
+      bad.append("%s lacks %s" % (leg["mdp"], "/".join(lacks)))
+      continue
+    for key in BORESCH_KEYS:
+      c, init, rate, k, kB = got[key]
+      want = ref[key] + (leg["u_from"] if key == "r" else 0.0)
+      want_rate = stage_rates[leg["name"]] if key == "r" else 0.0
+      want_kB = K_R if key == "r" else K_ANG_RAD
+      if abs(init - want) > 1e-7:
+        bad.append("%s pull-coord%d (%s): init %.8f, the reference is %.8f"
+                   % (leg["mdp"], c, BORESCH_NAMES[key], init, want))
+      if abs(rate - want_rate) > 1e-8 * abs(want_rate) + 1e-15:
+        bad.append("%s pull-coord%d (%s): rate %.10g, the leg's is %.10g"
+                   % (leg["mdp"], c, BORESCH_NAMES[key], rate, want_rate))
+      if k != 0.0 or abs(kB - want_kB) > 1e-6:
+        bad.append("%s pull-coord%d (%s): k %g -> kB %g, not 0 -> %g"
+                   % (leg["mdp"], c, BORESCH_NAMES[key], k, kB, want_kB))
+  got, odd = written_boresch(NPT_C_MDP)
+  if got or odd:
+    bad.append("%s carries Boresch coordinates; it must carry the network only"
+               % NPT_C_MDP)
+  return bad
+
+
+def readback_verdict(got, carried, snap, intended):
+  """What GROMACS read and measured on -f, against this file's snapshot and its
+  references. got is GROMACS's measured value of each of the six coordinates in
+  BORESCH_KEYS order, carried GROMACS's reference column for each, i.e. the
+  pull-coordN-init grompp read from the leg's mdp; snap and intended are dicts
+  keyed like SNAP_REF, intended being the references this setup computed for that
+  leg.
+
+  Three separate questions. CONVENTION: does GROMACS get the snapshot geometry
+  this file computes from the same structure, to CHECK_TOL? WRITTEN: does the leg
+  carry the references this setup computed, to READ_TOL? POSE: is what the leg
+  carries within the pose gate's limits of the bound pose GROMACS measures, with
+  CHECK_TOL on top, since the gate compares against the snapshot and the snapshot
+  is only known to agree with GROMACS to CHECK_TOL? The pose is asked of what
+  GROMACS read, not of this file's numbers, so a writer that put a wrong number
+  into the mdp fails it whatever the gate saw.
+
+  Returns (log lines, convention failures, written failures, pose failures)."""
+  lines, conv, init, pose = [], [], [], []
+  for key, g, w in zip(BORESCH_KEYS, got, carried):
+    s, i = snap[key], intended[key]
+    if key == "r":
+      d, dw, dp = abs(g - s), abs(w - i), abs(w - g)
+      tol, rtol, ptol = CHECK_TOL_NM, READ_TOL_NM, POSE_GATE_NM + CHECK_TOL_NM
+    else:
+      d, dw, dp = abs(wrap180(g - s)), abs(wrap180(w - i)), abs(wrap180(w - g))
+      tol, rtol, ptol = CHECK_TOL_DEG, READ_TOL_DEG, POSE_GATE_DEG + CHECK_TOL_DEG
+    nm = BORESCH_NAMES[key]
+    lines.append("make_boresch: readback %-8s snapshot %10.4f  gromacs %10.4f  "
+                 "diff %8.4f%s   (written %10.4f, %.4f from gromacs%s%s)\n"
+                 % (nm, s, g, d, "" if d <= tol else "   MISMATCH", w, dp,
+                    "" if dp <= ptol else "   NOT A POSE",
+                    "" if dw <= rtol else "   NOT THE REFERENCE %.4f" % i))
+    if d > tol:
+      conv.append("%s off by %.4f" % (nm, d))
+    if dw > rtol:
+      init.append("%s written %.4f, the reference is %.4f" % (nm, w, i))
+    if dp > ptol:
+      pose.append("%s written %.4f, %.4f from GROMACS's %.4f (limit %g)"
+                  % (nm, w, dp, g, ptol))
+  return lines, conv, init, pose
 
 
 def verify_pull_block(mdp):
-  """Re-measure the emitted pull coordinates with GROMACS. None if not run."""
+  """Re-measure an mdp's pull coordinates with GROMACS on -f: {coordinate number:
+  (measured value, GROMACS's reference or None)}. None if not run, False if it
+  failed."""
   if not args.readback:
     return None
   if not os.path.isfile(args.topol):
@@ -2672,10 +3813,15 @@ def verify_pull_block(mdp):
         if k in ("nsteps", "pull-nstxout", "nstxout-compressed", "nstlog",
                  "nstenergy", "continuation", "gen_vel", "free-energy",
                  "init-lambda", "delta-lambda", "nstdhdl",
-                 "pull-print-com", "pull-print-com1", "pull-print-com2"):
+                 "pull-print-com", "pull-print-com1", "pull-print-com2",
+                 "pull-print-ref-value"):
           continue
         f.write(line)
+      # pull-print-ref-value adds a column "N ref" after each coordinate's "N":
+      # the reference GROMACS itself read from the mdp, which is what the legs
+      # will run with.
       f.write("\nnsteps = 0\npull-nstxout = 1\npull-print-com = no\n"
+              "pull-print-ref-value = yes\n"
               "continuation = yes\ngen_vel = no\nfree-energy = no\n")
     tpr = os.path.join(work, "probe.tpr")
     r = subprocess.run(["gmx", "grompp", "-f", probe, "-c", args.input,
@@ -2694,15 +3840,19 @@ def verify_pull_block(mdp):
       sys.stderr.write("make_boresch: pull readback mdrun failed:\n%s\n"
                        % r.stderr[-2000:])
       return False
-    row = None
+    row, col_val, col_ref = None, {}, {}
     for line in open(xvg):
-      if not line.startswith(("#", "@")):
+      m = re.match(r'@\s*s(\d+)\s+legend\s+"(\d+)( ref)?"', line)
+      if m:
+        (col_ref if m.group(3) else col_val)[int(m.group(2))] = int(m.group(1)) + 1
+      elif not line.startswith(("#", "@")):
         row = [float(v) for v in line.split()]
         break
-    if not row:
+    if not row or not col_val:
       sys.stderr.write("make_boresch: pull readback produced no pullx row\n")
       return False
-    return row[1:]
+    return {c: (row[k], row[col_ref[c]] if col_ref.get(c, len(row)) < len(row) else None)
+            for c, k in col_val.items() if k < len(row)}
   except (OSError, ValueError) as e:
     sys.stderr.write("make_boresch: pull readback error: %s\n" % e)
     return False
@@ -2712,7 +3862,7 @@ def verify_pull_block(mdp):
 
 # The FIRST stage is the block whose inits ARE the bound references (u_from = 0),
 # so it is the only stage the readback can compare against the reference
-# structure. Any later stage legitimately sits u_from*pull_dist away and would
+# structure. Any later stage legitimately sits u_from nm away and would
 # false-positive.
 #
 # WHAT THIS CHECK IS FOR, and what it is NOT for. It exists to catch a sign or
@@ -2722,54 +3872,82 @@ def verify_pull_block(mdp):
 # does GROMACS get the same six numbers from args.input that the functions above
 # get from args.input?
 #
-# It is NOT a check that the emitted reference equals args.input. Since the
+# It is NOT a check that the emitted reference EQUALS args.input. Since the
 # references became ensemble means they legitimately do not, and comparing the two
-# made the guard fire on every setup: on test13 the six "mismatches" were exactly
-# the ensemble shift, to four decimals. So the comparison is against SNAP_REF, the
-# single-frame geometry, and the emitted value is printed beside it for context.
-# The ensemble means are covered instead by tests/test_ensemble_refs.py, which
-# pins them to the SAME argument order as the snapshot definitions, so a
-# convention verified here is a convention verified for both.
+# at the convention tolerance made the guard fire on every setup: on test13 the
+# six "mismatches" were exactly the ensemble shift, to four decimals. So the
+# convention is checked against SNAP_REF, the single-frame geometry.
+#
+# WHAT IT LEFT UNCHECKED UNTIL v1.5, and why 1AKJ went through it. The emitted
+# reference was printed beside the snapshot "for context" and compared with
+# nothing. 1AKJ's setup log in the second HADDOCK pass carried phi_A snapshot
+# -118.4, emitted 138.7, and phi_B 139.5 against -116.0, each about 104 degrees
+# apart, and the setup completed; so did 1E6J (115) and 1IQD (111). The convention
+# check passed there, and rightly: this file and GROMACS agreed about the snapshot
+# of -f. The fault sat in the ensemble mean, which v1.4 built
+# from raw COMs of -pbc whole frames with only P3->L1 imaged (see BORESCH_VECTORS),
+# and no check ever put an emitted value next to anything GROMACS measured.
+#
+# So the second question became whether every EMITTED reference lies within the
+# pose gate's limits of the bound pose as GROMACS measures it on -f. But it was
+# asked of the Python references, ref_r and the rest, never of what the mdps
+# carry, and pullx only gave GROMACS's measurement of -f: a build_coords that wrote
+# theta_A's init as theta_B's, theta_B's as theta_A's and phi_A mirrored ran on 2KTF
+# to exit 0, with theta_A written 98.58 against a measured 75.60 and phi_A 70
+# degrees off, while the log printed the right numbers as 'emitted' (review R3).
+#
+# Hence three questions now, see readback_verdict, after every leg's mdp has been
+# read back as text: the CONVENTION, as before; WRITTEN, whether GROMACS read the
+# references this setup computed out of the first stage's mdp; and the POSE,
+# whether what GROMACS read lies within the gate's limits of what it measures. The
+# gate guarantees the pose by construction for what this file computed; GROMACS
+# confirms it for what the legs will run with. The ensemble means themselves are
+# pinned by tests/test_boresch_pbc.py: the snapshot and every ensemble frame go
+# through the same boresch_series, so a convention verified here is a convention
+# verified for both.
+_intended = dict(r=ref_r, thA=ref_thA, thB=ref_thB,
+                 phA=ref_phA, phB=ref_phB, phC=ref_phC)
+_problems = check_written_legs(_intended)
+if _problems:
+  abort("PULL_INIT_MISMATCH",
+        "the leg mdps do not carry the Boresch references this setup computed: %s%s"
+        % ("; ".join(_problems[:6]),
+           "; and %d more" % (len(_problems) - 6) if len(_problems) > 6 else ""))
+sys.stderr.write("make_boresch: every leg mdp carries the computed Boresch "
+                 "references (read back from %d mdps)\n"
+                 % (len({l["mdp"] for l in P.legs()}) + 1))
 _read = verify_pull_block(first_stage_mdp)
 if _read is False:
   abort("PULL_READBACK_FAILED",
         "could not read the emitted pull block back through GROMACS")
 elif _read is not None:
-  # The six Boresch coordinates, in emission order, located by the marker
-  # build_coords set on them rather than by counting back from the end.
-  names = ["r", "theta_A", "theta_B", "phi_A", "phi_B", "phi_C"]
-  want = [SNAP_REF["r"], SNAP_REF["thA"], SNAP_REF["thB"],
-          SNAP_REF["phA"], SNAP_REF["phB"], SNAP_REF["phC"]]
-  emitted = [ref_r, ref_thA, ref_thB, ref_phA, ref_phB, ref_phC]
-  if len(boresch_idx) != 6:
+  # The six Boresch coordinates as the mdp has them, found by their groups.
+  _cols = [written_boresch(first_stage_mdp)[0][k][0] for k in BORESCH_KEYS]
+  if any(c not in _read or _read[c][1] is None for c in _cols):
     abort("PULL_READBACK_FAILED",
-          "expected 6 Boresch coordinates in %s, found %d"
-          % (first_stage_mdp, len(boresch_idx)))
-  got = [_read[i] for i in boresch_idx] if max(boresch_idx) < len(_read) else []
-  bad = []
-  for nm, w, g, e in zip(names, want, got, emitted):
-    if nm == "r":
-      d = abs(g - w)
-      ok = d <= CHECK_TOL_NM
-    else:
-      d = abs(wrap180(g - w))
-      ok = d <= CHECK_TOL_DEG
-    sys.stderr.write("make_boresch: readback %-8s snapshot %10.4f  gromacs "
-                     "%10.4f  diff %8.4f%s   (emitted %10.4f)\n"
-                     % (nm, w, g, d, "" if ok else "   MISMATCH", e))
-    if not ok:
-      bad.append("%s off by %.4f" % (nm, d))
-  if len(got) < 6:
-    abort("PULL_READBACK_FAILED",
-          "pullx returned %d columns, too few to hold the Boresch coordinates "
-          "at %s" % (len(_read), boresch_idx))
-  if bad:
+          "pullx has no value or no reference column for the Boresch coordinates "
+          "%s of %s" % (_cols, first_stage_mdp))
+  got = [_read[c][0] for c in _cols]
+  carried = [_read[c][1] for c in _cols]
+  _first = dict(_intended, r=ref_r + first_stage_u)
+  _lines, _conv, _init, _pose = readback_verdict(got, carried, SNAP_REF, _first)
+  for _ln in _lines:
+    sys.stderr.write(_ln)
+  if _conv:
     abort("PULL_READBACK_MISMATCH",
           "GROMACS does not reproduce this file's own geometry for the reference "
           "structure (%s). A sign or ordering convention here disagrees with the "
-          "pull code; do not run on this setup. Note this compares the SNAPSHOT "
-          "values, not the emitted references, which are ensemble means and are "
-          "expected to differ from any one frame." % "; ".join(bad))
+          "pull code; do not run on this setup. This compares the SNAPSHOT "
+          "values; the written references are checked separately." % "; ".join(_conv))
+  if _init:
+    abort("PULL_INIT_MISMATCH",
+          "GROMACS read Boresch references from %s that are not the ones this "
+          "setup computed (%s)" % (first_stage_mdp, "; ".join(_init)))
+  if _pose:
+    abort("BORESCH_REFERENCE_NOT_A_POSE",
+          "the Boresch references the legs carry are not a pose of the bound "
+          "complex as GROMACS measures it on %s (%s); the pose gate should have "
+          "replaced them, so do not run on this setup" % (args.input, "; ".join(_pose)))
 
 #======================================================
 # Output: number of moving pull coords whose forces feed the pull integrator.

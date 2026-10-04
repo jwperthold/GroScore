@@ -23,6 +23,61 @@ parser.add_argument('--proximity', action='store_true',
 args = parser.parse_args()
 
 
+def resolve_include(name, topdir):
+    """The file an #include "name" in a topology in topdir refers to, searched the
+    way grompp does: the topology's directory, then every GMXLIB entry, then the
+    GROMACS library ($GMXDATA/top, set by GMXRC). pdb2gmx writes a force field found
+    in the GROMACS library as a bare 'amber19sb.ff/opc.itp', which the topology's
+    directory alone does not resolve; the 3-site fallback below would then write
+    OPC's 4-site waters with 3 atoms. None if not found."""
+    if os.path.isabs(name):
+        return name if os.path.isfile(name) else None
+    dirs = [topdir] + [d for d in os.environ.get("GMXLIB", "").split(":") if d]
+    if os.environ.get("GMXDATA"):
+        dirs.append(os.path.join(os.environ["GMXDATA"], "top"))
+    for d in dirs:
+        p = os.path.normpath(os.path.join(d, name))
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def preprocessed(path):
+    """The comment-stripped lines of an .itp that grompp keeps when nothing is
+    defined on the command line (mdp 'define' empty): #ifdef / #ifndef / #else /
+    #endif honoured, nested, with symbols from #define / #undef inside the file.
+    GROMOS 54A8's spc.itp carries its [ atoms ] block twice (#ifndef HEAVY_H ...
+    #else ... #endif); read without this, the site names came out as OW HW1 HW2 OW
+    HW1 HW2, every crystal water was written with 6 atoms against 3 in the SOL
+    topology, and grompp stopped every GROMOS 54A8 setup with crystal waters at
+    stage 0 (1A2K: 4626 coordinates against 4374 topology atoms; 7CEI: 2930
+    against 2567). Rebuilt with this reader, 1A2K writes 252 water atoms for its 84
+    waters, conf_vacbox.gro matches the topology at 4374 atoms, and vacuum
+    minimisation runs for 1A2K and 7CEI alike."""
+    defined, stack = set(), []
+    for line in open(path):
+        s = line.split(';')[0].strip()
+        if not s:
+            continue
+        if s.startswith('#'):
+            tok = s[1:].split()
+            word = tok[0] if tok else ''
+            arg = tok[1] if len(tok) > 1 else ''
+            if word in ('ifdef', 'ifndef'):
+                stack.append((arg in defined) == (word == 'ifdef'))
+            elif word == 'else' and stack:
+                stack[-1] = not stack[-1]
+            elif word == 'endif' and stack:
+                stack.pop()
+            elif word == 'define' and all(stack):
+                defined.add(arg)
+            elif word == 'undef' and all(stack):
+                defined.discard(arg)
+            continue
+        if all(stack):
+            yield s
+
+
 def water_model_sites(topol_path):
     """Read the SOL water model layout from the water .itp #included in the topology.
 
@@ -40,7 +95,8 @@ def water_model_sites(topol_path):
         d_OM = 2*a*sqrt(doH^2 - (dHH/2)^2)    ( = 0.01594 nm = 0.1594 A for OPC )
 
     and the site is placed on the H-O-H bisector at that distance from the oxygen.
-    Falls back to a 3-site model if the water .itp cannot be resolved.
+    Falls back to a 3-site model, with a warning, if the water .itp cannot be
+    resolved.
     """
     default = (['OW', 'HW1', 'HW2'], None)
     if not os.path.isfile(topol_path):
@@ -60,15 +116,14 @@ def water_model_sites(topol_path):
             break
     if not itp_rel:
         return default
-    itp_path = os.path.normpath(os.path.join(topdir, itp_rel))
-    if not os.path.isfile(itp_path):
+    itp_path = resolve_include(itp_rel, topdir)
+    if itp_path is None:
+        print(f"Warning: water topology {itp_rel} not found (topology directory, GMXLIB, "
+              f"GMXDATA/top); assuming a 3-site water")
         return default
     names, section = [], None
     doh = dhh = vsite_a = None
-    for line in open(itp_path):
-        s = line.split(';')[0].strip()
-        if not s:
-            continue
+    for s in preprocessed(itp_path):
         if s.startswith('['):
             section = s.strip('[]').strip().lower()
             continue
@@ -85,6 +140,19 @@ def water_model_sites(topol_path):
     if len(names) >= 4 and None not in (vsite_a, doh, dhh):
         m_dist = 2.0 * vsite_a * math.sqrt(doh ** 2 - (dhh / 2.0) ** 2)
     return names, m_dist
+
+
+def gro_xyz(line):
+    """Coordinates of a .gro atom line by column, the field width taken the way
+    grompp takes it (distance between the first two decimal points, 8 for %8.3f).
+    The split()-based read used before took x from the atom number whenever the
+    residue name was right-justified (merge_ligand.py wrote ligands that way), so
+    --proximity measured to the wrong point and dropped a water next to the 1J2J
+    GTP (audit, extra finding)."""
+    p1 = line.find('.', 20)
+    p2 = line.find('.', p1 + 1) if p1 >= 0 else -1
+    w = (p2 - p1) if (p1 >= 0 and p2 > p1) else 8
+    return float(line[20:20 + w]), float(line[20 + w:20 + 2 * w]), float(line[20 + 2 * w:20 + 3 * w])
 
 
 PROXIMITY_CUTOFF = 0.5  # nm
@@ -131,11 +199,7 @@ if args.proximity:
     prot_coords = []
     for line in existing_atoms:
         try:
-            left = line[:15]
-            right = line[15:]
-            tmp = left.split() + right.split()
-            x, y, z = float(tmp[3]), float(tmp[4]), float(tmp[5])
-            prot_coords.append((x, y, z))
+            prot_coords.append(gro_xyz(line))
         except (ValueError, IndexError):
             pass
 
@@ -152,15 +216,17 @@ if not water_coords:
 
 n_waters = len(water_coords)
 
-# Find max residue number and atom number
+# Find max residue number and atom number. Columns 1-5 only: a residue name that
+# starts with a digit (1PE at residue 368) would otherwise read as residue 3681.
 max_resnum = 0
 max_atomnum = n_existing
 for line in existing_atoms:
-    m = re.match(r"\s*(\d+)", line)
-    if m:
-        r = int(m.group(1))
-        if r > max_resnum:
-            max_resnum = r
+    try:
+        r = int(line[0:5])
+    except ValueError:
+        continue
+    if r > max_resnum:
+        max_resnum = r
 
 # Determine the SOL water model layout from the topology's included water .itp.
 # 3-point models (SPC/TIP3P/OPC3) have 3 atoms; 4-point models (OPC/TIP4P) add an
