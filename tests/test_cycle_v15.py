@@ -43,7 +43,10 @@ HADDOCK benchmark, 46 complexes, v1.3 physics).
       leg, not just npt_c: a cycle whose npt_c, or all but one leg, finished under
       an older setup stops too (review CYC-5: a guard on npt_c alone passed every
       check here before), and only a cycle with every leg done goes on, to
-      integration, with no gmx call.
+      integration, with no gmx call. An unfinished run is never continued: an NVT
+      stage that dies stops the cycle with nothing built on its checkpoint, one an
+      earlier job left unfinished gets a new tpr from the finished stage before it,
+      and no mdrun is ever given -cpi.
   [6] THE BOX. The measured padding is clamped into [FLOOR, 4.0], never discarded:
       v1.3 replaced eleven requests of 4.16-7.74 nm by the 1.8 fallback (setup.txt
       S5). 3.99 and 4.00 pass unchanged, 4.01 and 2AJF's 7.737 become 4.0, the
@@ -164,7 +167,11 @@ while [[ $# -gt 0 ]]; do
 done
 case "$sub" in
   grompp)   [[ -n "$out" ]] && touch "${out%.tpr}.tpr" ;;
-  mdrun)    [[ -n "$deffnm" ]] && touch "$deffnm.gro" "$deffnm.cpt" ;;
+  mdrun)    # FAIL_DEFFNM: that run dies part way, leaving a checkpoint and no .gro
+            if [[ -n "${FAIL_DEFFNM:-}" && "$deffnm" == "$FAIL_DEFFNM" ]]; then
+              touch "$deffnm.cpt"; exit 1
+            fi
+            [[ -n "$deffnm" ]] && touch "$deffnm.gro" "$deffnm.cpt" ;;
   editconf) [[ -n "$out" ]] && touch "$out" ;;
 esac
 exit 0
@@ -230,6 +237,7 @@ _RUN_BG = [block(r"^%s\(\) \{$" % n, r"^\}$") for n in ("proc_start", "run_bg")]
 if RUN_LEG_MDRUN is not None:
     RUN_LEG_MDRUN = None if None in _RUN_BG else "".join(_RUN_BG) + RUN_LEG_MDRUN
 REQUIRE_GRO = block(r"^  require_gro\(\) \{$", r"^  \}$")
+EQ_STAGE = block(r"^  eq_stage\(\) \{$", r"^  \}$")
 EXPORT = shell_export()
 
 # ---------------------------------------------------------------------------
@@ -544,17 +552,23 @@ print("\n[5] npt_c runs ./npt_c_fe.mdp, which the setup provides and checks")
 HEAD = block(r'echo "=== FE cycle \$cycle of \$NUMCYCLES ==="',
              r"^    require_gro npt_c\$\{cycle\} \|\|")
 check("the cycle header through npt_c's require_gro is extractable",
-      None not in (HEAD, RUN_LEG_MDRUN, REQUIRE_GRO))
+      None not in (HEAD, RUN_LEG_MDRUN, REQUIRE_GRO, EQ_STAGE))
 
 
 ALL_DONE = ["npt_c1"] + ["%s_1" % x for x in NAMES]
+MDRUNS = []          # the mdrun calls of the last drive_nptc, as logged
 
 
-def drive_nptc(with_file, done=(), proto=WANT_ID):
+def drive_nptc(with_file, done=(), proto=WANT_ID, fail=None, partial=()):
     """The verbatim cycle header for cycle 1. with_file: ./npt_c_fe.mdp exists;
     done: outputs (npt_c1, <leg>_1) already finished, with .gro, .tpr and .cpt;
-    proto: the text of protocol_id.gs, None for no file."""
+    proto: the text of protocol_id.gs, None for no file; fail: the one -deffnm
+    whose mdrun dies, leaving a .cpt and no .gro; partial: outputs an earlier job
+    left unfinished, a .tpr and a .cpt but no .gro."""
     with tempfile.TemporaryDirectory() as d:
+        for n in partial:
+            for ext in ("tpr", "cpt"):
+                open(os.path.join(d, "%s.%s" % (n, ext)), "w").close()
         os.makedirs(os.path.join(d, "mdp"))
         open(os.path.join(d, "mdp", "npt_fe.mdp"), "w").close()   # the old target
         if with_file:
@@ -568,22 +582,28 @@ def drive_nptc(with_file, done=(), proto=WANT_ID):
         log = os.path.join(d, "gmx.log")
         script = ("set -u\nnt=1; GPUOPT=''; MDP_DIR=%s/mdp; NUMCYCLES=1; CYCLE_FAILED=0\n"
                   "release_cycle_lock() { :; }\n" % d + RUN_LEG_MDRUN + REQUIRE_GRO +
-                  DECLARE + 'eval "$FEPROTO"\ncycle=1; CYCLE_END=1\n'
+                  EQ_STAGE + DECLARE + 'eval "$FEPROTO"\ncycle=1; CYCLE_END=1\n'
                   "while [[ $cycle -le $CYCLE_END ]]; do\n" + HEAD +
                   'echo "REACHED_LEGS"\ncycle=$((cycle+1))\ndone\n'
                   'echo "CYCLE_FAILED=$CYCLE_FAILED"\n')
         os.environ["FEPROTO"] = EXPORT
-        r = run_bash(script, d, log)
+        if fail:
+            os.environ["FAIL_DEFFNM"] = fail
+        try:
+            r = run_bash(script, d, log)
+        finally:
+            os.environ.pop("FAIL_DEFFNM", None)
         calls, order = grompp_calls(log)
-        nlog = len(open(log).readlines()) if os.path.isfile(log) else 0
-        return r, calls, nlog
+        logl = open(log).readlines() if os.path.isfile(log) else []
+        MDRUNS[:] = [l.strip() for l in logl if l.startswith("mdrun")]
+        return r, calls, len(logl)
 
 
 def stopped(r, n):
     return "REACHED_LEGS" not in r.stdout and "CYCLE_FAILED=1" in r.stdout and n == 0
 
 
-if None not in (HEAD, RUN_LEG_MDRUN, REQUIRE_GRO):
+if None not in (HEAD, RUN_LEG_MDRUN, REQUIRE_GRO, EQ_STAGE):
     r, calls, _ = drive_nptc(True)
     check("npt_c is grompp'd with -f ./npt_c_fe.mdp",
           calls.get("npt_c1", {}).get("-f") == "./npt_c_fe.mdp", calls.get("npt_c1"))
@@ -637,6 +657,26 @@ if None not in (HEAD, RUN_LEG_MDRUN, REQUIRE_GRO):
     r, calls, n = drive_nptc(True, proto="  %s  \n\n" % WANT_ID)
     check("  the right id with surrounding blanks runs", "REACHED_LEGS" in r.stdout
           and calls.get("npt_c1", {}).get("-f") == "./npt_c_fe.mdp", r.stdout[-200:])
+
+    # AN UNFINISHED RUN IS NEVER CONTINUED. The ladder used to grompp each stage from
+    # the checkpoint of the one before, finished or not, and mdrun resumed a dead
+    # stage with -cpi. Now a stage is built only from a finished one (its .gro), with
+    # a new tpr, and every attempt starts from step 0.
+    r, calls, n = drive_nptc(True, fail="nvt_2_c1")
+    nvt2 = [l for l in MDRUNS if "-deffnm nvt_2_c1" in l]
+    check("an NVT stage that dies twice stops the cycle; nothing is built on it",
+          "REACHED_LEGS" not in r.stdout and "CYCLE_FAILED=1" in r.stdout
+          and "nvt_3_c1" not in calls and len(nvt2) == 2, (sorted(calls), nvt2))
+    check("  both attempts start from step 0 (no -cpi)",
+          nvt2 and not [l for l in nvt2 if "-cpi" in l], nvt2)
+    r, calls, n = drive_nptc(True, done=["nvt_1_c1"], partial=["nvt_2_c1"])
+    nvt2 = [l for l in MDRUNS if "-deffnm nvt_2_c1" in l]
+    check("a stage an earlier job left unfinished gets a new tpr from the finished one",
+          calls.get("nvt_2_c1", {}).get("-t") == "nvt_1_c1.cpt" and "nvt_1_c1" not in calls,
+          calls.get("nvt_2_c1"))
+    check("  and runs from step 0, then the cycle goes on",
+          len(nvt2) == 1 and "-cpi" not in nvt2[0] and "REACHED_LEGS" in r.stdout,
+          (nvt2, r.stdout[-200:]))
 else:
     for what in ("npt_c is grompp'd with -f ./npt_c_fe.mdp",
                  "  and the cycle goes on to the legs",
@@ -648,8 +688,12 @@ else:
                  "no protocol_id.gs", "  saying so", "protocol_id.gs of another protocol",
                  "  naming both protocols", "  no protocol_id.gs, npt_c finished",
                  "  no protocol_id.gs, all but the last", "  no protocol_id.gs, every leg",
-                 "  the right id with surrounding blanks runs"):
+                 "  the right id with surrounding blanks runs",
+                 "an NVT stage that dies twice stops the cycle",
+                 "a stage an earlier job left unfinished gets a new tpr"):
         check(what, False, "block not extractable")
+check("no mdrun in job_fe.run continues a checkpoint (-cpi)", "-cpi" not in SRC,
+      line_no(r"-cpi"))
 check("no grompp in job_fe.run reads $MDP_DIR/npt_fe.mdp any more",
       not line_no(r"gmx grompp.*npt_fe\.mdp"), line_no(r"gmx grompp.*npt_fe\.mdp"))
 

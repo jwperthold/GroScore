@@ -283,6 +283,8 @@ mol3, notes3, probs3 = build(gdp_pdb(short), "GDP")
 check("one oxygen missing: not the exact entry, built by OpenBabel and said why",
       notes3 and notes3[0].startswith("bond orders from OpenBabel") and "28 heavy atoms, 27 are deposited" in " ".join(notes3 + probs3),
       "%s %s" % (notes3[:1], probs3[:2]))
+check("  naming the atom not deposited: '27 are deposited (not deposited: O2B)'",
+      "28 heavy atoms, 27 are deposited (not deposited: O2B)" in " ".join(notes3 + probs3), " ".join(notes3 + probs3)[:300])
 
 print("\n[L3] without the entry, OpenBabel's guanine tautomer is flagged")
 real_fetch = C.fetch

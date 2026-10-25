@@ -56,6 +56,11 @@
 # explicit pH 7.4 acid rules below. The itp header names the source, the CCD entry's
 # modification date and where it was read from.
 #
+# BEFORE ANY OF THAT, the elements: a ligand with an element the OpenFF force field
+# types no atom of (uncovered_elements; aluminium in openff-2.2.1, so the AlF3 of
+# 1GRN and 1WQ1) stops at once, with the element named. It used to go through a CCD
+# build, OpenBabel and an UnassignedBondError whose text was cut mid-sentence.
+#
 
 import os
 import sys
@@ -198,6 +203,23 @@ def record_failure(path, inst, reason):
         os.replace(tmp, path)
     elif os.path.isfile(path):
         os.remove(path)
+
+
+REASON_MAX = 400
+
+
+def short_reason(text, limit=REASON_MAX):
+    """`text` with its whitespace collapsed, at most `limit` characters, cut at a word
+    and saying so. The ligand_failed.gs line and the stage-0 message carry it; the job
+    log has the full text. A bare text[:240] ended the AlF3 line of 1GRN and 1WQ1 in
+    '(0, 3): names and elements', which read as a broken record."""
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit)
+    if cut < limit // 2:
+        cut = limit
+    return "%s [... %d more characters, see the job log]" % (text[:cut].rstrip(" ,;:"), len(text) - cut)
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +744,35 @@ def name_misfit(comp, mapping, heavy_ref):
     return None
 
 
+def name_difference(cheavy, dep_names):
+    """' (not deposited: O2)' for a heavy-atom count that differs from the CCD entry's:
+    by atom name, the entry's heavy atoms that were not deposited (a leaving atom
+    marked '*') and the deposited ones the entry lacks, names separated by spaces.
+    Judged by the CCD atom_id or alt_atom_id, whichever names more deposited atoms,
+    and only when the names can be trusted: every deposited name distinct, and one
+    set of names inside the other. Otherwise '' (renamed or generic names, C1 C2 ...,
+    of which a few would match by chance and make atoms that are there read as
+    missing). The count alone left the 1RLB REA, deposited without its O2, reading
+    like any other mismatch."""
+    dep = set(dep_names)
+    if len(dep) != len(dep_names):
+        return ""
+    best = max(("name", "alt"), key=lambda k: len(dep & {a[k] for a in cheavy}))
+    names = {a[best] for a in cheavy}
+    if not (dep <= names or names <= dep):
+        return ""
+
+    def listed(xs):
+        return " ".join(xs[:8]) + (" ..." if len(xs) > 8 else "")
+    gone = [a[best] + ("*" if a.get("leaving") else "") for a in cheavy if a[best] not in dep]
+    extra = sorted(dep - names)
+    parts = (["not deposited: " + listed(gone)] if gone else []) + (
+        ["not in the entry: " + listed(extra)] if extra else [])
+    if any(g.endswith("*") for g in gone):
+        parts.append("* = a leaving atom")
+    return " (%s)" % ", ".join(parts) if parts else ""
+
+
 def ccd_mapping(comp, heavy_ref, pdb_content):
     """({deposited heavy index: CCD atom name}, how) when the CCD entry's heavy atoms are
     exactly the deposited ones, else (None, why not). By atom name first (CCD atom_id,
@@ -744,7 +795,8 @@ def ccd_mapping(comp, heavy_ref, pdb_content):
     named = "" if misfit is None else (
         "; its atom names would bond %s-%s at %.2f A" % misfit)
     if len(cheavy) != len(heavy_ref):
-        return None, "the CCD entry %s has %d heavy atoms, %d are deposited" % (comp["id"], len(cheavy), len(heavy_ref))
+        return None, "the CCD entry %s has %d heavy atoms, %d are deposited%s" % (
+            comp["id"], len(cheavy), len(heavy_ref), name_difference(cheavy, dep_names))
     lines = [l for l in pdb_content.splitlines() if l.startswith(("ATOM  ", "HETATM")) and element_of(l) != "H"]
     dep = Chem.MolFromPDBBlock("\n".join(lines) + "\nEND\n", removeHs=False, sanitize=False, proximityBonding=True)
     if dep is None or dep.GetNumAtoms() != len(heavy_ref):
@@ -1296,13 +1348,95 @@ def am1bcc_charges(offmol, clock=time.monotonic):
     raise LigandFailure("AM1-BCC charges failed (antechamber/sqm): " + "; ".join(failed))
 
 
-def make_interchange(ff, offmol):
+def uncovered_elements(ff, symbols):
+    """(elements, typed): the elements among `symbols` (PDB element symbols such as
+    'AL'), in order and once each, that the OpenFF force field `ff` types no atom of,
+    and the symbols of the elements it does type. An element is typed when a vdW
+    parameter is written for an atom of it (the ':1' atom of its SMIRKS); without a vdW
+    term an atom cannot be parametrised at all, whatever its chemistry, and Sage has no
+    other term for such an element either. openff-2.2.1 types H, Li, C, N, O, F, Na,
+    P, S, Cl, K, Br, Rb, I, Xe and Cs (of these it has bond and angle terms only for
+    H, C, N, O, F, P, S, Cl, Br and I: a bonded Li or Xe gets past this and fails in
+    make_interchange, by element). It has no aluminium term of any kind, which is why
+    the AlF3 of 1GRN and 1WQ1 can never be built. An empty symbol or one that is no
+    element is left to the later stages, and so is everything when a vdW SMIRKS writes
+    its ':1' atom in a form this does not read (no '#<number>', or a '!' or '$(':
+    a force field whose elements cannot be read is never taken to refuse one)."""
+    import re
+    from rdkit import Chem, RDLogger
+    pt = Chem.GetPeriodicTable()
+    typed = set()
+    for p in ff.get_parameter_handler("vdW").parameters:
+        for tagged in re.findall(r"\[([^\]]*):1\]", p.smirks):
+            zs = re.findall(r"#(\d+)", tagged)
+            if not zs or "!" in tagged or "$(" in tagged:
+                return [], []
+            typed.update(int(z) for z in zs)
+    RDLogger.DisableLog("rdApp.error")      # GetElementSymbol beyond the table logs a backtrace
+    try:
+        number = {}
+        for z in range(1, 119):
+            try:
+                number[pt.GetElementSymbol(z)] = z
+            except Exception:
+                break
+    finally:
+        RDLogger.EnableLog("rdApp.error")
+    out = []
+    for s in symbols:
+        sym = s[:1].upper() + s[1:].lower()
+        z = number.get(sym)
+        if z is not None and z not in typed and sym not in out:
+            out.append(sym)
+    return out, [pt.GetElementSymbol(z) for z in sorted(typed)]
+
+
+# What an OpenFF Unassigned*Error is about, by the handler its message names.
+UNASSIGNED_KIND = {"Bond": "bond", "Angle": "angle", "ProperTorsion": "torsion",
+                   "ImproperTorsion": "improper torsion", "vdW": "vdW"}
+
+
+def unassigned_reason(e, offmol, ff_name):
+    """'openff-2.2.1.offxml has no bond parameters for Al-F (3 terms); UnassignedBondError'
+    from an OpenFF Unassigned*Error, by the elements of the atoms it lists; its own
+    text, shortened, when that cannot be read. The raw message lists every term with
+    its topology indices and ran to hundreds of characters for a 4-atom ligand (the
+    caller prints it to the job log). A term is named the same whichever way round its
+    atoms are numbered: the lesser of the element sequence and its reverse, and for an
+    improper the central atom (the second) first, the others sorted."""
+    import re
+    text = str(e)
+    m = re.search(r"(\w+?)Handler was not able to find parameters", text)
+    terms = re.findall(r"Topology indices \(([\d,\s]+)\)", text)
+    counts = {}
+    try:
+        for t in terms:
+            syms = [offmol.atoms[int(i)].symbol for i in t.replace(",", " ").split()]
+            if m and m.group(1) == "ImproperTorsion" and len(syms) == 4:
+                syms = [syms[1]] + sorted(syms[:1] + syms[2:])
+            else:
+                syms = min(syms, syms[::-1])
+            key = "-".join(syms)
+            counts[key] = counts.get(key, 0) + 1
+    except (IndexError, ValueError):
+        counts = {}
+    if not m or not counts:
+        return "%s: %s" % (type(e).__name__, short_reason(text))
+    listed = ", ".join("%s (%d term%s)" % (k, n, "" if n == 1 else "s")
+                       for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    return "%s has no %s parameters for %s; %s" % (
+        ff_name, UNASSIGNED_KIND.get(m.group(1), m.group(1)), listed, type(e).__name__)
+
+
+def make_interchange(ff, offmol, ff_name="the OpenFF force field"):
     """(interchange, charge note): OpenFF parameters with AM1-BCC charges.
 
     The valence parameters are assigned first, with the formal charges as placeholder
     partial charges (Interchange requires them to sum to the net charge), so that a
-    ligand OpenFF cannot type (the AlF3 of 1WQ1 and 1GRN: no Al-F bond term) fails
-    with that reason before any sqm run is spent on it."""
+    ligand OpenFF cannot type fails with that reason, as a LigandFailure that names the
+    missing terms by element (unassigned_reason), before any sqm run is spent on it.
+    An element the force field has no term for at all is caught before this, by
+    uncovered_elements()."""
     import numpy as np
     from openff.toolkit import Molecule, Topology
     from openff.interchange import Interchange
@@ -1313,7 +1447,16 @@ def make_interchange(ff, offmol):
     probe.partial_charges = unit.Quantity(
         np.array([a.formal_charge.m_as(unit.elementary_charge) for a in offmol.atoms], dtype=float),
         unit.elementary_charge)
-    Interchange.from_smirnoff(ff, topology, charge_from_molecules=[probe])
+    try:
+        Interchange.from_smirnoff(ff, topology, charge_from_molecules=[probe])
+    except Exception as e:
+        if type(e).__name__.startswith("Unassigned"):
+            # The full term list, with atom indices, goes to the job log; the
+            # ligand_failed.gs line gets the summary by element.
+            sys.stdout.flush()
+            traceback.print_exc()
+            raise LigandFailure(unassigned_reason(e, offmol, ff_name)) from e
+        raise
     charges, note = am1bcc_charges(offmol)
     charged = Molecule(offmol)
     charged.partial_charges = unit.Quantity(np.array(charges), unit.elementary_charge)
@@ -1370,6 +1513,19 @@ def write_ff_ion(args, inst, atoms, source):
     append_manifest(molname, "-", "-", gro_path, 1, inst, source)
 
 
+def failure_flag(problems):
+    """The ligand_failed.gs reason of a molecule built with `problems` ('' for none):
+    its own first three, 'and N more', then why the CCD entry was not used. That
+    reason stays last (review L-8) but is always shown: behind 'and N more' it hid the
+    cause of 1RLB's line, the O2 of the REA entry that was not deposited."""
+    if not problems:
+        return ""
+    ccd_miss = [p for p in problems if p.startswith("no exact CCD entry")]
+    own = [p for p in problems if p not in ccd_miss]
+    shown = own[:3] + (["and %d more" % (len(own) - 3)] if len(own) > 3 else []) + ccd_miss
+    return "built, but not the deposited molecule: " + "; ".join(shown)
+
+
 def parametrize(args, pdb_content, inst):
     """Build and write one ligand instance. Returns the flag reason ('' when the
     ligand is right); raises LigandFailure (or anything else) when it cannot."""
@@ -1385,6 +1541,14 @@ def parametrize(args, pdb_content, inst):
     if len(heavy) == 1 and heavy[0][1] in FF_HALIDES and len(atoms) == 1:
         write_ff_ion(args, inst, heavy, source)
         return ""
+
+    from openff.toolkit import Molecule, ForceField
+    ff = ForceField(args.ff)
+    missing, typed = uncovered_elements(ff, [a[1] for a in heavy])
+    if missing:
+        raise LigandFailure("%s has no parameters for %s (it types only %s), so no ligand containing %s can be "
+                            "parametrised" % (args.ff, " or ".join(missing), " ".join(typed),
+                                              "it" if len(missing) == 1 else "them"))
 
     # The CCD identifier is the residue name of the records (inst[0]), not -r: the
     # runners take -r from the file name, which for a chain outside A-Z reads 'GDP_a'
@@ -1408,19 +1572,14 @@ def parametrize(args, pdb_content, inst):
 
     total_charge = Chem.GetFormalCharge(mol_rdkit)
     print(f"RDKit: {mol_rdkit.GetNumAtoms()} atoms, SMILES: {Chem.MolToSmiles(mol_rdkit)}")
-    flag = ""
-    if problems:
-        flag = "built, but not the deposited molecule: " + "; ".join(problems[:3])
-        if len(problems) > 3:
-            flag += "; and %d more" % (len(problems) - 3)
+    flag = failure_flag(problems)
+    if flag:
         print(f"WARNING: {args.resname} {inst[1]} {inst[2]} is not the deposited molecule ({flag}); "
               f"recorded in {LIGAND_FAILED}", file=sys.stderr)
 
-    from openff.toolkit import Molecule, ForceField
     offmol = Molecule.from_rdkit(mol_rdkit, allow_undefined_stereo=True)
     print(f"OpenFF: {offmol.n_atoms} atoms")
-    ff = ForceField(args.ff)
-    interchange, charge_note = make_interchange(ff, offmol)
+    interchange, charge_note = make_interchange(ff, offmol, args.ff)
     notes.append(charge_note)
     print(f"Parametrized with {args.ff}")
 
@@ -1541,14 +1700,13 @@ def main():
         flag = parametrize(args, pdb_content, inst)
     except LigandFailure as e:
         print(f"Error: {inst[0]} {inst[1]} {inst[2]}: {e}", file=sys.stderr)
-        record_failure(LIGAND_FAILED, inst, str(e))
+        record_failure(LIGAND_FAILED, inst, short_reason(e))
         sys.exit(1)
     except Exception as e:
         # OpenFF, sqm, RDKit or network errors: keep the traceback the log always had
         sys.stdout.flush()
         traceback.print_exc()
-        text = " ".join(str(e).split())
-        record_failure(LIGAND_FAILED, inst, "%s: %s" % (type(e).__name__, text[:240]))
+        record_failure(LIGAND_FAILED, inst, "%s: %s" % (type(e).__name__, short_reason(e)))
         sys.exit(1)
     record_failure(LIGAND_FAILED, inst, flag or None)
 

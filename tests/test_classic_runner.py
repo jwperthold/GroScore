@@ -17,10 +17,12 @@ in v15_work/digest_audit (runner and scorer lenses) and digest_review (critic).
       coordinate count; archived without job_run.lock. Under AMBER19SB with
       ligands on, fuse_glycans.py runs first and renumber_pdb.py reads fused.pdb
       (decision of 2026-10-04; tests/test_glycan_runner.py has the rest).
-  [2] a pull that dies twice with a checkpoint (R2, SCORER-1): retried from the
-      checkpoint, never integrated, nothing grompped from it, the cycle's row NaN,
-      no .done, no archive, exit 1. The next run resumes it and finishes the cycle
-      without touching the finished one (no gmx call, no integration).
+  [2] a pull that dies twice with a checkpoint (R2, SCORER-1): retried from step
+      0, never from the checkpoint the dead run left (an unfinished run is never
+      continued), never integrated, nothing grompped from it, the cycle's row NaN,
+      no .done, no archive, exit 1. The next run runs it again from step 0 and
+      finishes the cycle without touching the finished one (no gmx call, no
+      integration).
   [3] a push that dies, a push whose force file stops at 3000 of 5000 ps although
       the leg wrote its .gro, and a leg rescued by the in-job retry.
   [4] a legacy splice: nptrev and bindrev left by v1.4, built from the dead pull's
@@ -390,8 +392,8 @@ rootB = make_root()
 new_structure(rootB)
 r = run_job(rootB, scenario="bindfwd_1 die 0.4 yes 2\n")
 md = [l for l in mdruns(rootB) if "-deffnm bindfwd_1" in l]
-check("two attempts, the second from the checkpoint",
-      len(md) == 2 and "-cpi" not in md[0] and "-cpi bindfwd_1.cpt" in md[1], md)
+check("two attempts, both from step 0, never from the dead run's checkpoint",
+      len(md) == 2 and not [l for l in md if "-cpi" in l], md)
 check("nothing is grompped from the dead pull (no nptrev_2)", "nptrev_2" not in grompps(rootB),
       grompps(rootB))
 check("its force file is never integrated (v1.4: -40.0)", "bindfwd_1.xvg" not in integrated(rootB),
@@ -407,7 +409,8 @@ if archived(rootB):
 open(os.path.join(sdir(rootB), "scenario.txt"), "w").close()
 r = run_job(rootB)
 md = [l for l in mdruns(rootB) if "-deffnm bindfwd_1" in l]
-check("restart: the pull resumes from its checkpoint", len(md) == 1 and "-cpi bindfwd_1.cpt" in md[0], md)
+check("restart: the pull runs again from step 0, not from its checkpoint",
+      len(md) == 1 and "-cpi" not in md[0], md)
 check("  nptrev_2 and bindrev_2 are built from the finished pull",
       grompps(rootB) == ["nptrev_2", "bindrev_2"], grompps(rootB))
 w1 = works(row(rootB, 1))
@@ -440,8 +443,8 @@ new_structure(rootK)
 r = run_job(rootK, scenario="bindfwd_1 die 0.4 yes 1 cut\n")
 md = [l for l in mdruns(rootK) if "-deffnm bindfwd_1" in l]
 w1 = works(row(rootK, 1))
-check("a pull that dies once is rescued by the retry from its checkpoint",
-      len(md) == 2 and "-cpi bindfwd_1.cpt" in md[1] and w1 and near(w1[0], -100), (md, row(rootK, 1)))
+check("a pull that dies once is rescued by the retry, from step 0",
+      len(md) == 2 and "-cpi" not in md[1] and w1 and near(w1[0], -100), (md, row(rootK, 1)))
 check("  exit 0, archived", r.returncode == 0 and archived(rootK), r.returncode)
 
 # ---------------------------------------------------------------------------

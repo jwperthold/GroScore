@@ -39,10 +39,12 @@ the same, so every path below is the runner's own control flow, in seconds.
       (--no-ligand-param) or off-ff (CHARMM36, GROMOS 54A8), and the ligands are
       parametrised only when on (contract F4); so are the glycans fused
       (fuse_glycans.py, then renumber_pdb.py -f fused.pdb; decision of 2026-10-04).
+      A parametrisation that exits non-zero without recording a reason gets its
+      line from the runner, as in job.run, and stops the structure.
  [10] A RE-RUN AFTER PROBE_FAIL RESUMES THE PROBE (review S4): after an unreadable
       box padding it measures again on the finished replicas, after a replica that
-      died twice it resumes that replica from its checkpoint; neither redoes the
-      setup or a finished replica.
+      died twice it runs that replica again from step 0, never from the checkpoint
+      the dead run left; neither redoes the setup or a finished replica.
 
 Standalone, no pytest: python3 tests/test_fe_runner_guards.py
 """
@@ -155,6 +157,15 @@ for lig in filter(None, os.environ.get("FAKE_LIGANDS", "").split(",")):
     open("ligand_%s.pdb" % lig, "w").write("HETATM    1  S   SO4 A 401       0.000   0.000   0.000  1.00  0.00           S\n")
 """
 
+# PL_RC: parametrize_ligand.py exits with that status, after writing the line
+# PL_REASON for its instance when that is set, without any line otherwise.
+PARAM_LIG = r"""
+if os.environ.get("PL_REASON"):
+    open("ligand_failed.gs", "a").write("SO4 A 401 %s\n" % os.environ["PL_REASON"])
+if os.environ.get("PL_RC"):
+    sys.exit(int(os.environ["PL_RC"]))
+"""
+
 STUBS = {
     "check_brokenloop.py": 'print("0")\n', "check_entangledloops.py": 'print("0")\n',
     "measure_box.py": 'print("1.500")\n', "make_boresch.py": MAKE_BORESCH,
@@ -162,10 +173,10 @@ STUBS = {
     "integrate.py": 'print("1.0")\n', "integrate_dhdl.py": 'print("1.0")\n',
     "rebound_rmsd.py": 'print("1.0")\n',
     "interface_qc.py": 'print("recovered 1.0 formed 1.0 rms_dev 0.0 sc_rmsd 0.0 npairs 1")\n',
-    "fuse_glycans.py": FUSE, "renumber_pdb.py": RENUMBER,
+    "fuse_glycans.py": FUSE, "renumber_pdb.py": RENUMBER, "parametrize_ligand.py": PARAM_LIG,
 }
 for name in ("fix_pdb.py", "cap_termini.py", "fix_ion_protonation.py",
-             "parametrize_ncaa.py", "parametrize_ligand.py", "make_cutout.py",
+             "parametrize_ncaa.py", "make_cutout.py",
              "merge_crystal_waters.py", "make_ion_restraints.py",
              "fix_topol_intermolecular.py", "make_cluster_group.py"):
     STUBS[name] = "pass\n"
@@ -540,6 +551,23 @@ with tempfile.TemporaryDirectory() as tmp:
               sb.status(sid)[-1:] == ["LIGAND_FAIL"] and r.returncode == 0,
               (r.returncode, sb.status(sid)))
 
+    # The exit status of parametrize_ligand.py is not ignored, as in job.run: one that
+    # dies before it records anything gets its line from the runner, and one that
+    # recorded its own reason gets no second line.
+    for sid, extra, want in (
+            ("L5", dict(PL_RC="1"), ["SO4 A 401 parametrize_ligand.py exited 1 without recording a reason"]),
+            ("L6", dict(PL_RC="1", PL_REASON="its own reason"), ["SO4 A 401 its own reason"])):
+        s9 = sb.struct(sid, "A 2 1 amber19sb_opc3 1")
+        r = sb.job(s9, ("--setup",), FAKE_LIGANDS="SO4_A", **extra)
+        lf = os.path.join(s9, "ligand_failed.gs")
+        got = [l.rstrip("\n") for l in open(lf) if l.strip()] if os.path.isfile(lf) else []
+        check("parametrize_ligand.py exits 1%s: ligand_failed.gs is %s" % (
+              " after recording its reason" if "PL_REASON" in extra else " without a reason",
+              "its own line, once" if "PL_REASON" in extra else "the runner's line"),
+              got == want and "failed to parametrise (exit 1)" in r.stdout, (got, r.stdout[-300:]))
+        check("  and the structure stops as LIGAND_FAIL, exit 0",
+              sb.status(sid)[-1:] == ["LIGAND_FAIL"] and r.returncode == 0, (r.returncode, sb.status(sid)))
+
     # -----------------------------------------------------------------------
     print("\n[10] a re-run after PROBE_FAIL resumes the probe, as its messages say")
     # The restart recovery (conf.gro but no emin_solv.gro) fired after every
@@ -583,15 +611,15 @@ with tempfile.TemporaryDirectory() as tmp:
                                  '    fi\n', 1))
     sbb = sb.struct("PB")
     r = sb.job(sbb, ("--setup",))
-    check("a probe replica that dies twice: PROBE_FAIL, 'resumes from npt_probe3.cpt'",
-          sb.status("PB")[-1:] == ["PROBE_FAIL"] and "resumes from npt_probe3.cpt" in r.stdout,
+    check("a probe replica that dies twice: PROBE_FAIL, 'runs npt_probe3 again from step 0'",
+          sb.status("PB")[-1:] == ["PROBE_FAIL"] and "runs npt_probe3 again from step 0" in r.stdout,
           (sb.status("PB"), r.stdout[-300:]))
     touch(sbb, ".p3_ok", text="")
     r = sb.job(sbb, ("--setup",))
     p3 = [l for l in sb.gmx() if l.startswith("mdrun") and "-deffnm npt_probe3" in l]
-    check("  the re-run resumes replica 3 from its checkpoint, re-runs neither 1 nor 2",
+    check("  the re-run runs replica 3 again from step 0 (no -cpi), re-runs neither 1 nor 2",
           "Restart recovery" not in r.stdout and replica_runs() == ["npt_probe3", "npt_probe4", "npt_probe5"]
-          and p3 and all("-cpi npt_probe3.cpt" in l for l in p3), (replica_runs(), p3))
+          and p3 and not [l for l in p3 if "-cpi" in l], (replica_runs(), p3))
     check("  and completes the setup", "Setup complete for PB" in r.stdout and r.returncode == 0,
           (r.returncode, r.stdout[-300:]))
     with open(gmx_path, "w") as f:

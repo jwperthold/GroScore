@@ -919,15 +919,45 @@ def setup_is_complete(sid):
       pass
   return False
 
-def hold_reason(sid, have, wants):
+# Stage-0 verdicts the structure itself decides: its input, its loops, its ligand
+# chemistry. A new setup would reach the same one, so a structure whose last
+# results_0.gs status is one of these gets no job. A --restart used to submit its
+# setup again, and its cycle array, whose tasks only read the status and exited
+# (bm_fe_amber_3a: 1GRN, 1WQ1, 1RLB, three setups and 60 empty tasks). The other
+# failures (FAILED, PROBE_FAIL, BORESCH_FAIL, ...) can be a step that a new attempt
+# gets through, and are submitted again as before.
+STAGE0_FINAL = ("LIGAND_FAIL", "BROKEN", "ENTANGLED")
+
+# ligand_failed.gs lines that record a crash or a kill rather than a verdict on the
+# ligand: parametrize_ligand.py's first line, and the runners' line for one that
+# exited without recording a reason. A LIGAND_FAIL with such a line, or without any
+# line (merge_ligand.py or fuse_glycans.py crashed), may pass on another attempt, so
+# it is not held.
+LIGAND_CRASH = ("parametrisation started but did not finish", "without recording a reason")
+
+
+def ligand_fail_is_final(sid):
+    """True when ./sid/ligand_failed.gs holds lines and none records a crash or a kill."""
+    try:
+        with open(os.path.join(".", sid, "ligand_failed.gs")) as f:
+            lines = [l for l in f if l.strip()]
+    except OSError:
+        return False
+    return bool(lines) and not any(t in l for l in lines for t in LIGAND_CRASH)
+
+def hold_reason(sid, have, wants, status=None):
   """(TOKEN, detail) if the structure directory ./sid must get no job, else None.
 
-  `have` is the set of cycles results_fe.d already holds for it and `wants` whether
-  anything would be submitted. Looks and changes nothing.
+  `have` is the set of cycles results_fe.d already holds for it, `wants` whether
+  anything would be submitted and `status` its last results_0.gs status, if that is
+  a failure (read_status). Looks and changes nothing.
 
     OTHER_PROTOCOL      its setup belongs to another protocol or predates v1.5.
                         Held even with nothing to submit: this code must not even
                         install its job.run there.
+    STAGE0_FINAL        its setup ended in one of STAGE0_FINAL, which another
+                        setup would repeat; a LIGAND_FAIL only when ligand_failed.gs
+                        holds a verdict, not a crash (ligand_fail_is_final).
     ROWS_WITHOUT_SETUP  results_fe.d holds rows for it, but its directory holds no
                         record of any setup, neither setup.done nor protocol_id.gs:
                         a structure directory recreated inside a run directory that
@@ -945,6 +975,8 @@ def hold_reason(sid, have, wants):
   why = foreign_setup(d, P.PROTOCOL_ID)
   if why:
     return ("OTHER_PROTOCOL", why)
+  if status in STAGE0_FINAL and (status != "LIGAND_FAIL" or ligand_fail_is_final(sid)):
+    return ("STAGE0_FINAL", "last stage-0 status %s" % status)
   if (have and wants and not os.path.isfile(os.path.join(d, "setup.done"))
       and not os.path.isfile(os.path.join(d, PROTOCOL_FILE))):
     return ("ROWS_WITHOUT_SETUP", "%d result rows, but no setup.done and no %s"
@@ -1007,6 +1039,12 @@ HOLD_HELP = {
     "checkpoints into this protocol's legs. Set them up again from their inputs, in",
     "a fresh run directory. Do not just remove setup.done: the setup would rebuild",
     "only the restraints, on the old box, ligands and probe."),
+  "STAGE0_FINAL": (
+    "Their setup ended in a verdict on the structure itself, which a new setup would",
+    "repeat; the reason is in its setup log (for LIGAND_FAIL also ligand_failed.gs; a",
+    "LIGAND_FAIL that records a crash or a kill there is submitted again instead).",
+    "To set one up again on purpose, after fixing its input or the code that stopped",
+    "it, append the line '<ID> SETUP_RUNNING' to results_0.gs and run this again."),
   "ROWS_WITHOUT_SETUP": (
     "They have result rows in results_fe.d, but their directory holds no setup at",
     "all, as after recreating it. A new setup builds new restraints on a new probe,",
@@ -1071,6 +1109,7 @@ def setup_and_submit(structids, structchains):
   for sid, rows_ in read_works("results_fe.gs").items():
     done_cycles[sid] = {int(r[0]) for r in rows_}
 
+  stage0 = read_status("results_0.gs", structids)
   live, held = [], []
   for i, sid in enumerate(structids):
     have = done_cycles.get(sid, set())
@@ -1079,7 +1118,7 @@ def setup_and_submit(structids, structchains):
     # structure has work; the array path submits only the missing cycles.
     wants = args.sequential or bool(lack)
     if os.path.isdir("./%s" % sid):
-      why = hold_reason(sid, have, wants)
+      why = hold_reason(sid, have, wants, stage0.get(sid))
       if why:
         held.append((sid,) + why)
         continue

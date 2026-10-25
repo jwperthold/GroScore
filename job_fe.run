@@ -176,7 +176,8 @@ take_lock() {
 # pid and ran the same leg beside it: two mdruns on one -deffnm. And a TERM
 # (scancel, the walltime, the local runner's shutdown) took effect only once the
 # running leg had ended (review S3). mdrun stops on TERM at its next
-# neighbour-search step and writes a checkpoint, from which the leg resumes.
+# neighbour-search step; the next start runs that leg again from step 0
+# (run_leg_mdrun).
 LEG_PID=""
 run_bg() {
   local d rc
@@ -330,9 +331,15 @@ fe_xvgs() {
 # a human to resubmit costs a day per fault and, worse, loses the cycle entirely
 # if nobody does. Retrying here costs one leg.
 #
-# It resumes from the leg's own checkpoint when there is one, which is also what
-# makes a retry cheap rather than a restart. GROMACS validates the checkpoint
-# against the tpr and falls back to _prev.cpt if the crash corrupted it.
+# AN UNFINISHED RUN IS NEVER CONTINUED. Every attempt starts from step 0 of the
+# leg's tpr, never from the leg's own checkpoint, and a checkpoint is read only as
+# the start of the NEXT leg, once this one has written its .gro. A run that died part
+# way, to a node failure, a full disk, a kill or the timeout, leaves outputs nothing
+# can vouch for: on 2026-10-13 a full /gpfs dropped whole blocks of xvg output while
+# mdrun carried on, and a resumed leg would append to such a file. A retry costs one
+# leg from the start, at most a whole npt_c. GMX_MAXBACKUP=-1 (above) lets the new
+# run overwrite what the dead one wrote. Without a tpr (its grompp failed) the leg is
+# not started at all: mdrun used to fail twice on the missing file, as 1DFJ c7 did.
 #
 # Deliberately bounded: a leg that fails for a REAL reason (an exploding system,
 # a bad restraint) fails identically every time, and retrying it forever would
@@ -350,13 +357,15 @@ run_leg_mdrun() {
   local out="$1" tmo="$2"; shift 2
   local tries=${GROSCORE_LEG_RETRIES:-2}
   local i=1
+  if [[ ! -f "${out}.tpr" ]]; then
+    echo "  leg $out has no ${out}.tpr (its grompp failed, see above); not started."
+    return 1
+  fi
   while [[ $i -le $tries ]]; do
-    local cpi=()
-    [[ -f "${out}.cpt" ]] && cpi=(-cpi "${out}.cpt")
-    run_bg timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@" "${cpi[@]}"
+    run_bg timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@"
     [[ -f "${out}.gro" ]] && return 0
     if [[ $i -lt $tries ]]; then
-      echo "  leg $out did not finish (attempt $i of $tries); retrying$([[ -f ${out}.cpt ]] && echo " from its checkpoint")."
+      echo "  leg $out did not finish (attempt $i of $tries); retrying from step 0."
     fi
     i=$((i+1))
   done
@@ -409,9 +418,9 @@ fi
 # emin_vac.gro) or the production box was begun (box.gro), whose solvation rewrites
 # topol.top in place. NOT when it stopped in the probe pass in between: the probe
 # solvates a copy of the topology, its steps are guarded on their own outputs, and
-# a re-run resumes it from the finished replicas and the checkpoint of the one that
-# died, as its PROBE_FAIL messages say. The recovery used to fire there too and
-# threw away up to five 20 ns replicas (review S4).
+# a re-run resumes it from the finished replicas and stages, running the one that
+# died again from step 0, as its PROBE_FAIL messages say. The recovery used to fire
+# there too and threw away up to five 20 ns replicas (review S4).
 if [[ "$MODE" != "cycle" && -f conf.gro && ! -f emin_solv.gro ]] \
    && [[ ! -f emin_vac.gro || -f box.gro ]]; then
   echo "Restart recovery: setup incomplete (conf.gro exists but emin_solv.gro missing)"
@@ -1069,6 +1078,27 @@ with open('$PDB2GMX_INPUT', 'w') as f:
       RESNAME=$(echo "$SUFFIX" | sed 's/_[A-Z]$//;s/_[A-Z]_[0-9]*$//')
       CHAIN=$(echo "$SUFFIX" | sed 's/.*_\(.\)$/\1/;s/.*_\(.\)_[0-9]*$/\1/')
       python3 ../../utils/parametrize_ligand.py -f "$ligpdb" -r "$RESNAME" -c "$CHAIN" -i $LIGAND_INSTANCE
+      PL_RC=$?
+      # A FAILED PARAMETRISATION IS NEVER LOST, as in job.run. The exit status used to
+      # be ignored here. merge_ligand.py still stopped an in-region instance that had
+      # no manifest entry, but only as 'parametrisation left no ligand_manifest.gs
+      # entry and no reason', and let one through that exited non-zero after writing
+      # its entry. parametrize_ligand.py writes 'did not finish' before anything that
+      # can fail; one that dies before even that (an import or interpreter error) is
+      # recorded here, under the instance key it would have used (RESNAME CHAIN RESNUM
+      # from the first record), naming the exit status. merge_ligand.py then keeps the
+      # line for every ligand in the simulated region, and the structure stops as
+      # LIGAND_FAIL below; a ligand outside the region is not simulated and is only
+      # named in the log.
+      if [[ $PL_RC -ne 0 ]]; then
+        KEY=$(awk '/^(ATOM  |HETATM)/{r=substr($0,18,3); c=substr($0,22,1); n=substr($0,23,4);
+                   gsub(/ /,"",r); gsub(/ /,"",c); gsub(/ /,"",n);
+                   print r, (c==""?"-":c), (n==""?"0":n); exit}' "$ligpdb")
+        if [[ -n "$KEY" ]] && ! awk -v k="$KEY " 'index($0, k)==1{f=1} END{exit !f}' ligand_failed.gs 2>/dev/null; then
+          echo "$KEY parametrize_ligand.py exited $PL_RC without recording a reason" >> ligand_failed.gs
+        fi
+        echo "Ligand $ligpdb failed to parametrise (exit $PL_RC); merge_ligand.py decides whether it stops the structure."
+      fi
       LIGAND_INSTANCE=$((LIGAND_INSTANCE + 1))
     done
   fi
@@ -1323,34 +1353,37 @@ with open('$CUTOUT_PDB', 'w') as f:
         # off one equilibrated state: gen_seed = -1 gives fresh velocities, but
         # branching late would leave them sharing most of their history, which is
         # the correlation this is meant to break.
+        #
+        # Each stage reads the checkpoint of the stage before only once that one has
+        # its .gro, gets a tpr built anew and runs from step 0 (run_leg_mdrun), like
+        # every cycle leg: a stage that died is never continued, and nothing is
+        # started from it. A stage that fails twice stops the setup as PROBE_FAIL.
         PROBE_TRAJ=(); PROBE_TPR=()
         for rep in $(seq 1 $N_PROBES); do
           prev=emin_probe
-          for stage in 1 2 3 4 5; do
-            if [[ ! -f nvt_${stage}_probe${rep}.gro ]]; then
+          for pstage in nvt_1 nvt_2 nvt_3 nvt_4 nvt_5 npt; do
+            pout=${pstage}_probe${rep}
+            if [[ ! -f ${pout}.gro ]]; then
+              rm -f ${pout}.tpr
               if [[ "$prev" == "emin_probe" ]]; then
-                gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c emin_probe.gro -p topol_probe.top -o nvt_${stage}_probe${rep} -n index_probe.ndx -maxwarn 10
+                gmx grompp -r emin_probe.gro -f $MDP_DIR/${pstage}.mdp -c emin_probe.gro -p topol_probe.top -o ${pout} -n index_probe.ndx -maxwarn 10
+              elif [[ "$pstage" == "npt" ]]; then
+                gmx grompp -r emin_probe.gro -f $MDP_DIR/npt_init_fe.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o ${pout} -n index_probe.ndx -maxwarn 10
               else
-                gmx grompp -r emin_probe.gro -f $MDP_DIR/nvt_${stage}.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o nvt_${stage}_probe${rep} -n index_probe.ndx -maxwarn 10
+                gmx grompp -r emin_probe.gro -f $MDP_DIR/${pstage}.mdp -c ${prev}.tpr -t ${prev}.cpt -p topol_probe.top -o ${pout} -n index_probe.ndx -maxwarn 10
               fi
-              run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_${stage}_probe${rep}
+              # Two attempts, like every cycle leg. See run_leg_mdrun for what one
+              # lost replica used to cost. npt_probe runs 20 ns, hence 600m.
+              run_leg_mdrun ${pout} $([[ "$pstage" == "npt" ]] && echo 600m || echo 60m) || true
             fi
-            prev=nvt_${stage}_probe${rep}
+            if [[ ! -f ${pout}.gro ]]; then
+              echo "Stage 0 failed: probe replica $rep did not finish ${pstage} (no ${pout}.gro)."
+              echo "  Re-running this structure keeps the finished replicas and stages and runs ${pout} again from step 0."
+              echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
+              exit 0
+            fi
+            prev=${pout}
           done
-          if [[ ! -f npt_probe${rep}.tpr ]]; then
-            gmx grompp -r emin_probe.gro -f $MDP_DIR/npt_init_fe.mdp -c nvt_5_probe${rep}.tpr -t nvt_5_probe${rep}.cpt -p topol_probe.top -o npt_probe${rep} -n index_probe.ndx -maxwarn 10
-          fi
-          if [[ ! -f npt_probe${rep}.gro ]]; then
-            # Two attempts from the checkpoint, like every cycle leg. See
-            # run_leg_mdrun for what one lost replica used to cost.
-            run_leg_mdrun npt_probe${rep} 600m || true
-          fi
-          if [[ ! -f npt_probe${rep}.gro ]]; then
-            echo "Stage 0 failed: probe replica $rep did not finish (no npt_probe${rep}.gro)."
-            echo "  Re-running this structure resumes from npt_probe${rep}.cpt."
-            echo $STRUCT_ID "PROBE_FAIL" >> ../results_0.gs
-            exit 0
-          fi
           PROBE_TRAJ+=(npt_probe${rep}.xtc); PROBE_TPR+=(npt_probe${rep}.tpr)
         done
         # Replica 1 is the structure the restraint set is BUILT on -- which pairs
@@ -1834,6 +1867,27 @@ fi
     return 1
   }
 
+  # eq_stage OUT MDP FROM TIMEOUT [grompp options]: one stage of the cycle's
+  # equilibration, run unless it has its .gro. FROM is the stage it continues ('' =
+  # start from emin_solv.gro with the mdp's fresh velocities); its checkpoint is read
+  # only once FROM has its .gro. The tpr is built anew each time and the stage runs
+  # from step 0 (run_leg_mdrun), so a stage that died is never continued, and no
+  # stage is ever built from one that did not finish. The ladder used to grompp each
+  # stage from the checkpoint of the one before whether that had finished or not.
+  eq_stage() {
+    local out=$1 mdp=$2 from=$3 tmo=$4; shift 4
+    [[ -f $out.gro ]] && return 0
+    rm -f $out.tpr
+    if [[ -n "$from" ]]; then
+      require_gro $from || return 1
+      gmx grompp -r emin_solv.gro -f $mdp -c $from.tpr -t $from.cpt -p topol.top -o $out "$@" -maxwarn 10
+    else
+      gmx grompp -r emin_solv.gro -f $mdp -c emin_solv.gro -p topol.top -o $out "$@" -maxwarn 10
+    fi
+    run_leg_mdrun $out $tmo
+    require_gro $out
+  }
+
 
   CYCLE_FAILED=0
   cycle=$CYCLE_START
@@ -1888,67 +1942,35 @@ fi
       fi
     fi
 
-    # Full equilibration for this cycle (NVT 1-5 + NPT)
+    # Full equilibration for this cycle (NVT 1-5 + NPT), one eq_stage each.
+    #
+    # npt_c is the bound-state ensemble boundfwd starts from, and Crooks assumes
+    # those initial states are drawn from the true equilibrium distribution, so
+    # this leg has to run under a barostat that has one. C-rescale does, and
+    # being first order it also settles the box off the NVT ladder without a
+    # separate weak-coupling stage.
+    #
+    # It must also run the Hamiltonian boundfwd1 starts with, H(lambda = 0) of
+    # the bound block, and that includes the elastic network. Through v1.4 it
+    # ran $MDP_DIR/npt_fe.mdp with no pull code at all: the network came on at
+    # full strength at t = 0 of boundfwd1, a median 299 kJ/mol never recorded,
+    # and 20 of 920 pass-2 cycles died at the boundfwd1 grompp on a network pair
+    # that had drifted beyond 0.49 times the box during the 20 ns
+    # (bm_fe_amber_2/_ana/digest/fu3.txt F10, qc.txt npt_c_elastic_network_off).
+    #
+    # 600m, not the 60m every short stage uses: npt_c runs ./npt_c_fe.mdp for
+    # 20 ns (it was 1 ns, then 10). Since a retry starts from step 0, the limit
+    # must hold a whole npt_c on the slowest node; the longest measured was
+    # 457.6 min (1OPH npt_c11, 275k atoms, bm_fe_amber_3a).
     if [[ ! -f npt_c${cycle}.gro ]]; then
       echo "Running full equilibration for cycle $cycle"
-      if [[ ! -f nvt_1_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_1.mdp -c emin_solv.gro -p topol.top -o nvt_1_c${cycle} -maxwarn 10
-      fi
-      if [[ ! -f nvt_1_c${cycle}.gro ]]; then
-        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_1_c${cycle}
-      fi
-      if [[ ! -f nvt_2_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_2.mdp -c nvt_1_c${cycle}.tpr -t nvt_1_c${cycle}.cpt -p topol.top -o nvt_2_c${cycle} -maxwarn 10
-      fi
-      if [[ ! -f nvt_2_c${cycle}.gro ]]; then
-        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_2_c${cycle}
-      fi
-      if [[ ! -f nvt_3_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_3.mdp -c nvt_2_c${cycle}.tpr -t nvt_2_c${cycle}.cpt -p topol.top -o nvt_3_c${cycle} -maxwarn 10
-      fi
-      if [[ ! -f nvt_3_c${cycle}.gro ]]; then
-        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_3_c${cycle}
-      fi
-      if [[ ! -f nvt_4_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_4.mdp -c nvt_3_c${cycle}.tpr -t nvt_3_c${cycle}.cpt -p topol.top -o nvt_4_c${cycle} -maxwarn 10
-      fi
-      if [[ ! -f nvt_4_c${cycle}.gro ]]; then
-        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_4_c${cycle}
-      fi
-      if [[ ! -f nvt_5_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f $MDP_DIR/nvt_5.mdp -c nvt_4_c${cycle}.tpr -t nvt_4_c${cycle}.cpt -p topol.top -o nvt_5_c${cycle} -n index.ndx -maxwarn 10
-      fi
-      if [[ ! -f nvt_5_c${cycle}.gro ]]; then
-        run_bg timeout -s 9 60m gmx mdrun -nt $nt $GPUOPT -deffnm nvt_5_c${cycle}
-      fi
-      # npt_c is the bound-state ensemble boundfwd starts from, and Crooks assumes
-      # those initial states are drawn from the true equilibrium distribution, so
-      # this leg has to run under a barostat that has one. C-rescale does, and
-      # being first order it also settles the box off the NVT ladder without a
-      # separate weak-coupling stage.
-      #
-      # It must also run the Hamiltonian boundfwd1 starts with, H(lambda = 0) of
-      # the bound block, and that includes the elastic network. Through v1.4 it
-      # ran $MDP_DIR/npt_fe.mdp with no pull code at all: the network came on at
-      # full strength at t = 0 of boundfwd1, a median 299 kJ/mol never recorded,
-      # and 20 of 920 pass-2 cycles died at the boundfwd1 grompp on a network pair
-      # that had drifted beyond 0.49 times the box during the 20 ns
-      # (bm_fe_amber_2/_ana/digest/fu3.txt F10, qc.txt npt_c_elastic_network_off).
-      if [[ ! -f npt_c${cycle}.tpr ]]; then
-        gmx grompp -r emin_solv.gro -f ./npt_c_fe.mdp -c nvt_5_c${cycle}.tpr -t nvt_5_c${cycle}.cpt -p topol.top -o npt_c${cycle} -n index.ndx -maxwarn 10
-      fi
-      if [[ ! -f npt_c${cycle}.gro ]]; then
-        # 600m and -cpi, not the 60m every short stage uses. npt_c runs
-        # ./npt_c_fe.mdp for 20 ns (it was 1 ns, then 10), and that does not fit
-        # in an hour when several slots share a GPU. The failure mode is not a
-        # slow cycle, it is a STUCK one:
-        # a kill leaves npt_c.cpt but no .gro, the `! -f npt_c.tpr` guard then
-        # skips grompp, and mdrun without -cpi restarts from step 0 of the same
-        # tpr and is killed at the same place on every retry. require_gro catches
-        # it as CYCLE_FAILED so no wrong number is produced, but the cycle can
-        # never finish. This is the same trap npt_init hit at 11 ns, which is
-        # why that one already carried 600m and -cpi.
-        run_leg_mdrun npt_c${cycle} 600m
+      if ! { eq_stage nvt_1_c${cycle} $MDP_DIR/nvt_1.mdp "" 60m \
+             && eq_stage nvt_2_c${cycle} $MDP_DIR/nvt_2.mdp nvt_1_c${cycle} 60m \
+             && eq_stage nvt_3_c${cycle} $MDP_DIR/nvt_3.mdp nvt_2_c${cycle} 60m \
+             && eq_stage nvt_4_c${cycle} $MDP_DIR/nvt_4.mdp nvt_3_c${cycle} 60m \
+             && eq_stage nvt_5_c${cycle} $MDP_DIR/nvt_5.mdp nvt_4_c${cycle} 60m -n index.ndx \
+             && eq_stage npt_c${cycle} ./npt_c_fe.mdp nvt_5_c${cycle} 600m -n index.ndx; }; then
+        CYCLE_FAILED=1; release_cycle_lock; cycle=$((cycle+1)); continue
       fi
     fi
 
@@ -1982,10 +2004,13 @@ fi
       src=$prev
       [[ -n "${FE_LEG_FROM[$li]}" ]] && src="${FE_LEG_FROM[$li]}_${cycle}"
       if [[ ! -f ${out}.gro ]]; then
-        if [[ ! -f ${src}.tpr || ! -f ${src}.cpt ]]; then
-          echo "Cycle $cycle FAILED: leg $leg starts from $src, but ${src}.tpr or ${src}.cpt is missing."
+        # The checkpoint of $src is read only once $src has finished (its .gro), and
+        # the tpr is built anew, so a failed grompp leaves none for mdrun to run.
+        if [[ ! -f ${src}.gro || ! -f ${src}.tpr || ! -f ${src}.cpt ]]; then
+          echo "Cycle $cycle FAILED: leg $leg starts from $src, but ${src}.gro, ${src}.tpr or ${src}.cpt is missing."
           LEG_FAILED=1; break
         fi
+        rm -f ${out}.tpr
         gmx grompp -r emin_solv.gro -f "$mdp" -c ${src}.tpr -t ${src}.cpt \
                    -p topol.top -o ${out} -n index.ndx -maxwarn 10
         xtra=()

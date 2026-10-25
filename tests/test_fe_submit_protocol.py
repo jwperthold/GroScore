@@ -40,6 +40,12 @@ pinned, against a fake sbatch that records every call:
   [7] setup_is_complete itself: False for a foreign setup without clearing it,
       True for a complete one, and npt_c_fe.mdp judged as job_fe.run's setup
       post-condition judges it.
+  [8] A structure whose last stage-0 status is LIGAND_FAIL, BROKEN or ENTANGLED
+      is held (STAGE0_FINAL) and gets no job.run: --restart used to submit its
+      setup and cycles again. A LIGAND_FAIL counts only when ligand_failed.gs
+      says why: one that records a crash or a kill, or has no line, is submitted.
+      PROBE_FAIL is still submitted, and so is a structure whose last line is
+      SETUP_RUNNING again.
 
 Run:  python3 tests/test_fe_submit_protocol.py
 """
@@ -407,6 +413,48 @@ if G is not None:
               G.setup_is_complete(sid) is False and not os.path.exists(sid + "/setup.done")
               and not os.path.exists(sid + "/npt_c_fe.mdp"))
 os.chdir(here)
+
+print("\n[8] a setup that ended in a verdict on the structure is not submitted again")
+# bm_fe_amber_3a: --restart submitted the setups of 1GRN, 1WQ1 and 1RLB again, which
+# stopped as LIGAND_FAIL once more, and their 60 cycle tasks only read the status.
+S0 = ["LIG", "BRK", "ENT", "PROBE", "REDO", "KILLED", "NOLINE"]
+run = new_run("stage0", S0, "numruns\t2\nprotocol_id\t%s\n" % CUR)
+put(os.path.join(run, "results_0.gs"),
+    "# Stage-0 setup status\nLIG SETUP_RUNNING\nLIG LIGAND_FAIL\nBRK BROKEN\n"
+    "ENT ENTANGLED\nPROBE PROBE_FAIL\nREDO LIGAND_FAIL\nREDO SETUP_RUNNING\n"
+    "KILLED LIGAND_FAIL\nNOLINE LIGAND_FAIL\n")
+for sid in S0:
+    os.makedirs(os.path.join(run, sid))
+# A LIGAND_FAIL is a verdict only when ligand_failed.gs says why: the AlF3 line is one,
+# a parametrisation killed mid-run is not, and neither is a LIGAND_FAIL without a line
+# (merge_ligand.py or fuse_glycans.py crashed).
+put(os.path.join(run, "LIG", "ligand_failed.gs"),
+    "AF3 R 169 openff-2.2.1.offxml has no parameters for Al (it types only H C), so no ligand containing it "
+    "can be parametrised\n")
+put(os.path.join(run, "KILLED", "ligand_failed.gs"),
+    "SO4 A 401 openff-2.2.1.offxml has no parameters for Al (it types only H C), so no ligand containing it "
+    "can be parametrised\nGDP A 198 parametrisation started but did not finish (crashed or killed)\n")
+p, calls = gs(run, "--restart", "-n", "2")
+out = p.stdout
+check("rc 0", p.returncode == 0, p.stderr[-300:])
+check("submitted: PROBE (retried), REDO (last line SETUP_RUNNING), and the crashed KILLED and NOLINE",
+      calls == ["--parsable slurm_fe/setup_PROBE.run",
+                "--dependency=afterany:4242 slurm_fe/cycles_PROBE.run",
+                "--parsable slurm_fe/setup_REDO.run",
+                "--dependency=afterany:4242 slurm_fe/cycles_REDO.run",
+                "--parsable slurm_fe/setup_KILLED.run",
+                "--dependency=afterany:4242 slurm_fe/cycles_KILLED.run",
+                "--parsable slurm_fe/setup_NOLINE.run",
+                "--dependency=afterany:4242 slurm_fe/cycles_NOLINE.run"], calls)
+for sid in ("LIG", "BRK", "ENT"):
+    check("%s is held as STAGE0_FINAL, gets no job.run and no slurm_fe file" % sid,
+          held("STAGE0_FINAL", sid)
+          and not os.path.exists(os.path.join(run, sid, "job.run"))
+          and not os.path.exists(os.path.join(run, "slurm_fe", "setup_%s.run" % sid)))
+check("the summary: 3 structures held back, with how to set one up again",
+      "NOT SUBMITTED: 3 structures held back and left untouched." in out
+      and "'<ID> SETUP_RUNNING'" in out,
+      [l for l in out.splitlines() if "NOT SUBMITTED" in l])
 
 shutil.rmtree(work, ignore_errors=True)
 print("")

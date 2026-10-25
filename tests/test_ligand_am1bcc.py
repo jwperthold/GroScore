@@ -31,7 +31,8 @@ pins, with the sqm run itself replaced where a test needs a failure:
   [itp]   make_interchange() hands the charges of the attempt that worked to the
           topology unchanged (fixed charges in, the same charges in the exported
           [ atoms ]), and checks the valence parameters before any sqm run: AlF3
-          fails with UnassignedBondError and no attempt.
+          fails with a LigandFailure naming the missing Al-F bond terms by element
+          (3 terms, whichever atom comes first) and no attempt.
 
 In-process; one real sqm run on methanol (about a second) and three OpenFF parameter
 assignments; a few seconds.
@@ -390,12 +391,27 @@ Chem.SanitizeMol(alf3)
 AllChem.EmbedMolecule(alf3, randomSeed=1)
 calls.clear()
 try:
-    mod.make_interchange(ff, Molecule.from_rdkit(alf3, allow_undefined_stereo=True))
-    raised = None
+    mod.make_interchange(ff, Molecule.from_rdkit(alf3, allow_undefined_stereo=True), "openff-2.2.1.offxml")
+    raised, msg = None, ""
 except Exception as e:
-    raised = type(e).__name__
-check("AlF3: UnassignedBondError before any AM1-BCC attempt", raised == "UnassignedBondError" and not calls,
-      "%s, %d attempts" % (raised, len(calls)))
+    raised, msg = type(e).__name__, str(e)
+# parametrize() stops AlF3 earlier, at uncovered_elements(); make_interchange still
+# names a missing term by element when it is called on such a molecule.
+check("AlF3: a LigandFailure naming the missing terms by element, before any AM1-BCC attempt",
+      raised == "LigandFailure" and not calls
+      and msg == "openff-2.2.1.offxml has no bond parameters for Al-F (3 terms); UnassignedBondError",
+      "%s %r, %d attempts" % (raised, msg, len(calls)))
+# The same AlF3 with a fluorine first: the terms are still one kind, 'Al-F (3 terms)',
+# not 'Al-F (2 terms), F-Al (1 term)' as the topology order would give.
+alf3b = Chem.MolFromSmiles("F[Al](F)F")
+AllChem.EmbedMolecule(alf3b, randomSeed=1)
+try:
+    mod.make_interchange(ff, Molecule.from_rdkit(alf3b, allow_undefined_stereo=True), "openff-2.2.1.offxml")
+    msg = ""
+except Exception as e:
+    msg = str(e)
+check("  with a fluorine first: still one kind, 'Al-F (3 terms)'",
+      msg == "openff-2.2.1.offxml has no bond parameters for Al-F (3 terms); UnassignedBondError", repr(msg))
 mod.am1bcc_attempt = real_attempt
 
 os.chdir(ROOT)

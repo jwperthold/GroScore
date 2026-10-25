@@ -12,7 +12,11 @@ and gave 2FD6's chain-H PGE to protein B. The AlF3 alone cost 1GRN +5.0 and 1WQ1
   [1] sulfate is SO4 2- (5 atoms, charges summing to -2), not H2SO4
   [2] inorganic phosphate is HPO4 2-, also when the entry holds only P and two O
   [3] a ligand that cannot be built leaves 'RESNAME CHAIN RESNUM reason' in
-      ligand_failed.gs, also when the process is killed mid-run
+      ligand_failed.gs, also when the process is killed mid-run; for AlF3 the reason
+      names aluminium, which openff-2.2.1 has no term for, before any build (it was
+      an UnassignedBondError cut mid-sentence at 240 characters), a long reason is
+      cut at a word and says so, and a built molecule's line always shows why the
+      CCD entry was not used, after 'and N more'
   [4] merge_ligand.py writes every extracted ligand that misses topol.top into
       ligand_failed.gs, takes each ligand's chain from the ligand itself, flags a
       ligand covalently bonded to the protein, and follows --ligand-param (contract
@@ -186,13 +190,51 @@ d = os.path.join(tmp, "af3"); os.makedirs(d)
 open(os.path.join(d, "ligand_AF3_R.pdb"), "w").write(pdb("AF3", "R", 169, AF3_1WQ1))
 r = run_param(d, "ligand_AF3_R.pdb", "AF3", "R")
 lines = failed_lines(d)
-check("AlF3 (no Al-F bond term in OpenFF) exits non-zero", r.returncode != 0, str(r.returncode))
+check("AlF3 (no aluminium term in OpenFF) exits non-zero", r.returncode != 0, str(r.returncode))
 check("ligand_failed.gs holds exactly one line for it", len(lines) == 1, str(lines))
 f = lines[0].split() if lines else []
 check("the line is 'AF3 R 169 reason ...'", f[:3] == ["AF3", "R", "169"] and len(f) >= 4, str(lines))
-check("the reason names the missing bond parameters", bool(lines) and "Bond" in lines[0], str(lines))
+check("the reason names aluminium as what the force field cannot type",
+      bool(lines) and lines[0].startswith("AF3 R 169 openff-2.2.1.offxml has no parameters for Al (it types only H ")
+      and lines[0].endswith("so no ligand containing it can be parametrised"), str(lines))
+check("  and stops before any build: no CCD/OpenBabel attempt, no sdf",
+      "No exact CCD build" not in r.stdout and not os.path.isfile(os.path.join(d, "ligand_AF3.sdf")), r.stdout[-300:])
 check("no manifest line and no itp for it",
       not os.path.isfile(os.path.join(d, "ligand_manifest.gs")) and not os.path.isfile(os.path.join(d, "ligand_AF3.itp")))
+pm = load_param_module()
+if pm is not None and all(hasattr(pm, n) for n in ("uncovered_elements", "short_reason", "failure_flag",
+                                                    "name_difference")):
+    from openff.toolkit import ForceField
+    sage = ForceField("openff-2.2.1.offxml")
+    miss, typed = pm.uncovered_elements(sage, ["C", "AL", "F", "AL", "B", "SE"])
+    check("uncovered_elements: Al, B and Se once each, in order; C and F are typed",
+          miss == ["Al", "B", "Se"] and "C" in typed and "F" in typed and "Al" not in typed, "%s %s" % (miss, typed))
+    miss, _ = pm.uncovered_elements(sage, ["C", "", "X", "AL"])
+    check("  an empty or non-element symbol is skipped, not a crash", miss == ["Al"], str(miss))
+    ent = lambda names, leave=(): [{"name": n, "alt": n, "element": n[0], "leaving": n in leave} for n in names]
+    nd = pm.name_difference(ent(["C1", "C2", "C3", "O1", "O2"]), ["C1", "C2", "C3", "O1"])
+    check("name_difference: the entry atom not deposited, by name (1RLB REA: O2)", nd == " (not deposited: O2)", nd)
+    nd = pm.name_difference(ent(["C1", "C2", "OXT"], leave=("OXT",)), ["C1", "C2"])
+    check("  a leaving atom marked", nd == " (not deposited: OXT*, * = a leaving atom)", nd)
+    nd = pm.name_difference(ent(["C1", "C2"]), ["C1", "C2", "X9"])
+    check("  a deposited atom the entry lacks", nd == " (not in the entry: X9)", nd)
+    check("  nothing when names repeat or only partly match (generic names, renamed atoms)",
+          pm.name_difference(ent(["C1", "C2", "C3", "O1", "O2"]), ["C1", "C1", "C3", "O1"]) == ""
+          and pm.name_difference(ent(["PA", "PB", "C2", "C4", "N1"]), ["C1", "C2", "C4", "N1"]) == "")
+    long_text = "word " * 200
+    s = pm.short_reason(long_text)
+    check("a long reason is cut at a word, at most 400 characters, and says so",
+          len(s.split(" [...")[0]) <= 400 and s.split(" [...")[0].endswith("word")
+          and s.endswith("more characters, see the job log]"), s[-80:])
+    check("a short one is kept whole, whitespace collapsed", pm.short_reason("a  b\n c") == "a b c")
+    fl = pm.failure_flag(["p1", "p2", "p3", "p4", "p5", "no exact CCD entry: the CCD entry REA has 22 heavy atoms, "
+                                                        "21 are deposited (not deposited: O2)"])
+    check("the CCD reason stays visible after 'and N more' (1RLB REA)",
+          fl == "built, but not the deposited molecule: p1; p2; p3; and 2 more; no exact CCD entry: the CCD entry "
+                "REA has 22 heavy atoms, 21 are deposited (not deposited: O2)", fl)
+    check("  no problems, no flag", pm.failure_flag([]) == "")
+else:
+    check("uncovered_elements(), short_reason() and failure_flag() exist", False)
 # a run killed mid-way (timeout, OOM) leaves the line it wrote first
 d = os.path.join(tmp, "killed"); os.makedirs(d)
 open(os.path.join(d, "ligand_SO4_A_503.pdb"), "w").write(pdb("SO4", "A", 503, SO4_1S1Q))

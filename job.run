@@ -148,7 +148,8 @@ take_lock() {
 # dead pid and ran the same leg beside it: two mdruns on one -deffnm. And a TERM
 # (scancel, the walltime, the local runner's shutdown) took effect only once the
 # running leg had ended, up to LEG_TIMEOUT later (review S3). mdrun stops on TERM at
-# its next neighbour-search step and writes a checkpoint, from which the leg resumes.
+# its next neighbour-search step; the next start runs that leg again from step 0
+# (run_leg_mdrun).
 LEG_PID=""
 run_bg() {
   local d rc
@@ -226,22 +227,31 @@ LEG_TIMEOUT=${GROSCORE_LEG_TIMEOUT:-24h}
 
 # WHY A LEG IS RETRIED IN PLACE (ported from job_fe.run, where 202 retries rescued
 # 166 legs of the 2026-09-09 HADDOCK pass). A transient fault is not a property of
-# the system, so the same leg started again usually completes, resuming from its
-# own checkpoint when there is one; GROMACS validates the checkpoint against the
-# tpr and falls back to _prev.cpt if the crash corrupted it. Bounded: a leg that
+# the system, so the same leg started again usually completes. Bounded: a leg that
 # fails for a real reason fails identically every time. Two attempts by default;
 # GROSCORE_LEG_RETRIES overrides.
+#
+# AN UNFINISHED RUN IS NEVER CONTINUED, as in job_fe.run. Every attempt starts from
+# step 0 of the leg's tpr, never from the leg's own checkpoint, and a checkpoint is
+# read only as the start of the NEXT leg, once this one has written its .gro (leg,
+# require_gro). A run that died part way leaves outputs nothing can vouch for (on
+# 2026-10-13 a full /gpfs dropped whole blocks of FE xvg output while mdrun went on),
+# and a resumed leg appends its force file to such a one. A retry costs one leg from
+# the start; GMX_MAXBACKUP=-1 (above) lets it overwrite what the dead run wrote.
+# Without a tpr (its grompp failed) the leg is not started at all.
 run_leg_mdrun() {
   local out="$1" tmo="$2"; shift 2
   local tries=${GROSCORE_LEG_RETRIES:-2}
   local i=1
+  if [[ ! -f "${out}.tpr" ]]; then
+    echo "  leg $out has no ${out}.tpr (its grompp failed, see above); not started."
+    return 1
+  fi
   while [[ $i -le $tries ]]; do
-    local cpi=()
-    [[ -f "${out}.cpt" ]] && cpi=(-cpi "${out}.cpt")
-    run_bg timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@" "${cpi[@]}"
+    run_bg timeout -s 9 "$tmo" gmx mdrun -nt $nt $GPUOPT -deffnm "$out" "$@"
     [[ -f "${out}.gro" ]] && return 0
     if [[ $i -lt $tries ]]; then
-      echo "  leg $out did not finish (attempt $i of $tries); retrying$([[ -f ${out}.cpt ]] && echo " from its checkpoint")."
+      echo "  leg $out did not finish (attempt $i of $tries); retrying from step 0."
     fi
     i=$((i+1))
   done
@@ -306,9 +316,10 @@ leg() {
         gmx grompp -r emin_solv.gro -f $mdp -c emin_solv.gro -p topol.top -o $out "$@" -maxwarn 10
       fi
     fi
-    # A v1.4 job.run gzipped the force file of a leg that died; mdrun -cpi appends
-    # to it, so it must be back in place before the leg resumes.
-    [[ ! -f $out.xvg && -f $out.xvg.gz ]] && gunzip -f $out.xvg.gz
+    # A v1.4 job.run gzipped the force file of a leg that died. The leg now runs
+    # from step 0 and writes its force file anew, so that one is only a dead run's
+    # partial output, and it goes before the new run's file could be confused with it.
+    rm -f $out.xvg.gz
     run_leg_mdrun $out $tmo
   fi
   require_gro $out
@@ -1029,8 +1040,8 @@ with open('$CUTOUT_PDB', 'w') as f:
     if [[ ! -f emin_vac.tpr ]]; then
       gmx grompp -f $MDP_DIR/emin_vac.mdp -c conf_vacbox.gro -o emin_vac -maxwarn 2
     fi
-    # Minimisations get one attempt under the leg timeout: they write no checkpoint
-    # to resume from, and a deterministic minimisation that hangs once hangs again.
+    # Minimisations get one attempt under the leg timeout: a deterministic
+    # minimisation that hangs once hangs again.
     if [[ ! -f emin_vac.gro ]]; then
       run_bg timeout -s 9 $LEG_TIMEOUT gmx mdrun -nt $nt $GPUOPT -deffnm emin_vac
     fi
