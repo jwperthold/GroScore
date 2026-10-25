@@ -621,6 +621,18 @@ stage0_fail() {
   exit 0
 }
 
+# ION TYPES OF THE WATER MODEL (the same text in job.run and job_fe.run). pdb2gmx
+# types every ion residue from aminoacids.rtp, which in GROMACS 2026's amber19sb.ff
+# hard-codes the OPC-fitted Li/Merz types (Mg2+_opc, Zn2+_opc, ...) whatever -water
+# says, so every crystal ion of an amber19sb_opc3 run had OPC parameters in OPC3
+# water. retype_ions.py gives them their twins (Mg2+_opc3); it runs right after every
+# pdb2gmx, before anything reads or copies the topology, and does nothing under OPC
+# water or another force field. A twin the force field lacks stops the structure.
+retype_ions() {
+  python3 ../../utils/retype_ions.py -t topol.top --water "$WATER_MODEL" \
+    || stage0_fail FAILED "retype_ions.py could not give the ions the $WATER_MODEL atom types (see above)."
+}
+
 # ---- GLYCANS AND NCAAs IN THE SETUP CHAIN (the same text in job.run and job_fe.run) ----
 # GLYCANS ARE FUSED, NOT EXTRACTED (decision of 2026-10-04). A glycan covalently
 # bonded to ASN ND2, SER OG or THR OG1 used to stop the structure as LIGAND_FAIL
@@ -854,6 +866,18 @@ elif [[ "$FF_BASE" == "gromos54a8" ]]; then
   WATER_BOX="spc216.gro"
 fi
 
+# A SETUP RESUMED PAST ITS pdb2gmx gets the ion types of the water model too. The
+# restart recovery keeps a setup that stopped in the probe pass (conf.gro and
+# emin_vac.gro, no box.gro), so its topology may have been written before
+# retype_ions existed, and neither pdb2gmx below runs again. retype_ions does nothing
+# to a topology already typed. Not under existing cycles (emin_solv.gro, the system
+# they run, exists): one structure's cycles keep one ion set. Probe replicas that
+# already finished keep what they ran with; the probe only places the restraints and
+# sizes the box.
+if [[ "$MODE" != "cycle" && ! -f setup.done && ! -f emin_solv.gro && -f conf.gro && -f topol.top ]]; then
+  retype_ions
+fi
+
 # Renumber PDB to have unique sequential residue numbers across chains
 # Always re-run if conf.gro doesn't exist (restart safety: cap_termini overwrites
 # chain_map.gs with post-cap numbers that become stale if setup is re-run)
@@ -1065,6 +1089,7 @@ with open('$PDB2GMX_INPUT', 'w') as f:
   # Without conf.gro the setup has failed: stop before the loop below spends AM1-BCC
   # time on the ligands of a structure that cannot run (runner review R1).
   [[ -f conf.gro ]] || stage0_fail FAILED "pdb2gmx produced no conf.gro."
+  retype_ions
   # Parametrize small molecules with OpenFF (AMBER19SB only)
   # Each instance gets a unique molecule name via running counter (-i)
   if [[ "$LIGAND_PARAM_MODE" == "on" ]]; then
@@ -1208,6 +1233,7 @@ with open('$CUTOUT_PDB', 'w') as f:
       fi
       # Merge questions come first, then terminal selections
       echo -e "${MERGE_INPUT}${TER_INPUT}" | gmx pdb2gmx -f $CUTOUT_PDB -water $WATER_MODEL $FF_FLAG -ignh -missing -ter -chainsep id_or_ter -merge interactive -o conf_cutout.gro
+      retype_ions
       # Ligand ITP/GRO files already created during initial parametrization above
       # Merge ligands and crystal waters into cutout topology
       python3 ../../utils/merge_ligand.py -t topol.top -c conf_cutout.gro -m chain_map.gs \

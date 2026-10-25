@@ -246,6 +246,7 @@ STUBS = {
 for _n in ("fix_ion_protonation.py", "parametrize_ligand.py", "merge_crystal_waters.py",
            "make_ion_restraints.py"):
     STUBS[_n] = "log()\n"
+STUBS["retype_ions.py"] = "pass\n"      # runs after pdb2gmx; tests/test_retype_ions.py has it
 
 
 class Sandbox(object):

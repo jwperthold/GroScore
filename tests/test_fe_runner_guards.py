@@ -177,7 +177,7 @@ STUBS = {
 }
 for name in ("fix_pdb.py", "cap_termini.py", "fix_ion_protonation.py",
              "parametrize_ncaa.py", "make_cutout.py",
-             "merge_crystal_waters.py", "make_ion_restraints.py",
+             "merge_crystal_waters.py", "make_ion_restraints.py", "retype_ions.py",
              "fix_topol_intermolecular.py", "make_cluster_group.py"):
     STUBS[name] = "pass\n"
 
@@ -595,6 +595,9 @@ with tempfile.TemporaryDirectory() as tmp:
     check("  the re-run keeps the setup: no restart recovery, no renumber_pdb.py, no pdb2gmx",
           "Restart recovery" not in r.stdout and not [l for l in sb.stubs() if l.startswith("renumber_pdb")]
           and not [l for l in sb.gmx() if l.startswith("pdb2gmx")], r.stdout[-300:])
+    check("  but its topology goes through retype_ions.py (it may predate the ion retyping)",
+          [l for l in sb.stubs() if l.startswith("retype_ions.py")] == ["retype_ions.py -t topol.top --water opc3"],
+          [l for l in sb.stubs() if l.startswith("retype_ions")])
     check("  measures again on the %d finished replica files, simulating none of them" % len(reps),
           len(reps) == 10 and replica_runs() == [] and all("RUN 1" in open(os.path.join(sa, n)).read() for n in reps)
           and any(l.startswith("measure_box.py") for l in sb.stubs()), (len(reps), replica_runs()))

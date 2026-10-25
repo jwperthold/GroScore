@@ -323,6 +323,8 @@ GroScore supports multiple force fields, selectable via the `-ff` option:
 | **GROMOS 54A8** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 | **GROMOS 54A8 RF** | United-atom | SPC | all-bonds | 1.4 nm | ACE/COOH |
 
+Under AMBER19SB, ions kept from the crystal take the Li/Merz parameters of the run's water model (the FeS sulfide excepted, which the runners type as a sulfur); CHARMM36m and GROMOS 54A8 use their own ion parameters. Under AMBER19SB OPC3 that needs a correction: GROMACS 2026's `amber19sb.ff/aminoacids.rtp` types every ion residue with its OPC set (`Mg2+_opc`, `Zn2+_opc`, ...) whatever water model `pdb2gmx` is given, so both runners give these ions their OPC3 twins (`Mg2+_opc3`, ...) right after `pdb2gmx` (`utils/retype_ions.py`). Setups made before this correction (2026-10-25) ran their crystal ions with the OPC parameters, and keep them when a run directory is restarted: a structure's cycles all run on one topology, and a setup resumed in its probe pass is retyped before its production box is built.
+
 PTM parameters for GROMOS 54A8 are taken from the Vienna-PTM parameter set, https://github.com/viennaptm/ptm_parameters (Petrov et al., *PLoS Comput. Biol.* **2013**, *9*, e1003154, https://doi.org/10.1371/journal.pcbi.1003154; Margreitter et al., *J. Comput. Chem.* **2017**, *38*, 714, https://doi.org/10.1002/jcc.24733).
 
 All force fields use:
@@ -660,6 +662,7 @@ GroScore/
     ├── assemble_frame.py            # Assemble a frame's group by contact (lattice-vector moves only) for the restraint reference
     ├── pbc_tools.py                 # Periodic-boundary helpers (exact minimum image, residue spanning tree)
     ├── fix_topol_intermolecular.py  # Fix topology after solvation/genion
+    ├── retype_ions.py               # Crystal ions get the water model's Li/Merz types (Mg2+_opc3 under OPC3)
     ├── check_brokenloop.py          # Loop connectivity validation
     ├── check_entangledloops.py      # Topological knot detection
     ├── make_cutout.py               # Interface region extraction

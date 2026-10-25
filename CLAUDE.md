@@ -85,6 +85,7 @@ Other variables the runners read: `GROSCORE_NUMCYCLES` (total cycles; wins over 
 | `make_ion_restraints.py` | Topology-level coordination restraints for structural ions. Decides which partner a ligand belongs to from the merged residue number in the ligand manifest, not from line position |
 | `merge_crystal_waters.py` | Merges crystal waters as SOL. Honours `#ifdef` / `#ifndef` / `#else` / `#endif` / `#define` in the water itp, which it finds through GMXLIB and `$GMXDATA/top` as grompp does |
 | `fix_topol_intermolecular.py` | Moves the `[ intermolecular_interactions ]` block back to the end of the topology after `gmx solvate` / `genion` append their entries inside it |
+| `retype_ions.py` | Right after every `pdb2gmx` of both runners (`retype_ions`, the same text in both): in `topol.top` and the `topol_*.itp` it includes, every `[ atoms ]` type ending in `_opc` becomes its twin for the run's water model (`Mg2+_opc3` under OPC3), since `aminoacids.rtp` hard-codes the OPC ion types. Nothing under OPC water or another force field. The force field is found as grompp finds it (topology directory, GMXLIB, `$GMXDATA/top`, the gmx on PATH); a twin it lacks stops the structure as `FAILED` with no file changed. Standard library only |
 | `check_brokenloop.py` | Validates protein loop connectivity before simulation. Prints 0 (pass), 1 (broken loop) or 2 (the check could not be made; exit 1) |
 | `check_entangledloops.py` | Detects topological knots that would invalidate results. Same 0, 1, 2 output |
 | `make_cutout.py` | Extracts interface region. Minimum fragment is 5 residues (`MIN_FRAGMENT_LEN`); extension follows contiguous protein residues and stops at caps, ions and TER records, and gaps are filled again after extension |
@@ -236,6 +237,7 @@ All force fields use:
 
 **AMBER19SB OPC3** (default, OPC3 water):
 - Same as AMBER19SB but with OPC3 water model (3-point, uses `spc216.gro` for solvation)
+- Crystal ions get the OPC3 Li/Merz types: GROMACS 2026's `amber19sb.ff/aminoacids.rtp` types every ion residue `X_opc` (MG `Mg2+_opc`, ...) whatever `-water` says, so `retype_ions.py` gives them their `_opc3` twins right after each `pdb2gmx` (genion's NA/CL come from `ions_opc3.itp` already). Setups made before 2026-10-25 (bm_fe_amber_3a included) ran their crystal ions with the OPC types, and keep them on `--restart` (a structure's cycles all run on one topology); `job_fe.run` retypes a setup resumed in its probe pass, before its production box is built
 - All other settings identical to AMBER19SB
 - Select with `-ff amber19sb_opc3`
 

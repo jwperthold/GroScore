@@ -191,6 +191,7 @@ elif not lf and os.path.isfile("ligand_failed.gs"):
 ''',
     "merge_crystal_waters.py": "",
     "make_ion_restraints.py": "",
+    "retype_ions.py": "",
     "fix_topol_intermolecular.py": "",
     "make_cluster_group.py": "",
     "assemble_frame.py": r'''
