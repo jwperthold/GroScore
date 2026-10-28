@@ -44,6 +44,8 @@ if [[ "$MODE" == "cycle" && ! "$CYCLE_ARG" =~ ^[0-9]+$ ]]; then
   echo "--cycle requires a positive integer (got '$CYCLE_ARG')"; exit 1
 fi
 
+# ---- TASK BANNER AND ARCHIVE NOTES (the same text in job.run and job_fe.run) ----
+#
 # WHERE AND WHEN A TASK RAN. The slurm output of bm_fe_amber_3a named a node only in
 # the NODE FAILURE lines of two tasks and held no time at all, so which node a slow
 # or failing task had run on, and when, took sacct; a GPU lost mid-task (n3067-012,
@@ -101,9 +103,8 @@ task_banner() {
        "GROSCORE_GPU_ID=${GROSCORE_GPU_ID-unset}"
   gpu_report
 }
-task_banner start "job_fe.run ${MODE}${CYCLE_ARG:+ $CYCLE_ARG} in $PWD"
 
-# archive_note TEXT...: print an outcome of archive_structure, its words joined by
+# archive_note TEXT...: print an outcome of the archive step, its words joined by
 # spaces, and append it with the time and host to archive.log in the run directory.
 # The job log alone is not enough: under --run-local it lives inside the structure
 # directory, which the archive has just removed, so the line went to a deleted file.
@@ -118,7 +119,9 @@ archive_note() {
 # election marker is removed; during the tar or its test, the .part as well, and the
 # directory is kept; once the tested archive is in place, the directory was being
 # removed, and what is left of it is the user's to remove (the archive is whole).
-# ARCHIVE_STAGE (prep, tar, rm) and the absolute paths are set by archive_structure.
+# ARCHIVE_STAGE (prep, tar, rm) and the absolute paths are set by the archive step:
+# archive_structure in job_fe.run, which alone has the prep stage and the election
+# marker (.archive.lock), and the end of job.run, where the job lock does that work.
 ARCHIVE_STAGE=""
 ARCHIVE_PART=""
 ARCHIVE_LOCK=""
@@ -145,6 +148,9 @@ archive_abort() {
   esac
   ARCHIVE_STAGE=""
 }
+# ---- end of the task banner and archive notes both runners share ----
+
+task_banner start "job_fe.run ${MODE}${CYCLE_ARG:+ $CYCLE_ARG} in $PWD"
 # The end line comes from the EXIT trap, so a task stopped by INT or TERM (scancel,
 # the walltime) prints it too, with exit 130 or 143; one killed outright (KILL)
 # prints none. Every later EXIT trap of this script ends with the same call, after
@@ -2434,6 +2440,23 @@ fi
                        z(i), z(i + d*n), n*t
                 if (have_s && s > 0) printf " --last-ps=%.10g", int(n / s) * s * t }' "$1"
       }
+      # What integrate.py checks a pull-force record against, from the mdp the leg
+      # ran with: --tend, the leg's length (nsteps * dt), and --last-ps, where its
+      # last row is (floor(nsteps / pull-nstfout) rows). mdrun writes pull output
+      # on multiples of pull-nstfout only, so --tend alone has to allow one output
+      # interval (bindfwdD ends at 2290 of 2291 ps), and a record that lost its last
+      # row, the one a disk that fills at the end of a leg takes, passed it.
+      # --last-ps is left out for an mdp without pull-nstfout.
+      pull_span() {
+        awk -F= '
+          { v = $2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v) }
+          /^ *nsteps *=/          {n = v + 0; have_n = 1}
+          /^ *dt *=/              {t = v + 0; have_t = 1}
+          /^ *pull[-_]nstfout *=/ {s = v + 0; have_s = 1}
+          END { if (!have_n || !have_t || n <= 0 || t <= 0) exit 1
+                printf "--tend=%.10g", n * t
+                if (have_s && s > 0) printf " --last-ps=%.10g", int(n / s) * s * t }' "$1"
+      }
       # The mdp a leg ran with, looked up by leg name.
       mdp_of() {
         local i
@@ -2456,10 +2479,14 @@ fi
         _f="${_leg}_${cycle}"
         if [[ "$_chan" == "pull" ]]; then
           _rate=$(rate_of "$_leg")
+          _span=$(pull_span "$(mdp_of "$_leg")")
           if [[ -z "$_rate" ]]; then
             echo "ERROR: no stage_rate_nm_ps for $_leg in boresch_analytical.gs;" >&2
             echo "       $_field of cycle $cycle stays NaN rather than being" >&2
             echo "       integrated at a guessed rate." >&2
+          elif [[ -z "$_span" ]]; then
+            echo "ERROR: could not read nsteps and dt for $_leg; $_field of cycle" >&2
+            echo "       $cycle stays NaN rather than being integrated unchecked." >&2
           elif [[ -f ${_f}_pullf.xvg ]]; then
             # Each interface reference follows its own chord of the pull path, so
             # the coordinates no longer share one rate and the summed force has to
@@ -2469,10 +2496,10 @@ fi
             _wf=pull_weights_${_leg}.gs
             if [[ -f $_wf ]]; then
               W[$_field]=$(integrate_or_nan python3 ../../utils/integrate.py \
-                           -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate -R $_wf)
+                           -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate -R $_wf $_span)
             else
               W[$_field]=$(integrate_or_nan python3 ../../utils/integrate.py \
-                           -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate)
+                           -f ${_f}_pullf.xvg -nr $NUMPERTRES -r $_rate $_span)
             fi
           fi
         else
@@ -2500,10 +2527,15 @@ fi
         [[ "${FE_LEG_PULL[$_i]}" == "1" ]] && LAST_STAGE="${FE_LEGS[$_i]}"
       done
       if [[ -f npt_c${cycle}.gro && -f ${LAST_STAGE}_${cycle}.gro ]]; then
+        # A NaN comes with rebound_rmsd.py's reason, printed by integrate_or_nan.
         RMSD=$(integrate_or_nan python3 ../../utils/rebound_rmsd.py \
                  --ref npt_c${cycle}.gro --query ${LAST_STAGE}_${cycle}.gro \
                  -s emin_solv.tpr -n index.ndx --tag c${cycle})
-        echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+        if [[ "$RMSD" == NaN ]]; then
+          echo "Cycle $cycle rebound backbone RMSD: NaN (not measured, see the rebound_rmsd lines above)"
+        else
+          echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+        fi
 
         # The backbone RMSD says the partners are in roughly the right place. It
         # says nothing about whether the CONTACTS re-formed or the interface side
@@ -2524,6 +2556,9 @@ fi
             echo "Cycle $cycle interface: $IQC"
           fi
         fi
+      else
+        echo "Cycle $cycle rebound backbone RMSD: NaN (not measured: npt_c${cycle}.gro or" \
+             "${LAST_STAGE}_${cycle}.gro is missing)"
       fi
       # One file per cycle rather than appending to a shared results_fe.gs: with
       # cycles running as parallel array tasks, many writers would race on the

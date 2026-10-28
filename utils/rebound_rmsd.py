@@ -35,12 +35,19 @@ two frames, of any size, does not enter.
 Used routinely by job.run / job_fe.run (one value per cycle, written into the
 results files) and by benchmark/haddock_benchmark/compute_rebound_rmsd.py.
 
-Usage (prints the RMSD in Angstrom, or NaN if it could not be computed):
+Usage (prints the RMSD in Angstrom, exit 0; or NaN, the reason on stderr, exit 1):
   python3 rebound_rmsd.py --ref npt_c1.gro --query bindrev_2.gro
+
+A failure is never fatal to a cycle: both runners write NaN for it. Through v1.6
+it also exited 0, and job_fe.run, which shows a helper's stderr only when it
+fails, dropped the reason, so a NaN in the RMSD column of results_fe.d explained
+nothing. It now exits 1, and the reason names both frames, the missing file or the
+GROMACS fatal error of gmx rms (its message, not the last 200 bytes of stderr).
 """
 
 import os
 import sys
+import math
 import argparse
 import subprocess
 
@@ -65,6 +72,25 @@ def gmx(cmd, cwd, gmxrc=None):
                             env=_gmx_env(),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return result.returncode, result.stderr.decode('utf-8', 'replace')
+
+
+def gmx_error(err):
+    """The message of a GROMACS fatal error in err, on one line: the text after
+    'Fatal error:' up to the 'For more information' line or the closing dashes.
+    Without one (gmx not found, a crash), the last three non-empty lines."""
+    lines = [l.strip() for l in err.splitlines()]
+    for k, l in enumerate(lines):
+        if l.startswith('Fatal error'):
+            msg = [l.split(':', 1)[1].strip()] if ':' in l else []
+            for m in lines[k + 1:]:
+                if m.startswith(('For more information', '-----')):
+                    break
+                msg.append(m)
+            msg = ' '.join(m for m in msg if m)
+            if msg:
+                return msg
+    tail = [l for l in lines if l]
+    return ' | '.join(tail[-3:]) if tail else 'no message on stderr'
 
 # ── RMSD ──────────────────────────────────────────────────────────────────────
 
@@ -93,11 +119,15 @@ def compute_rmsd(ref_gro, query_gro, workdir, xvg, gmxrc=None):
                   '-s %s -f %s -o %s -quiet' % (ref_gro, query_gro, xvg),
                   workdir, gmxrc)
     xvg_path = os.path.join(workdir, xvg)
-    if rc != 0 or not os.path.isfile(xvg_path):
-        return None, 'gmx rms failed: ' + err[-200:]
+    if rc != 0:
+        return None, 'gmx rms failed (exit %d): %s' % (rc, gmx_error(err))
+    if not os.path.isfile(xvg_path):
+        return None, 'gmx rms wrote no %s: %s' % (xvg, gmx_error(err))
     rmsd_nm = parse_rmsd_xvg(xvg_path)
     if rmsd_nm is None:
-        return None, 'could not parse xvg'
+        return None, 'gmx rms wrote no RMSD row into %s' % xvg
+    if not math.isfinite(rmsd_nm):
+        return None, 'gmx rms gave an RMSD of %s' % rmsd_nm
     return rmsd_nm * 10.0, ''   # nm → Å
 
 # ── assembly ──────────────────────────────────────────────────────────────────
@@ -138,9 +168,10 @@ def rebound_rmsd(workdir, ref_gro, query_gro, tpr='emin_solv.tpr',
     def path(name):
         return os.path.join(workdir, name)
 
-    for f in (ref_gro, query_gro, ndx):
+    for f, what in ((ref_gro, 'reference frame'), (query_gro, 're-bound frame'),
+                    (ndx, 'index file')):
         if not os.path.isfile(path(f)):
-            return None, 'missing %s' % f, ''
+            return None, 'the %s %s does not exist' % (what, f), ''
 
     ref_out = 'rbref_%s.gro' % tag
     qry_out = 'rbqry_%s.gro' % tag
@@ -197,14 +228,17 @@ def main():
     except Exception as e:                      # never abort a cycle over a diagnostic
         rmsd, err, detail = None, '%s: %s' % (type(e).__name__, e), ''
     if rmsd is None:
-        # NaN on stdout keeps the caller's field count intact; the reason goes to stderr.
+        # NaN on stdout keeps the caller's field count intact; the reason goes to
+        # stderr, and the exit status says there is no value.
         print("NaN")
-        print("rebound_rmsd: %s" % err, file=sys.stderr)
-        return
+        print("rebound_rmsd: %s vs %s: %s; no RMSD" % (args.ref, args.query, err),
+              file=sys.stderr)
+        return 1
     print("%.4f" % rmsd)
     if args.verbose:
         print("rebound_rmsd: [%s]" % detail, file=sys.stderr)
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

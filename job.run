@@ -13,6 +13,121 @@ if [[ -n "${GROSCORE_GPU_ID:-}" ]]; then
   GPUOPT="-gpu_id $GROSCORE_GPU_ID -pin off"
 fi
 
+# ---- TASK BANNER AND ARCHIVE NOTES (the same text in job.run and job_fe.run) ----
+#
+# WHERE AND WHEN A TASK RAN. The slurm output of bm_fe_amber_3a named a node only in
+# the NODE FAILURE lines of two tasks and held no time at all, so which node a slow
+# or failing task had run on, and when, took sacct; a GPU lost mid-task (n3067-012,
+# n3068-001) showed only as mdrun falling back to the CPU at a tenth of its speed.
+# Every task therefore says when and where it starts and ends, and which GPUs it
+# sees. A failing nvidia-smi is printed rather than hidden: that is the symptom being
+# looked for. It is waited for 30 s at most and then left behind, not waited out: on
+# a GPU that has fallen off the bus it can hang in the kernel, where neither TERM nor
+# KILL ends it, and `timeout` and a command substitution would both wait for it. All
+# GPUs it lists are shown: its index order need not be the CUDA order that -gpu_id
+# (GROSCORE_GPU_ID) counts in.
+gpu_report() {
+  local f pid rc i out
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "  GPU: no nvidia-smi on this host"
+    return 0
+  fi
+  if ! f=$(mktemp 2>/dev/null); then
+    echo "  GPU: not queried (no temporary file)"
+    return 0
+  fi
+  nvidia-smi --format=csv,noheader \
+    --query-gpu=index,name,pci.bus_id,memory.used,memory.total,utilization.gpu > "$f" 2>&1 &
+  pid=$!
+  for ((i = 0; i < 300; i++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null
+    echo "  GPU: nvidia-smi did not answer within 30 s"
+    rm -f "$f"
+    return 0
+  fi
+  wait "$pid"
+  rc=$?
+  out=$(cat "$f")
+  rm -f "$f"
+  if [[ $rc -ne 0 || -z "$out" ]]; then
+    echo "  GPU: nvidia-smi failed (exit $rc): ${out%%$'\n'*}"
+  else
+    while IFS= read -r _gpu; do echo "  GPU $_gpu"; done <<< "$out"
+  fi
+}
+# task_banner start|end TEXT
+task_banner() {
+  local job="-"
+  if [[ -n "${SLURM_ARRAY_JOB_ID:-}" ]]; then
+    job="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID:-}"
+  elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    job="$SLURM_JOB_ID"
+  fi
+  echo "Task $1: $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), $2"
+  echo "  SLURM job $job, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-unset}," \
+       "GROSCORE_GPU_ID=${GROSCORE_GPU_ID-unset}"
+  gpu_report
+}
+
+# archive_note TEXT...: print an outcome of the archive step, its words joined by
+# spaces, and append it with the time and host to archive.log in the run directory.
+# The job log alone is not enough: under --run-local it lives inside the structure
+# directory, which the archive has just removed, so the line went to a deleted file.
+ARCHIVE_LOG=""
+archive_note() {
+  echo "$*"
+  [[ -n "$ARCHIVE_LOG" ]] && echo "$(date '+%Y-%m-%d %H:%M:%S %z') $(hostname) $*" >> "$ARCHIVE_LOG"
+  return 0
+}
+# An archive stopped by INT or TERM (the INT and TERM traps call this) says how far
+# it got and leaves nothing that blocks the next one: before the tar, only the
+# election marker is removed; during the tar or its test, the .part as well, and the
+# directory is kept; once the tested archive is in place, the directory was being
+# removed, and what is left of it is the user's to remove (the archive is whole).
+# ARCHIVE_STAGE (prep, tar, rm) and the absolute paths are set by the archive step:
+# archive_structure in job_fe.run, which alone has the prep stage and the election
+# marker (.archive.lock), and the end of job.run, where the job lock does that work.
+ARCHIVE_STAGE=""
+ARCHIVE_PART=""
+ARCHIVE_LOCK=""
+ARCHIVE_HAD_OLD=""
+archive_abort() {
+  case "$ARCHIVE_STAGE" in
+    prep)
+      rmdir "$ARCHIVE_LOCK" 2>/dev/null
+      archive_note "Archive of ${STRUCT_ID} interrupted before its tar; directory kept." ;;
+    tar)
+      # The .part gone and an archive there that was not there before: the rename
+      # had happened.
+      if [[ -e "$ARCHIVE_PART" || ! -e "${ARCHIVE_PART%.part}" || -n "$ARCHIVE_HAD_OLD" ]]; then
+        rm -f "$ARCHIVE_PART"
+        rmdir "$ARCHIVE_LOCK" 2>/dev/null
+        archive_note "Archive of ${STRUCT_ID} interrupted; ${ARCHIVE_PART##*/} removed, directory kept."
+      else
+        archive_note "Archive of ${STRUCT_ID} interrupted after ${STRUCT_ID}.tar.gz passed its gzip" \
+                     "test; ${STRUCT_ID}/ was not removed. Remove it by hand."
+      fi ;;
+    rm)
+      archive_note "${STRUCT_ID}.tar.gz is complete (gzip test passed), but removing ${STRUCT_ID}/" \
+                   "was interrupted. Remove what is left of ${STRUCT_ID}/ by hand." ;;
+  esac
+  ARCHIVE_STAGE=""
+}
+# ---- end of the task banner and archive notes both runners share ----
+
+task_banner start "job.run in $PWD"
+# The end line comes from the EXIT trap, so a job stopped by INT or TERM (scancel,
+# the walltime) prints it too, with exit 130 or 143; one killed outright (KILL)
+# prints none. The lock traps below replace these and end with the same call, since
+# a trap replaces the one before it.
+trap '_rc=$?; task_banner end "exit $_rc, after ${SECONDS} s"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # proc_start PID: the start time of process PID (clock ticks after boot, field 22 of
 # /proc/PID/stat), or nothing when it does not exist. A pid is reused; a pid and its
 # start time are not.
@@ -196,10 +311,11 @@ if take_lock "$PWD/job_run.lock"; then
   # the lock on TERM let bash go on with the next leg once the running one returned,
   # without the lock: a SIGTERM to the script half a second into a leg released it,
   # and every later leg still ran, exit 0 (bash 5, 2026-10-04). The running leg is
-  # stopped first, and the lock released only once it has (stop_leg, run_bg).
-  trap 'release_job_lock' EXIT
-  trap 'stop_leg; exit 143' TERM
-  trap 'stop_leg; exit 130' INT
+  # stopped first, and the lock released only once it has (stop_leg, run_bg). An
+  # archive under way says how far it got (archive_abort).
+  trap '_rc=$?; release_job_lock; task_banner end "exit $_rc, after ${SECONDS} s"' EXIT
+  trap 'stop_leg; archive_abort; exit 143' TERM
+  trap 'stop_leg; archive_abort; exit 130' INT
 else
   # Non-zero, so neither SLURM nor the local runner reports this job as done.
   echo "Safety check: another job.run (owner $LOCK_OWNER) holds job_run.lock in this"
@@ -1226,17 +1342,30 @@ with open('$CUTOUT_PDB', 'w') as f:
   # Read NUMPERTRES for integration
   NUMPERTRES=$(awk 'NR==1{print $1}' numpertres.gs)
 
-  # What integrate.py checks every pull-force file against: the leg's length
-  # (nsteps * dt, 5000 ps) and the number of pull coordinates of the restraint set,
-  # so a leg cut short or written under another restraint set yields NaN, not a
-  # number.
-  LEG_PS=$(awk -F= '/^ *nsteps *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); n=v}
-                    /^ *dt *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); d=v}
-                    END{if (n != "" && d != "") printf "%.10g", n*d}' bind.mdp)
-  NCOORDS=$(awk -F= '/^ *pull-ncoords *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); print v; exit}' bind.mdp)
-  INTEG_OPTS=""
-  [[ "$LEG_PS" =~ ^[0-9.]+$ ]] && INTEG_OPTS="$INTEG_OPTS --tend $LEG_PS"
-  [[ "$NCOORDS" =~ ^[0-9]+$ ]] && INTEG_OPTS="$INTEG_OPTS --ncols $NCOORDS"
+  # What integrate.py checks a pull-force file against, read from the mdp the leg
+  # ran with: the leg's length (--tend, nsteps * dt, 5000 ps), where its last row is
+  # (--last-ps, floor(nsteps / pull-nstfout) * pull-nstfout * dt) and the number of
+  # pull coordinates of the restraint set (--ncols), so a leg cut short, a record
+  # that lost its last row or a leg written under another restraint set yields NaN,
+  # not a number. --tend alone allows one output interval, as mdrun writes no row
+  # at nsteps that is not on a multiple of pull-nstfout, and a lost last row, the
+  # one a disk that fills at the end of a leg takes, fell within it.
+  integ_opts() {
+    local n d s c
+    n=$(awk -F= '/^ *nsteps *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); n=v} END{print n}' "$1")
+    d=$(awk -F= '/^ *dt *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); d=v} END{print d}' "$1")
+    s=$(awk -F= '/^ *pull[-_]nstfout *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); s=v} END{print s}' "$1")
+    c=$(awk -F= '/^ *pull[-_]ncoords *=/{v=$2; sub(/;.*/, "", v); gsub(/[ \t]/, "", v); print v; exit}' "$1")
+    if [[ "$n" =~ ^[0-9]+$ && "$d" =~ ^[0-9.]+$ ]]; then
+      awk -v n="$n" -v d="$d" -v s="$s" 'BEGIN {
+            printf " --tend %.10g", n * d
+            if (s ~ /^[0-9]+$/ && s > 0) printf " --last-ps %.10g", int(n / s) * s * d }'
+    fi
+    [[ "$c" =~ ^[0-9]+$ ]] && printf ' --ncols %s' "$c"
+    return 0
+  }
+  PULL_OPTS=$(integ_opts bind.mdp)
+  PUSH_OPTS=$(integ_opts bindrev.mdp)
 
   # Total number of cycles wanted. GROSCORE_NUMCYCLES (exported by the array script
   # and the local runner that groscore.py writes) takes precedence over run.gs, so
@@ -1301,17 +1430,22 @@ with open('$CUTOUT_PDB', 'w') as f:
       for x in $PULL $PUSH; do
         [[ ! -f $x.xvg && -f $x.xvg.gz ]] && gunzip -f $x.xvg.gz
       done
-      PULL_W=$(num_or_nan python3 ../../utils/integrate.py -f $PULL.xvg -nr $NUMPERTRES $INTEG_OPTS)
-      PUSH_W=$(num_or_nan python3 ../../utils/integrate.py -f $PUSH.xvg -nr $NUMPERTRES $INTEG_OPTS)
+      PULL_W=$(num_or_nan python3 ../../utils/integrate.py -f $PULL.xvg -nr $NUMPERTRES $PULL_OPTS)
+      PUSH_W=$(num_or_nan python3 ../../utils/integrate.py -f $PUSH.xvg -nr $NUMPERTRES $PUSH_OPTS)
       # Rebinding sanity check: backbone RMSD (Angstrom) between the bound state this
       # cycle was equilibrated in and the state the push leg ended in. A large value
       # means the partners did not return to the original pose, so the work of this
       # cycle does not describe the intended binding event. Always computed, never
       # fatal: groscore.py flags it (see --rmsd-warn). Measured once per cycle, with
       # the integration; nothing is read back from older rows.
+      # rebound_rmsd.py says on stderr, in this log, why it has no value.
       RMSD=$(num_or_nan python3 ../../utils/rebound_rmsd.py --ref npt_c${cycle}.gro \
                --query $PUSH.gro -s emin_solv.tpr -n index.ndx --tag c${cycle})
-      echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+      if [[ "$RMSD" == NaN ]]; then
+        echo "Cycle $cycle rebound backbone RMSD: NaN (not measured, see the rebound_rmsd line above)"
+      else
+        echo "Cycle $cycle rebound backbone RMSD: $RMSD A"
+      fi
       gzip -f $PULL.xvg $PUSH.xvg 2>/dev/null
     fi
     printf '%s %d %s %s %s\n' "$STRUCT_ID" $cycle "$PULL_W" "$PUSH_W" "$RMSD" > $ROW.tmp$$ \
@@ -1320,6 +1454,14 @@ with open('$CUTOUT_PDB', 'w') as f:
       cp $ROW $DONE
     else
       echo "Cycle $cycle FAILED: pull $PULL_W, push $PUSH_W; no .done, the next run retries it."
+      if [[ $LEGS_OK -eq 1 ]]; then
+        # Every leg finished, so a retry runs nothing and integrates the same files.
+        _bad=$PUSH; [[ "$PULL_W" == NaN ]] && _bad=$PULL
+        echo "  Every leg of this cycle finished, so the next run integrates the same force"
+        echo "  files again. If integrate.py refused $_bad.xvg above (a damaged record), move"
+        echo "  aside that leg's files ($_bad.*) and resubmit: the leg runs again from step 0,"
+        echo "  and the legs built from its old end follow (leg(), tpr_stale)."
+      fi
       CYCLE_FAILED=1
     fi
 
@@ -1333,18 +1475,48 @@ with open('$CUTOUT_PDB', 'w') as f:
   # tar that ran out of quota part-way exited 2, and the directory was deleted anyway,
   # leaving a 100,000-byte tarball. job_run.lock stays out of the archive: an
   # unpacked copy would carry an owner whose death another host cannot prove.
+  #
+  # The archive is written as <ID>.tar.gz.part, tested with gzip -t and only then
+  # renamed and the directory removed, as job_fe.run does: a tar that wrote a
+  # damaged archive with exit 0, or a job killed while it tarred, leaves no file
+  # groscore.py or the array script would take for an archive, and an older
+  # <ID>.tar.gz is never removed by a failed attempt (it was, rm -f after any
+  # failure). Success prints a line with the size, as failure always did, and both
+  # go to archive.log in the run directory (archive_note), the one place they
+  # survive under --run-local, where this log is inside the removed directory. The
+  # job lock keeps a second job.run out, so no election marker is needed here. A
+  # structure whose archive failed is archived by its next job: groscore.py
+  # --restart submits every structure directory, and the re-walk ends here.
   DONE_CYCLES=0
   for ((c = 1; c <= NUMCYCLES; c++)); do
     [[ -s results_c$c.done ]] && DONE_CYCLES=$((DONE_CYCLES+1))
   done
   if [[ $NUMCYCLES -gt 0 && $DONE_CYCLES -eq $NUMCYCLES ]]; then
+    ARCHIVE_LOG="${PWD%/*}/archive.log"
+    ARCHIVE_PART="${PWD%/*}/${STRUCT_ID}.tar.gz.part"
     cd ..
-    if tar -czf "${STRUCT_ID}.tar.gz" --exclude="${STRUCT_ID}/job_run.lock" "${STRUCT_ID}/" \
-       && [[ -s "${STRUCT_ID}.tar.gz" ]]; then
-      rm -rf "${STRUCT_ID}/"
+    rm -f "$ARCHIVE_PART"
+    ARCHIVE_HAD_OLD=""
+    [[ -e "${STRUCT_ID}.tar.gz" ]] && ARCHIVE_HAD_OLD=1
+    ARCHIVE_STAGE=tar
+    if tar -czf "$ARCHIVE_PART" --exclude="${STRUCT_ID}/job_run.lock" "${STRUCT_ID}/" \
+       && [[ -s "$ARCHIVE_PART" ]] && gzip -t "$ARCHIVE_PART" \
+       && mv -f "$ARCHIVE_PART" "${STRUCT_ID}.tar.gz"; then
+      ARCHIVE_STAGE=rm
+      _bytes=$(stat -c %s "${STRUCT_ID}.tar.gz" 2>/dev/null)
+      if rm -rf "${STRUCT_ID}/"; then
+        archive_note "Archived ${STRUCT_ID} to ${STRUCT_ID}.tar.gz (${_bytes:-?} bytes, gzip test" \
+                     "passed); directory removed."
+      else
+        archive_note "Archived ${STRUCT_ID} to ${STRUCT_ID}.tar.gz (${_bytes:-?} bytes, gzip test" \
+                     "passed), but ${STRUCT_ID}/ could not be removed completely; remove it by hand."
+      fi
+      ARCHIVE_STAGE=""
     else
-      echo "Archive failed or empty for ${STRUCT_ID}; keeping directory."
-      rm -f "${STRUCT_ID}.tar.gz"
+      ARCHIVE_STAGE=""
+      archive_note "Archive failed or empty for ${STRUCT_ID} (tar, the gzip test or the rename" \
+                   "failed, see above); keeping directory."
+      rm -f "$ARCHIVE_PART"
     fi
   fi
 else

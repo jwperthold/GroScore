@@ -36,7 +36,10 @@ file format and of the periodic cell rather than the structure. Pinned here:
      masses reproduces below. The old propagation fails on this layout even with
      nothing scattered (12.9 A for the rigid motion), since its first two chain-A
      fragments are 3.5 nm apart in a 6 nm box; on real 2KTF cycles, which have no
-     such gap, old and new agree to 0.0001 A.
+     such gap, old and new agree to 0.0001 A. A failure prints NaN, exits 1 and
+     gives a reason that names both frames: no Protein group, a missing frame, the
+     fatal error of a gmx rms that dies (a fake gmx, which needs no GROMACS), the
+     last line of one that crashes.
   D. pbc_tools.min_image against a brute-force lattice search, on the cell shapes
      GROMACS writes and on two flat triclinic cells GROMACS accepts, where
      reduction plus 27 neighbours returned images up to 1.13 nm too long (the
@@ -378,12 +381,62 @@ if ok_fix:
           abs(w_ind - FIXED_DEFORMED) < 0.001, "%.5f" % w_ind)
     left = [f for f in os.listdir(c_dir) if f.startswith(("rbref_", "rbqry_", "rmsd_"))]
     check("no scratch files left behind", not left, str(left))
-    # 'never abort, nan on failure': an index without a Protein group.
+    # A failure: NaN on stdout (the caller's field), the reason on stderr, exit 1.
+    # Through v1.6 it exited 0, and job_fe.run, which shows a helper's stderr only
+    # when it fails, dropped the reason.
     open(os.path.join(c_dir, "bad.ndx"), "w").write("[ System ]\n1 2 3\n")
     r = subprocess.run([sys.executable, RMSD, "--ref", "ref.gro", "--query", "def_scatter.gro",
                         "-n", "bad.ndx"], cwd=c_dir, capture_output=True, text=True)
-    check("a failure prints NaN and exits 0", r.returncode == 0 and r.stdout.strip() == "NaN",
+    check("no Protein group: NaN, exit 1", r.returncode == 1 and r.stdout.strip() == "NaN",
           "%d %r" % (r.returncode, r.stdout.strip()))
+    check("  and stderr names both frames and the reason",
+          "rebound_rmsd: ref.gro vs def_scatter.gro: no Protein group" in r.stderr, r.stderr[-200:])
+
+# Failures that need no gmx: a missing frame, and a gmx rms that dies with a
+# GROMACS fatal error (a fake gmx on PATH), whose message, not the last 200 bytes of
+# stderr, is the reason.
+f_dir = os.path.join(work, "rmsd_fail")
+os.makedirs(f_dir)
+write_gro(os.path.join(f_dir, "ref.gro"), S_ATOMS, place(S_XYZ, I3, T_REF, SH_REF, sbox), sbox)
+write_gro(os.path.join(f_dir, "q.gro"), S_ATOMS, place(X_DEF, rot, T_QRY, SH_QRY, sbox), sbox)
+with open(os.path.join(f_dir, "index.ndx"), "w") as f:
+    f.write("[ Protein ]\n" + " ".join("%d" % (i + 1) for i in range(len(S_ATOMS))) + "\n")
+r = subprocess.run([sys.executable, RMSD, "--ref", "ref.gro", "--query", "bindrevA_3.gro"],
+                   cwd=f_dir, capture_output=True, text=True)
+check("a missing re-bound frame: NaN, exit 1, named",
+      r.returncode == 1 and r.stdout.strip() == "NaN"
+      and "the re-bound frame bindrevA_3.gro does not exist" in r.stderr, "%d %s" % (r.returncode, r.stderr[-200:]))
+fbin = os.path.join(f_dir, "bin")
+os.makedirs(fbin)
+with open(os.path.join(fbin, "gmx"), "w") as f:
+    f.write("#!/bin/bash\ncat > /dev/null\n"
+            "printf '%s\\n' '                :-) GROMACS - gmx rms, 2026.0 (-:' '' "
+            "'-------------------------------------------------------' "
+            "'Program:     gmx rms, version 2026.0' 'Source file: src/gromacs/fileio/confio.cpp (line 517)' '' "
+            "'Fatal error:' 'Number of atoms in coordinate file (q.gro, 191) does not match' "
+            "'topology (ref.gro, 192)' '' "
+            "'For more information and tips for troubleshooting, please check the GROMACS' "
+            "'website at https://manual.gromacs.org/current/user-guide/run-time-errors.html' "
+            "'-------------------------------------------------------' >&2\nexit 1\n")
+os.chmod(os.path.join(fbin, "gmx"), 0o755)
+r = subprocess.run([sys.executable, RMSD, "--ref", "ref.gro", "--query", "q.gro"], cwd=f_dir,
+                   capture_output=True, text=True,
+                   env=dict(os.environ, PATH=fbin + os.pathsep + os.environ["PATH"]))
+want = ("gmx rms failed (exit 1): Number of atoms in coordinate file (q.gro, 191) does not match "
+        "topology (ref.gro, 192); no RMSD")
+check("gmx rms dies: NaN, exit 1, the GROMACS fatal error on one line",
+      r.returncode == 1 and r.stdout.strip() == "NaN" and want in r.stderr, r.stderr[-300:])
+check("  and its scratch files are gone",
+      not [f for f in os.listdir(f_dir) if f.startswith(("rbref_", "rbqry_", "rmsd_"))],
+      str(os.listdir(f_dir)))
+with open(os.path.join(fbin, "gmx"), "w") as f:
+    f.write("#!/bin/bash\ncat > /dev/null\necho 'Segmentation fault (core dumped)' >&2\nexit 139\n")
+r = subprocess.run([sys.executable, RMSD, "--ref", "ref.gro", "--query", "q.gro"], cwd=f_dir,
+                   capture_output=True, text=True,
+                   env=dict(os.environ, PATH=fbin + os.pathsep + os.environ["PATH"]))
+check("a gmx crash without a fatal-error block: its last line is the reason",
+      r.returncode == 1 and "gmx rms failed (exit 139): Segmentation fault (core dumped)" in r.stderr,
+      r.stderr[-200:])
 
 # ---------------------------------------------------------------- pbc_tools
 print("\nD. pbc_tools.min_image against a brute-force lattice search")

@@ -25,6 +25,14 @@ Pinned here, on files written in GROMACS's own layout (tab-separated rows, one
   [5] a file from another restraint set is refused: -nr beyond the columns, -nr 0,
       --ncols against the legends, a short row before the last.
   [6] time running backwards and a non-finite force are refused.
+  [7] --last-ps: the last complete row must be exactly where the leg writes its
+      last row. A record that lost only that row passes --tend (one interval) and
+      is refused here, also when the row is there but cut; one that ends a row
+      late is refused; four-decimal times pass.
+  [8] the runners hand it over: job_fe.run's pull_span and job.run's integ_opts,
+      taken from the scripts and run on every shipped pull mdp of every settings
+      tree, give floor(nsteps / pull-nstfout) * pull-nstfout * dt (bindfwdD:
+      2290 of 2291 ps), and integrate.py accepts what they print.
 Every refusal prints exactly NaN on stdout, so a caller that reads only stdout
 still writes a field no score accepts.
 
@@ -77,6 +85,11 @@ def is_work(res, want):
 def is_nan(res):
     rc, out, _ = res
     return rc != 0 and out == "NaN"
+
+
+def rc_ok(res):
+    rc, out, _ = res
+    return rc == 0 and out not in ("", "NaN")
 
 
 # 3 interface columns at -10 and 2 elastic-network columns at +7, every 2 ps.
@@ -158,6 +171,121 @@ with tempfile.TemporaryDirectory() as d:
     dup = FULL[:10] + [FULL[9]] + FULL[10:]
     check("a repeated time stamp adds nothing (30.0)",
           is_work(run(xvg(p("dup.xvg"), dup, 5), "-nr", "3"), 30.0))
+
+    print("\n[7] --last-ps: the last complete row is where the leg writes its last row")
+    res = run(f_full, "-nr", "3", "--tend", "5000", "--last-ps", "5000")
+    check("last row at 5000, --last-ps 5000 -> 30.0", is_work(res, 30.0), res)
+    lost = xvg(p("lost.xvg"), FULL[:-1], 5)                                  # 0..4998 ps
+    res = run(lost, "-nr", "3", "--tend", "5000")
+    check("the last row lost: --tend alone lets it through (29.988)", is_work(res, 29.988), res)
+    res = run(lost, "-nr", "3", "--tend", "5000", "--last-ps", "5000")
+    check("  --last-ps 5000 refuses it", is_nan(res), res)
+    check("  saying where the record ends and where it should",
+          "4998" in res[2] and "5000" in res[2] and "lost its tail" in res[2], res[2])
+    res = run(xvg(p("lostcut.xvg"), FULL[:-1], 5, tail="5000.0000\t-10\t-10\t-10\t7"),
+              "-nr", "3", "--last-ps", "5000")
+    check("the last row there but cut: refused, the cut line named", is_nan(res)
+          and "cut, was dropped" in res[2], res)
+    # bindfwdD: nsteps 572750, pull-nstfout 500, dt 0.004: rows 0..2290 ps, leg 2291.
+    D = FULL[:1146]
+    res = run(xvg(p("legD.xvg"), D, 5), "-nr", "3", "--tend", "2291", "--last-ps", "2290")
+    check("a leg whose nsteps is no multiple of pull-nstfout (2290 of 2291 ps) passes",
+          is_work(res, 0.0002 * 30 * 2290), res)
+    res = run(xvg(p("legDlost.xvg"), D[:-1], 5), "-nr", "3", "--last-ps", "2290")
+    check("  its record without the 2290 row: --last-ps 2290 refuses it", is_nan(res), res)
+    # bindfwdA: nsteps 1260000 is a multiple of 500, rows 0..5040 ps. Losing the
+    # 5040 row leaves 5038, one interval short, which --tend 5040 accepts.
+    A = [(2.0 * k, [-10.0, -10.0, -10.0, 7.0, 7.0]) for k in range(2521)]
+    res = run(xvg(p("legAlost.xvg"), A[:-1], 5), "-nr", "3", "--tend", "5040")
+    check("a multiple of pull-nstfout (bindfwdA) without its last row passes --tend 5040",
+          rc_ok(res), res)
+    res = run(p("legAlost.xvg"), "-nr", "3", "--tend", "5040", "--last-ps", "5040")
+    check("  and --last-ps 5040 refuses it", is_nan(res), res)
+    res = run(xvg(p("late.xvg"), FULL + [(5002.0, [-10.0] * 3 + [7.0, 7.0])], 5),
+              "-nr", "3", "--last-ps", "5000")
+    check("a record one row past its last row -> NaN (ran longer than its mdp)",
+          is_nan(res) and "longer" in res[2], res)
+    # dt 0.00125, pull-nstfout 3: rows every 0.00375 ps, written with four decimals,
+    # so the last row, 1333 * 3 * 0.00125 = 4.99875 ps, reads 4.9988.
+    four = [(k * 3 * 0.00125, [-10.0, -10.0, -10.0, 7.0, 7.0]) for k in range(1334)]
+    res = run(xvg(p("four.xvg"), four, 5), "-nr", "3", "--tend", "5",
+              "--last-ps", "%.10g" % (1333 * 3 * 0.00125))
+    check("times rounded to four decimals (4.9988) match --last-ps 4.99875", rc_ok(res), res)
+
+print("\n[8] what the runners pass, on every shipped pull mdp")
+import glob, re
+SETTINGS = os.path.join(ROOT, "settings")
+
+
+def mdp_value(path, key):
+    v = None
+    for line in open(path):
+        k, _, rest = line.partition("=")
+        if k.strip().replace("_", "-") == key:
+            v = rest.split(";")[0].strip()
+    return v
+
+
+# The legs that write pull output (pull-nstfout 0, the holds, write none).
+mdps = sorted(m for m in glob.glob(os.path.join(SETTINGS, "*", "*.mdp"))
+              if (mdp_value(m, "pull") or "").lower() == "yes"
+              and int(mdp_value(m, "pull-nstfout") or 0) > 0)
+
+
+def expected(path):
+    n, dt, s = int(mdp_value(path, "nsteps")), float(mdp_value(path, "dt")), int(mdp_value(path, "pull-nstfout"))
+    return n * dt, (n // s) * s * dt
+
+
+src_fe = open(os.path.join(ROOT, "job_fe.run")).read()
+src_cl = open(os.path.join(ROOT, "job.run")).read()
+m_fe = re.search(r"\n(\s*)pull_span\(\) \{\n.*?\n\1\}\n", src_fe, re.S)
+m_cl = re.search(r"\n(\s*)integ_opts\(\) \{\n.*?\n\1\}\n", src_cl, re.S)
+check("job_fe.run defines pull_span(), job.run integ_opts()", bool(m_fe and m_cl))
+check("job_fe.run passes it to both integrate.py calls",
+      len(re.findall(r"utils/integrate\.py[^\n]*\\\n[^\n]*-r \$_rate[^\n]*\$_span\)", src_fe)) == 2)
+check("job.run passes the pull leg bind.mdp's and the push leg bindrev.mdp's",
+      "PULL_OPTS=$(integ_opts bind.mdp)" in src_cl and "PUSH_OPTS=$(integ_opts bindrev.mdp)" in src_cl
+      and "-f $PULL.xvg -nr $NUMPERTRES $PULL_OPTS)" in src_cl
+      and "-f $PUSH.xvg -nr $NUMPERTRES $PUSH_OPTS)" in src_cl)
+check("found the shipped pull mdps (%d)" % len(mdps), len(mdps) >= 50, len(mdps))
+bad = []
+if m_fe and m_cl:
+    for m in mdps:
+        tend, last = expected(m)
+        fe = subprocess.run(["bash", "-c", m_fe.group(0) + '\npull_span "$1"', "_", m],
+                            capture_output=True, text=True).stdout.split()
+        cl = subprocess.run(["bash", "-c", m_cl.group(0) + '\ninteg_opts "$1"', "_", m],
+                            capture_output=True, text=True).stdout.split()
+        want_fe = ["--tend=%.10g" % tend, "--last-ps=%.10g" % last]
+        if fe != want_fe:
+            bad.append("pull_span %s: %s, want %s" % (os.path.relpath(m, SETTINGS), fe, want_fe))
+        if cl[:4] != ["--tend", "%.10g" % tend, "--last-ps", "%.10g" % last]:
+            bad.append("integ_opts %s: %s" % (os.path.relpath(m, SETTINGS), cl))
+check("both give --tend nsteps*dt and --last-ps floor(nsteps/nstfout)*nstfout*dt", not bad,
+      "; ".join(bad[:3]))
+dmdp = os.path.join(SETTINGS, "amber19sb_opc3", "bindfwdD_fe.mdp")
+if m_fe and os.path.isfile(dmdp):
+    span = subprocess.run(["bash", "-c", m_fe.group(0) + '\npull_span "$1"', "_", dmdp],
+                          capture_output=True, text=True).stdout.split()
+    check("bindfwdD_fe.mdp: --tend=2291 --last-ps=2290", span == ["--tend=2291", "--last-ps=2290"], span)
+    with tempfile.TemporaryDirectory() as d:
+        f_d = xvg(os.path.join(d, "bindfwdD_1_pullf.xvg"), FULL[:1146], 5)
+        check("  integrate.py takes them: the whole record passes",
+              is_work(run(f_d, "-nr", "3", *span), 0.0002 * 30 * 2290))
+        f_l = xvg(os.path.join(d, "bindfwdD_2_pullf.xvg"), FULL[:1145], 5)
+        check("  and refuses the record without its last row", is_nan(run(f_l, "-nr", "3", *span)))
+with tempfile.TemporaryDirectory() as d:
+    open(os.path.join(d, "x.mdp"), "w").write("nsteps = 1000\n")
+    fe = subprocess.run(["bash", "-c", m_fe.group(0) + '\npull_span "$1"', "_", os.path.join(d, "x.mdp")],
+                        capture_output=True, text=True) if m_fe else None
+    check("pull_span on an mdp without dt prints nothing and fails (the work stays NaN)",
+          fe is not None and fe.returncode != 0 and not fe.stdout.strip())
+    open(os.path.join(d, "y.mdp"), "w").write("nsteps = 1000\ndt = 0.004\n")
+    fe = subprocess.run(["bash", "-c", m_fe.group(0) + '\npull_span "$1"', "_", os.path.join(d, "y.mdp")],
+                        capture_output=True, text=True) if m_fe else None
+    check("  without pull-nstfout: --tend only", fe is not None and fe.stdout.split() == ["--tend=4"],
+          fe.stdout if fe else None)
 
 print()
 if failures:

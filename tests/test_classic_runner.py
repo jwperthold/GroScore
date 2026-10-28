@@ -13,8 +13,11 @@ in v15_work/digest_audit (runner and scorer lenses) and digest_review (critic).
   [1] a fresh run: OK only once the restraint set exists (SETUP_RUNNING before);
       one row per cycle in results.d with '>', 'ID N pull push RMSD'; a .done per
       cycle; the restraint frame assembled with assemble_frame.py after trjconv
-      -pbc whole, never -pbc cluster (R1); integrate.py told the leg length and the
-      coordinate count; archived without job_run.lock. Under AMBER19SB with
+      -pbc whole, never -pbc cluster (R1); integrate.py told the leg length, the
+      time of its last row and the coordinate count; archived without
+      job_run.lock, through a gzip-tested S1.tar.gz.part, with a success line in
+      the log and in run/archive.log; a start and an end banner (time, host,
+      SLURM job, GPUs from nvidia-smi). Under AMBER19SB with
       ligands on, fuse_glycans.py runs first and renumber_pdb.py reads fused.pdb
       (decision of 2026-10-04; tests/test_glycan_runner.py has the rest).
   [2] a pull that dies twice with a checkpoint (R2, SCORER-1): retried from step
@@ -24,7 +27,9 @@ in v15_work/digest_audit (runner and scorer lenses) and digest_review (critic).
       finishes the cycle without touching the finished one (no gmx call, no
       integration).
   [3] a push that dies, a push whose force file stops at 3000 of 5000 ps although
-      the leg wrote its .gro, and a leg rescued by the in-job retry.
+      the leg wrote its .gro (integrate.py's reason in the log, and the hint to
+      move that leg's files aside, since a rerun would integrate them again), and
+      a leg rescued by the in-job retry.
   [4] a legacy splice: nptrev and bindrev left by v1.4, built from the dead pull's
       checkpoint, are older than the pull's finished .gro and are redone.
   [5] a re-walk with a changed restraint count (re-walk extra finding): with
@@ -50,7 +55,10 @@ in v15_work/digest_audit (runner and scorer lenses) and digest_review (critic).
       released, nothing started after it) instead of releasing the lock and
       carrying on, or waiting for the leg to end (review S3). A job.run killed hard
       leaves its leg running, and that leg keeps the lock until it has ended.
- [10] the archive (R4): a tar that fails keeps the directory and leaves no tarball.
+ [10] the archive (R4): a tar that fails keeps the directory and leaves no tarball
+      or .part; a tar that exits 0 with a cut archive is refused by the gzip test,
+      and an older S1.tar.gz survives the failed attempt; TERM to the job during
+      the tar removes the .part, keeps the directory and says so (exit 143).
  [11] job.run's leg() on its own: a source leg with a checkpoint but no .gro starts
       nothing (no grompp from a dead leg's checkpoint, whoever calls leg()).
  [12] a directory copied without its file times (every tpr older than its source)
@@ -229,6 +237,10 @@ def make_root():
     with open(os.path.join(root, "bin", "gmx"), "w") as f:
         f.write(FAKE_GMX)
     os.chmod(os.path.join(root, "bin", "gmx"), 0o755)
+    # The task banner's GPU line, without the host's nvidia-smi.
+    with open(os.path.join(root, "bin", "nvidia-smi"), "w") as f:
+        f.write("#!/bin/bash\necho '0, Fake GPU, 00000000:01:00.0, 1 MiB, 100 MiB, 0 %'\n")
+    os.chmod(os.path.join(root, "bin", "nvidia-smi"), 0o755)
     with open(os.path.join(root, "fake_mdrun.py"), "w") as f:
         f.write(FAKE_MDRUN)
     return root
@@ -375,9 +387,27 @@ check("  and no trjconv -pbc cluster anywhere", not [l for l in gl if "-pbc clus
 check("  make_disres_en.py read the assembled frame",
       any(l.startswith("make_disres_en.py -f npt_init_cluster.gro") for l in ul))
 ints = [l for l in ul if l.startswith("integrate.py")]
-check("integrate.py: 4 calls, each with -nr 4 --tend 5000 --ncols 6",
-      len(ints) == 4 and all("-nr 4" in l and "--tend 5000" in l and "--ncols 6" in l for l in ints), ints)
+check("integrate.py: 4 calls, each with -nr 4 --tend 5000 --last-ps 5000 --ncols 6",
+      len(ints) == 4 and all("-nr 4" in l and "--tend 5000 --last-ps 5000 --ncols 6" in l for l in ints), ints)
 check("archived: S1.tar.gz, no directory", archived(rootA))
+check("  no S1.tar.gz.part left", not os.path.exists(os.path.join(rootA, "run", "S1.tar.gz.part")))
+ok_line = re.search(r"^Archived S1 to S1\.tar\.gz \((\d+) bytes, gzip test passed\); directory removed\.$",
+                    r.stdout, re.M)
+size = os.path.getsize(os.path.join(rootA, "run", "S1.tar.gz")) if archived(rootA) else -1
+check("  the job log says so, with the archive's size",
+      ok_line is not None and int(ok_line.group(1)) == size, (size, r.stdout[-300:]))
+alog = os.path.join(rootA, "run", "archive.log")
+check("  and so does run/archive.log, with time and host",
+      os.path.isfile(alog) and re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [-+]\d{4} %s Archived S1 to S1\.tar\.gz "
+                                        % re.escape(socket.gethostname()), open(alog).read()) is not None,
+      open(alog).read() if os.path.isfile(alog) else "no archive.log")
+check("task banners: start and end, with time, host, SLURM job and the GPU list",
+      re.search(r"^Task start: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d [-+]\d{4} on %s, job\.run in "
+                % re.escape(socket.gethostname()), r.stdout, re.M) is not None
+      and re.search(r"^Task end: .* exit 0, after \d+ s$", r.stdout, re.M) is not None
+      and r.stdout.count("  SLURM job -, CUDA_VISIBLE_DEVICES=unset, GROSCORE_GPU_ID=unset") == 2
+      and r.stdout.count("  GPU 0, Fake GPU, 00000000:01:00.0") == 2,
+      [l for l in r.stdout.splitlines() if l.startswith(("Task", "  SLURM", "  GPU"))])
 if archived(rootA):
     with tarfile.open(os.path.join(rootA, "run", "S1.tar.gz")) as t:
         names = t.getnames()
@@ -431,6 +461,8 @@ check("a dead push: row NaN, its partial force file never integrated (v1.4: -24.
       w1 is not None and all(is_nan(x) for x in w1) and "bindrev_2.xvg" not in integrated(rootD),
       (row(rootD, 1), integrated(rootD)))
 check("  exit 1, no archive", r.returncode == 1 and not archived(rootD), r.returncode)
+check("  and no move-aside hint: its leg did not finish, so the next run runs it again",
+      "Cycle 1 FAILED" in r.stdout and "If integrate.py refused" not in r.stdout, r.stdout[-300:])
 rootE = make_root()
 new_structure(rootE)
 r = run_job(rootE, scenario="bindrev_2 short\n")
@@ -439,6 +471,11 @@ check("a push that wrote its .gro but stops at 3000 ps: push NaN (v1.4: -36.0)",
       w1 is not None and near(w1[0], -100) and is_nan(w1[1]), row(rootE, 1))
 check("  no .done for it, exit 1", not os.path.isfile(os.path.join(sdir(rootE), "results_c1.done"))
       and r.returncode == 1, r.returncode)
+check("  integrate.py's reason is in the log, and how to recover (move aside bindrev_2.*)",
+      "integrate.py: bindrev_2.xvg: the last complete row is at 3000 ps of a 5000 ps leg" in r.stderr
+      and "If integrate.py refused bindrev_2.xvg above (a damaged record), move" in r.stdout
+      and "aside that leg's files (bindrev_2.*) and resubmit" in r.stdout,
+      (r.stderr[-300:], r.stdout[-500:]))
 rootK = make_root()
 new_structure(rootK)
 r = run_job(rootK, scenario="bindfwd_1 die 0.4 yes 1 cut\n")
@@ -707,6 +744,67 @@ check("a tar that fails: the directory stays, no tarball (v1.4: directory delete
       os.path.isdir(sdir(rootT)) and not os.path.exists(os.path.join(rootT, "run", "S1.tar.gz")),
       (os.listdir(os.path.join(rootT, "run")), r.stdout[-200:]))
 check("  and says so", "Archive failed or empty for S1" in r.stdout, r.stdout[-300:])
+check("  no S1.tar.gz.part left", not os.path.exists(os.path.join(rootT, "run", "S1.tar.gz.part")))
+alog = os.path.join(rootT, "run", "archive.log")
+check("  and archive.log has the failure",
+      os.path.isfile(alog) and "Archive failed or empty for S1" in open(alog).read())
+# A tar that exits 0 but leaves a damaged archive (cut 8 bytes short, its gzip
+# trailer gone): through v1.6 the directory was removed and the archive kept. The
+# gzip test refuses it, and an older S1.tar.gz is not touched by the failed attempt
+# (v1.6 removed it, rm -f after any failure).
+rootU = make_root()
+new_structure(rootU)
+old_arc = os.path.join(rootU, "run", "S1.tar.gz")
+open(old_arc, "w").write("an older archive\n")
+ubin = os.path.join(rootU, "tarbin")
+os.makedirs(ubin)
+with open(os.path.join(ubin, "tar"), "w") as f:
+    f.write('#!/bin/bash\nif [[ "$1" == "-czf" ]]; then /usr/bin/tar "$@" || exit; '
+            'truncate -s -8 "$2"; exit 0; fi\nexec /usr/bin/tar "$@"\n')
+os.chmod(os.path.join(ubin, "tar"), 0o755)
+r = run_job(rootU, path_prefix=ubin)
+check("a tar that exits 0 with a cut archive: the gzip test refuses it, directory kept",
+      os.path.isdir(sdir(rootU)) and "Archive failed or empty for S1 (tar, the gzip test or the rename"
+      " failed, see above); keeping directory." in r.stdout.replace("\n", " "), r.stdout[-400:])
+check("  no .part, and the older S1.tar.gz untouched",
+      not os.path.exists(old_arc + ".part") and open(old_arc).read() == "an older archive\n")
+# TERM while the archive is written, to the whole job as scancel sends it: the
+# .part goes, the directory stays, and the log and archive.log say so.
+rootV = make_root()
+d = new_structure(rootV)
+vbin = os.path.join(rootV, "tarbin")
+os.makedirs(vbin)
+mark = os.path.join(rootV, "tar_started")
+with open(os.path.join(vbin, "tar"), "w") as f:
+    f.write('#!/bin/bash\nif [[ "$1" == "-czf" ]]; then : > "$2"; touch "$TARMARK"; sleep 60; exit 1; fi\n'
+            'exec /usr/bin/tar "$@"\n')
+os.chmod(os.path.join(vbin, "tar"), 0o755)
+for lg in ("gmx.log", "util.log"):
+    open(os.path.join(rootV, lg), "w").close()
+p = subprocess.Popen(["bash", "job.run"], cwd=d, env=job_env(rootV, vbin, {"TARMARK": mark}),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     text=True, start_new_session=True)
+t0 = time.time()
+while not os.path.exists(mark) and time.time() - t0 < 300 and p.poll() is None:
+    time.sleep(0.1)
+started = os.path.exists(mark)
+if p.poll() is None:
+    os.killpg(p.pid, signal.SIGTERM)
+out, _ = p.communicate(timeout=120)
+check("TERM during the tar: exit 143, the directory kept, no .part",
+      started and p.returncode == 143 and os.path.isdir(d)
+      and not os.path.exists(os.path.join(rootV, "run", "S1.tar.gz.part"))
+      and not os.path.exists(os.path.join(rootV, "run", "S1.tar.gz")),
+      (started, p.returncode, out[-300:]))
+check("  and says so, in the log and archive.log",
+      "Archive of S1 interrupted; S1.tar.gz.part removed, directory kept." in out
+      and "Archive of S1 interrupted" in open(os.path.join(rootV, "run", "archive.log")).read()
+      if os.path.isfile(os.path.join(rootV, "run", "archive.log")) else False, out[-300:])
+check("  the end banner says exit 143, the lock is released",
+      re.search(r"^Task end: .* exit 143, after \d+ s$", out, re.M) is not None
+      and not os.path.exists(os.path.join(d, "job_run.lock")), out[-300:])
+for rt in (rootT, rootU, rootV):
+    shutil.rmtree(rt, ignore_errors=True)
 
 # ---------------------------------------------------------------------------
 print("\n[11] leg() on its own: nothing starts from a leg without its .gro")

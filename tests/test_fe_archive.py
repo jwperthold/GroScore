@@ -28,7 +28,10 @@ node and held no time.
       line says exit 143.
   [4] The cycle path archives through the same function; there is one tar in the
       script; every EXIT trap releases its locks and then prints the end line, and
-      every INT/TERM trap that releases a lock calls archive_abort first.
+      every INT/TERM trap that releases a lock calls archive_abort first. job.run
+      carries the same text for the banners and the archive notes, its traps end
+      the same way, and its one tar writes a .part that is gzip-tested before the
+      rename (tests/test_classic_runner.py drives it).
 
 Standalone, no pytest: python3 tests/test_fe_archive.py
 """
@@ -439,6 +442,29 @@ with tempfile.TemporaryDirectory() as tmp:
           len(sig) == 4 and all(t.index("archive_abort") < t.index("release_") for t in sig), sig)
     r = subprocess.run(["bash", "-n", JOB], capture_output=True, text=True)
     check("bash -n job_fe.run", r.returncode == 0, r.stderr[:300])
+    # The classic runner prints the same banners and archive notes: one text.
+    CL = open(os.path.join(ROOT, "job.run")).read()
+    pat = (r"^# ---- TASK BANNER AND ARCHIVE NOTES \(the same text in job\.run and job_fe\.run\) ----\n"
+           r".*?^# ---- end of the task banner and archive notes both runners share ----\n")
+    b_fe = re.search(pat, SRC, re.M | re.S)
+    b_cl = re.search(pat, CL, re.M | re.S)
+    check("job.run and job_fe.run share one text for gpu_report, task_banner, archive_note, archive_abort",
+          b_fe is not None and b_cl is not None and b_fe.group(0) == b_cl.group(0)
+          and all("\n%s() {\n" % f in b_fe.group(0)
+                  for f in ("gpu_report", "task_banner", "archive_note", "archive_abort")),
+          (b_fe is not None, b_cl is not None))
+    cl_traps = re.findall(r"^\s*trap '([^']*)' (EXIT|INT|TERM)$", CL, re.M)
+    check("job.run: two EXIT traps, the lock's releasing first, both ending with the end line",
+          [s for _, s in cl_traps].count("EXIT") == 2
+          and all(t.startswith("_rc=$?; ") and t.endswith('task_banner end "exit $_rc, after ${SECONDS} s"')
+                  for t, s in cl_traps if s == "EXIT"), cl_traps)
+    check("  its INT/TERM lock traps stop the leg, then archive_abort",
+          sorted(t for t, s in cl_traps if s in ("INT", "TERM") and "stop_leg" in t)
+          == ["stop_leg; archive_abort; exit 130", "stop_leg; archive_abort; exit 143"], cl_traps)
+    check("  and one tar -czf, into the .part, tested before the rename",
+          CL.count("tar -czf") == 1 and re.search(
+              r'tar -czf "\$ARCHIVE_PART"[^\n]*\\\n[^\n]*gzip -t "\$ARCHIVE_PART" \\\n'
+              r'\s*&& mv -f "\$ARCHIVE_PART" "\$\{STRUCT_ID\}\.tar\.gz"', CL) is not None)
 
 print()
 sys.exit(1 if fails else 0)

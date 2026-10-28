@@ -26,10 +26,20 @@
 #     the leg ran with another restraint set than the one it is integrated with;
 #   - time that runs backwards;
 #   - with --tend, a last row more than one output interval short of the leg's
-#     end: the leg did not finish.
+#     end: the leg did not finish;
+#   - with --last-ps, a last complete row anywhere but where the leg writes its
+#     last row (floor(nsteps / pull-nstfout) * pull-nstfout * dt).
 # Only the LAST row may be incomplete, the one the writer was cut in: it is
 # dropped, never padded. An unterminated last line counts as incomplete even when
 # its fields parse, because its last number may itself be cut.
+#
+# --tend has to allow one output interval, since mdrun writes pull output only on
+# multiples of pull-nstfout: a leg whose nsteps is not one ends short of nsteps*dt
+# (bindfwdD, 2290 of 2291 ps). One interval is also exactly what a record that lost
+# its last row falls short by, and the last row is the one a disk that fills as the
+# leg ends takes: mdrun flushes its output files at the final checkpoint, before it
+# writes the last row (the full disk of bm_fe_amber_3a, 2026-10-13, seen in the dhdl
+# records). --last-ps names that row's time, so such a record is refused.
 #
 # On a complete file the arithmetic is the one this script always had, in the same
 # order, so every value it printed for a finished leg is reproduced exactly.
@@ -45,6 +55,7 @@ parser.add_argument('-nr','--numpertres', type=int, default=666, required=True, 
 parser.add_argument('-r','--rate', type=float, default=0.0002, required=False, help="Pull rate in nm/ps used in the simulation (default: 0.0002). The trapezoidal sum below is the time integral of the pull force; multiplying by the rate converts it to work, so this MUST match the rate in the .mdp or the work is scaled wrongly.")
 parser.add_argument('-R','--weights', type=str, default=None, required=False, help="File of per-coordinate weights, one per summed force column. The work is sum_i rate_i*integral(F_i), which equals rate*integral(sum F) only while every coordinate moves at the same rate. When they do not -- interface references now follow their own chord of the pull path -- pass the weights w_i = rate_i/rate and the sum is weighted instead. Omitted, every weight is 1 and the arithmetic is unchanged.")
 parser.add_argument('--tend', type=float, default=None, required=False, help="Length of the leg in ps (nsteps*dt). The last complete row must lie within one output interval of it, or the leg did not finish and no work is printed. GROMACS writes pull output only on multiples of pull-nstfout and adds no row at the last step, so one interval is exactly what a finished leg can fall short by.")
+parser.add_argument('--last-ps', type=float, default=None, required=False, metavar='PS', help="Time of the last row the leg writes: floor(nsteps / pull-nstfout) * pull-nstfout * dt (tinit 0). The last complete row must be there, to within the four decimals of the time column: one before it means the record lost its tail (a single lost row passes --tend), one after it that the leg ran longer than its mdp says. Either way no work is printed.")
 parser.add_argument('--ncols', type=int, default=None, required=False, help="Number of pull coordinates the leg was set up with (pull-ncoords of its mdp). Every row must hold exactly that many force columns, and the file's legends must agree: a leg from another restraint set is refused rather than integrated over the wrong columns.")
 args=parser.parse_args()
 
@@ -134,6 +145,7 @@ if rows and width < 1 + args.numpertres:
 
 temp = []
 forces = []
+cut = False
 for n, (tok, terminated) in enumerate(rows):
   vals = None
   if terminated and len(tok) == width:
@@ -143,6 +155,7 @@ for n, (tok, terminated) in enumerate(rows):
       vals = None
   if vals is None:
     if n == len(rows) - 1:
+      cut = True
       continue          # the row the writer was cut in
     fail("row %d is not a complete row of %d numbers (%d fields)" % (n + 1, width, len(tok)))
   if not all(math.isfinite(v) for v in vals):
@@ -161,12 +174,22 @@ back = [i for i in range(len(temp) - 1) if temp[i + 1] < temp[i]]
 if back:
   fail("time runs backwards after row %d (%g -> %g ps)"
        % (back[0] + 1, temp[back[0]], temp[back[0] + 1]))
+steps = sorted(temp[i + 1] - temp[i] for i in range(len(temp) - 1))
+interval = steps[len(steps) // 2]
 if args.tend is not None:
-  steps = sorted(temp[i + 1] - temp[i] for i in range(len(temp) - 1))
-  interval = steps[len(steps) // 2]
   if temp[-1] < args.tend - interval - 1e-6 * max(1.0, abs(args.tend)):
     fail("the last complete row is at %g ps of a %g ps leg (rows every %g ps): the leg did "
          "not finish" % (temp[-1], args.tend, interval))
+if args.last_ps is not None:
+  # Times carry four decimals: 2e-4 ps, plus 0.1% of the interval.
+  tol = 2e-4 + 1e-3 * interval
+  dropped = ", its last line, cut, was dropped" if cut else ""
+  if temp[-1] < args.last_ps - tol:
+    fail("the last complete row is at %g ps, before the leg's last row at %g ps (rows every "
+         "%g ps%s): the record lost its tail" % (temp[-1], args.last_ps, interval, dropped))
+  if temp[-1] > args.last_ps + tol:
+    fail("the last complete row is at %g ps, after the leg's last row at %g ps: the leg ran "
+         "longer than its mdp says" % (temp[-1], args.last_ps))
 
 DG = 0.0
 i = 0
