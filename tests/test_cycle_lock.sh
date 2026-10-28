@@ -26,7 +26,11 @@
 #        and a third start does not get it too; a fresh mutex keeps other
 #        reclaimers out, one older than 60 s is removed; a lock that cannot be put
 #        back is reported, and nothing is left moved aside.
+#   18   no cycle starts while the structure is being archived (.archive.lock).
 #   Both runners carry the same lock functions; 13-15 and 17 run job.run's as well.
+#   The traps of job_fe.run also print the task's end line and stop an archive
+#   (task_banner, archive_abort); those functions are loaded too, with a stub
+#   nvidia-smi, so the traps run as written.
 #
 # The checks used to set their failure flag inside a command substitution, i.e. in
 # a subshell, so this script reported 'all lock checks passed' whatever happened.
@@ -42,10 +46,16 @@ cd "$W" || exit 1
 # fn FILE NAME: the top-level bash function NAME of FILE, verbatim.
 fn() { sed -n "/^$2() {\$/,/^}\$/p" "$1"; }
 LOCK_FNS="proc_start lock_put leg_alive take_lock run_bg stop_leg"
+TRAP_FNS="gpu_report task_banner archive_note archive_abort"
 
 # The cycle lock and its release, the shared take_lock and its helpers, and the
-# setup-lock block.
-eval "$(for f in $LOCK_FNS; do fn "$JOB" $f; done)"
+# setup-lock block. The functions the traps call besides the locks come too, and a
+# stub stands in for nvidia-smi.
+mkdir -p "$W/nvbin"
+printf '#!/bin/sh\necho "0, stub GPU, 00000000:01:00.0, 1 MiB, 2 MiB, 0 %%"\n' > "$W/nvbin/nvidia-smi"
+chmod +x "$W/nvbin/nvidia-smi"
+export PATH="$W/nvbin:$PATH"
+eval "$(for f in $LOCK_FNS $TRAP_FNS; do fn "$JOB" $f; done)"
 eval "$(sed -n '/^  CYCLE_LOCK=\"\"$/,/^  }$/p' "$JOB" | sed 's/^  //')"
 eval "$(sed -n '/^  claim_cycle() {$/,/^  }$/p' "$JOB" | sed 's/^  //')"
 # Only the first such block, and only if it is the lock: run verbatim, anything else
@@ -166,11 +176,12 @@ ck "  and leaves that lock alone" "$(cat s10/job_run.lock/owner)" "$(hostname):$
 
 echo
 echo "=== 11. the archive leaves job_run.lock out ==="
-# The tar line of the archive step, run on a structure directory holding the lock.
-TARLINE=$(grep -A1 '^    if tar -czf "\${STRUCT_ID}.tar.gz"' "$JOB" | tr -d '\\' | tr '\n' ' ' \
-          | sed 's/^ *if //; s/ *&& *\[\[.*$//')
+# The archive step (archive_structure), run on a finished structure directory that
+# holds the lock.
+eval "$(fn "$JOB" archive_structure)"
 mkdir -p arc/S1/job_run.lock; echo "x" > arc/S1/job_run.lock/owner; echo "x" > arc/S1/keep.gs
-( cd arc && STRUCT_ID=S1 && eval "$TARLINE" )
+: > arc/S1/results_fe_c1.done
+( cd arc/S1 && STRUCT_ID=S1 && NUMCYCLES=1 && archive_structure ) > /dev/null
 ck "the archive is written" "$([ -s arc/S1.tar.gz ] && echo y || echo n)" "y"
 ck "  with the structure's files" "$(tar -tzf arc/S1.tar.gz 2>/dev/null | grep -c 'S1/keep.gs')" "1"
 ck "  and without job_run.lock" "$(tar -tzf arc/S1.tar.gz 2>/dev/null | grep -c job_run.lock)" "0"
@@ -182,8 +193,8 @@ echo "=== 12. a TERM stops the job and releases its locks ==="
 # would let the job go on writing statuses for work it never did.
 CYCLE_TRAPS=$(grep "^  trap '.*release_cycle_lock" "$JOB" | sed 's/^  //')
 ck "the cycle phase sets its traps (EXIT, INT, TERM)" "$(echo "$CYCLE_TRAPS" | grep -c .)" "3"
-term_case() {   # term_case DIR SCRIPT -> "exit-code stopped|after locks-left"
-  bash -c "cd '$1' && $2" &
+term_case() {   # term_case DIR SCRIPT -> "exit-code stopped|after locks-left"; output in DIR/out
+  bash -c "cd '$1' && $2" > "$1/out" 2>&1 &
   local pid=$!
   sleep 1; kill -TERM $pid
   wait $pid; local rc=$?
@@ -192,7 +203,7 @@ term_case() {   # term_case DIR SCRIPT -> "exit-code stopped|after locks-left"
 # The setup job: the lock block verbatim, then a 3 s command it is waiting on.
 mkdir -p s12
 if [ -n "$JOBLOCK_BLOCK" ]; then
-  SCRIPT12="$(declare -f $LOCK_FNS)
+  SCRIPT12="$(declare -f $LOCK_FNS $TRAP_FNS)
 MODE=setup
 $JOBLOCK_BLOCK
 sleep 3; echo x > after"
@@ -203,13 +214,15 @@ fi
 ck "a setup job hit by TERM exits 143, runs nothing after, holds no lock" "$got" "143 stopped 0"
 # A cycle: both locks held, the cycle phase's traps verbatim.
 mkdir -p s13
-SCRIPT13="$(declare -f $LOCK_FNS)
+SCRIPT13="$(declare -f $LOCK_FNS $TRAP_FNS)
 $(sed -n '/^JOB_LOCK=""$/,/^}$/p' "$JOB")
 $(sed -n '/^  CYCLE_LOCK=\"\"$/,/^  }$/p' "$JOB" | sed 's/^  //')
 mkdir results_fe_c1.lock job_run.lock; CYCLE_LOCK=results_fe_c1.lock; JOB_LOCK=\$PWD/job_run.lock
 $CYCLE_TRAPS
 sleep 3; echo x > after"
 ck "a cycle hit by TERM exits 143, runs nothing after, holds no lock" "$(term_case s13 "$SCRIPT13")" "143 stopped 0"
+ck "  both print the task's end line with exit 143" \
+   "$(cat s12/out s13/out 2>/dev/null | grep -c '^Task end: .*, exit 143, after [0-9]* s$')" "2"
 
 # use FILE: the lock functions of that runner, in this shell (so ck counts here).
 use() { eval "$(for f in $LOCK_FNS; do fn "$1" $f; done)"; }
@@ -287,7 +300,7 @@ for R in "$JOB" "$CJOB"; do
   # A TERM stops a leg started by run_bg at once and waits for it; before, bash ran
   # the trap only once the leg had returned.
   mkdir -p s15$tag
-  bash -c "cd s15$tag && $(declare -f $LOCK_FNS)
+  bash -c "cd s15$tag && $(declare -f $LOCK_FNS $TRAP_FNS)
 JOB_LOCK=\$PWD/L; mkdir L
 trap 'stop_leg; exit 143' TERM
 run_bg sleep 30
@@ -306,15 +319,14 @@ kill $LIVE 2>/dev/null; wait $LIVE 2>/dev/null
 
 echo
 echo "=== 16. the FE archive counts cycles 1..NUMCYCLES (review S5) ==="
-BLOCK16=$(sed -n '/^  DONE_CYCLES=/,/^  fi$/p' "$JOB")
 mkdir -p ar16/S1
 ( cd ar16/S1 && for c in $(seq 1 11) $(seq 21 40); do : > results_fe_c$c.done; done
   echo partial > boundfwd1_12.xtc; echo "dG_release_kJ_mol 30.0" > boresch_analytical.gs )
-( cd ar16/S1 && NUMCYCLES=20 && STRUCT_ID=S1 && eval "$BLOCK16" ) > /dev/null 2>&1
+( cd ar16/S1 && NUMCYCLES=20 && STRUCT_ID=S1 && archive_structure ) > /dev/null 2>&1
 ck "cycles 1-11 and 21-40 done, -n 20: not archived, cycle 12 left alone" \
    "$([ -f ar16/S1/boundfwd1_12.xtc ] && [ ! -e ar16/S1.tar.gz ] && echo kept || echo archived)" "kept"
 ( cd ar16/S1 && for c in $(seq 12 20); do : > results_fe_c$c.done; done )
-( cd ar16/S1 && NUMCYCLES=20 && STRUCT_ID=S1 && eval "$BLOCK16" ) > /dev/null 2>&1
+( cd ar16/S1 && NUMCYCLES=20 && STRUCT_ID=S1 && archive_structure ) > /dev/null 2>&1
 ck "  and archived once 1-20 are all done" "$([ ! -d ar16/S1 ] && [ -s ar16/S1.tar.gz ] && echo archived || echo kept)" "archived"
 
 echo
@@ -372,6 +384,17 @@ for R in "$JOB" "$CJOB"; do
   ck "  returns 1, and leaves nothing moved aside" "$(grep '^B' r17) $(ls -d L17.* 2>/dev/null | wc -l)" "B 1 0"
 done
 use "$JOB"
+
+echo
+echo "=== 18. a cycle does not start while the structure is being archived ==="
+mkdir -p s18/.archive.lock
+out=$(cd s18 && STRUCT_ID=S18 && claim_cycle 3; echo "rc=$?")
+ck "claim refused while .archive.lock exists" \
+   "$(echo "$out" | grep -c 'S18 is being archived') $(echo "$out" | grep -o 'rc=[0-9]*')" "1 rc=1"
+ck "  and the cycle lock it took is released" "$(has s18/results_fe_c3.lock)" "n"
+rmdir s18/.archive.lock
+out=$(cd s18 && STRUCT_ID=S18 && claim_cycle 3; echo "rc=$?")
+ck "claimed once the marker is gone" "$(echo "$out" | grep -o 'rc=[0-9]*') $(has s18/results_fe_c3.lock)" "rc=0 y"
 
 echo
 [ "$fail" = 0 ] && echo "all lock checks passed" || echo "LOCK CHECKS FAILED"

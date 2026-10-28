@@ -270,6 +270,10 @@ class Sandbox(object):
         with open(os.path.join(self.bin, "gmx"), "w") as f:
             f.write(FAKE_GMX)
         os.chmod(os.path.join(self.bin, "gmx"), 0o755)
+        # job_fe.run reports its GPUs at start and end; not this host's real ones.
+        with open(os.path.join(self.bin, "nvidia-smi"), "w") as f:
+            f.write('#!/bin/sh\necho "0, stub GPU, 00000000:01:00.0, 1 MiB, 2 MiB, 0 %"\n')
+        os.chmod(os.path.join(self.bin, "nvidia-smi"), 0o755)
         self.n = 0
 
     def job(self, runner, runs="B 2 1 amber19sb_opc3 1", plant=None, **fake):

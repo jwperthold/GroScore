@@ -21,12 +21,15 @@ fi
 #   --cycle N    wait for setup.done, then run ONLY cycle N. Safe to run many of
 #                these concurrently: every cycle starts fresh from emin_solv.gro
 #                with new velocities and writes only cycle-suffixed files.
+#   --archive    archive a structure whose cycles are all done but which is still
+#                a directory (archive_structure); runs nothing else.
 #   (no args)    legacy: setup followed by all cycles sequentially in one job.
 MODE="all"
 CYCLE_ARG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --setup) MODE="setup"; shift ;;
+    --archive) MODE="archive"; shift ;;
     --cycle)
       # Validate before shifting: `shift 2` with only one argument left fails
       # without consuming it, which would spin this loop forever.
@@ -40,6 +43,118 @@ done
 if [[ "$MODE" == "cycle" && ! "$CYCLE_ARG" =~ ^[0-9]+$ ]]; then
   echo "--cycle requires a positive integer (got '$CYCLE_ARG')"; exit 1
 fi
+
+# WHERE AND WHEN A TASK RAN. The slurm output of bm_fe_amber_3a named a node only in
+# the NODE FAILURE lines of two tasks and held no time at all, so which node a slow
+# or failing task had run on, and when, took sacct; a GPU lost mid-task (n3067-012,
+# n3068-001) showed only as mdrun falling back to the CPU at a tenth of its speed.
+# Every task therefore says when and where it starts and ends, and which GPUs it
+# sees. A failing nvidia-smi is printed rather than hidden: that is the symptom being
+# looked for. It is waited for 30 s at most and then left behind, not waited out: on
+# a GPU that has fallen off the bus it can hang in the kernel, where neither TERM nor
+# KILL ends it, and `timeout` and a command substitution would both wait for it. All
+# GPUs it lists are shown: its index order need not be the CUDA order that -gpu_id
+# (GROSCORE_GPU_ID) counts in.
+gpu_report() {
+  local f pid rc i out
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "  GPU: no nvidia-smi on this host"
+    return 0
+  fi
+  if ! f=$(mktemp 2>/dev/null); then
+    echo "  GPU: not queried (no temporary file)"
+    return 0
+  fi
+  nvidia-smi --format=csv,noheader \
+    --query-gpu=index,name,pci.bus_id,memory.used,memory.total,utilization.gpu > "$f" 2>&1 &
+  pid=$!
+  for ((i = 0; i < 300; i++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null
+    echo "  GPU: nvidia-smi did not answer within 30 s"
+    rm -f "$f"
+    return 0
+  fi
+  wait "$pid"
+  rc=$?
+  out=$(cat "$f")
+  rm -f "$f"
+  if [[ $rc -ne 0 || -z "$out" ]]; then
+    echo "  GPU: nvidia-smi failed (exit $rc): ${out%%$'\n'*}"
+  else
+    while IFS= read -r _gpu; do echo "  GPU $_gpu"; done <<< "$out"
+  fi
+}
+# task_banner start|end TEXT
+task_banner() {
+  local job="-"
+  if [[ -n "${SLURM_ARRAY_JOB_ID:-}" ]]; then
+    job="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID:-}"
+  elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    job="$SLURM_JOB_ID"
+  fi
+  echo "Task $1: $(date '+%Y-%m-%d %H:%M:%S %z') on $(hostname), $2"
+  echo "  SLURM job $job, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-unset}," \
+       "GROSCORE_GPU_ID=${GROSCORE_GPU_ID-unset}"
+  gpu_report
+}
+task_banner start "job_fe.run ${MODE}${CYCLE_ARG:+ $CYCLE_ARG} in $PWD"
+
+# archive_note TEXT...: print an outcome of archive_structure, its words joined by
+# spaces, and append it with the time and host to archive.log in the run directory.
+# The job log alone is not enough: under --run-local it lives inside the structure
+# directory, which the archive has just removed, so the line went to a deleted file.
+ARCHIVE_LOG=""
+archive_note() {
+  echo "$*"
+  [[ -n "$ARCHIVE_LOG" ]] && echo "$(date '+%Y-%m-%d %H:%M:%S %z') $(hostname) $*" >> "$ARCHIVE_LOG"
+  return 0
+}
+# An archive stopped by INT or TERM (the INT and TERM traps call this) says how far
+# it got and leaves nothing that blocks the next one: before the tar, only the
+# election marker is removed; during the tar or its test, the .part as well, and the
+# directory is kept; once the tested archive is in place, the directory was being
+# removed, and what is left of it is the user's to remove (the archive is whole).
+# ARCHIVE_STAGE (prep, tar, rm) and the absolute paths are set by archive_structure.
+ARCHIVE_STAGE=""
+ARCHIVE_PART=""
+ARCHIVE_LOCK=""
+ARCHIVE_HAD_OLD=""
+archive_abort() {
+  case "$ARCHIVE_STAGE" in
+    prep)
+      rmdir "$ARCHIVE_LOCK" 2>/dev/null
+      archive_note "Archive of ${STRUCT_ID} interrupted before its tar; directory kept." ;;
+    tar)
+      # The .part gone and an archive there that was not there before: the rename
+      # had happened.
+      if [[ -e "$ARCHIVE_PART" || ! -e "${ARCHIVE_PART%.part}" || -n "$ARCHIVE_HAD_OLD" ]]; then
+        rm -f "$ARCHIVE_PART"
+        rmdir "$ARCHIVE_LOCK" 2>/dev/null
+        archive_note "Archive of ${STRUCT_ID} interrupted; ${ARCHIVE_PART##*/} removed, directory kept."
+      else
+        archive_note "Archive of ${STRUCT_ID} interrupted after ${STRUCT_ID}.tar.gz passed its gzip" \
+                     "test; ${STRUCT_ID}/ was not removed. Remove it by hand."
+      fi ;;
+    rm)
+      archive_note "${STRUCT_ID}.tar.gz is complete (gzip test passed), but removing ${STRUCT_ID}/" \
+                   "was interrupted. Remove what is left of ${STRUCT_ID}/ by hand." ;;
+  esac
+  ARCHIVE_STAGE=""
+}
+# The end line comes from the EXIT trap, so a task stopped by INT or TERM (scancel,
+# the walltime) prints it too, with exit 130 or 143; one killed outright (KILL)
+# prints none. Every later EXIT trap of this script ends with the same call, after
+# releasing its locks, since a trap replaces the one before it. The INT and TERM
+# traps here exit with the signal's status until the lock traps replace them;
+# without them bash died of the signal and the end line showed the status of the
+# last command instead.
+trap '_rc=$?; task_banner end "exit $_rc, after ${SECONDS} s"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # proc_start PID: the start time of process PID (clock ticks after boot, field 22 of
 # /proc/PID/stat), or nothing when it does not exist. A pid is reused; a pid and its
@@ -231,9 +346,9 @@ release_job_lock() {
 if [[ "$MODE" != "cycle" ]]; then
   if take_lock "$PWD/job_run.lock"; then
     JOB_LOCK="$PWD/job_run.lock"
-    trap 'release_job_lock' EXIT
-    trap 'stop_leg; release_job_lock; exit 130' INT
-    trap 'stop_leg; release_job_lock; exit 143' TERM
+    trap '_rc=$?; release_job_lock; task_banner end "exit $_rc, after ${SECONDS} s"' EXIT
+    trap 'stop_leg; archive_abort; release_job_lock; exit 130' INT
+    trap 'stop_leg; archive_abort; release_job_lock; exit 143' TERM
   else
     # Non-zero, so neither SLURM nor the local runner reports this job as done.
     echo "Safety check: another job.run (owner $LOCK_OWNER) holds job_run.lock in this"
@@ -372,8 +487,135 @@ run_leg_mdrun() {
   return 1
 }
 
+# ARCHIVING A FINISHED STRUCTURE, to keep the inode count down. Once every cycle
+# 1..NUMCYCLES has its .done, the directory becomes ../<ID>.tar.gz. One task does it:
+# mkdir .archive.lock elects it, also when several cycle tasks finish at once (two
+# tasks tarring and deleting one directory would destroy it). The cycles counted are
+# 1..NUMCYCLES, as in job.run: counting every .done, those of cycles above the total
+# from an earlier, larger -n made the first task of an array that ended archive and
+# remove the directory while the others still ran in it (review S5).
+#
+# The directory goes only behind an archive known to be whole: tar exits 0, the file
+# is not empty (a 0-byte tar once wiped a structure), and gzip -t reads it to the
+# end. It is written as <ID>.tar.gz.part and renamed once tested, so a task killed
+# while it tars leaves nothing that groscore_fe.py or a setup job would take for an
+# archive. Success prints a line with the size, as failure always did: in
+# bm_fe_amber_3a success printed nothing, so no log could tell an archived structure
+# from one whose task never got that far. Both also go to archive.log in the run
+# directory (archive_note), the one place they survive under --run-local.
+#
+# Neither lock is archived. job_run.lock (held by a legacy or --archive job) would
+# carry an owner whose death another host cannot prove; .archive.lock would stop the
+# unpacked structure from ever being archived again by anything that does not
+# remove it, and the --sequential unpack did not.
+#
+# Returns 0 when archived (the shell is then in the run directory), 1 when the
+# archive failed and the directory was kept (likewise), 2 when the structure is not
+# complete or another task holds .archive.lock (why in ARCHIVE_WHY).
+ARCHIVE_WHY=""
+archive_structure() {
+  local c ndone=0 part="${STRUCT_ID}.tar.gz.part" bytes
+  for ((c = 1; c <= NUMCYCLES; c++)); do
+    [[ -f results_fe_c$c.done ]] && ndone=$((ndone + 1))
+  done
+  if [[ $NUMCYCLES -le 0 || $ndone -ne $NUMCYCLES ]]; then
+    ARCHIVE_WHY="$ndone of $NUMCYCLES cycles have their results_fe_c<N>.done"
+    return 2
+  fi
+  if ! mkdir .archive.lock 2>/dev/null; then
+    ARCHIVE_WHY="another task holds ${STRUCT_ID}/.archive.lock, archiving it now or killed while"
+    ARCHIVE_WHY+=" it did (then remove ${STRUCT_ID}/.archive.lock and any ${part} by hand)"
+    return 2
+  fi
+  ARCHIVE_LOCK="$PWD/.archive.lock"
+  ARCHIVE_LOG="${PWD%/*}/archive.log"
+  ARCHIVE_PART="${PWD%/*}/$part"
+  ARCHIVE_STAGE=prep
+  # Last chance to lift the analytical term out of the structure directory: once
+  # this is a tarball, boresch_analytical.gs is unreachable to the scorer and the
+  # structure would score PENDING forever despite having every cycle.
+  if [[ -f boresch_analytical.gs ]]; then
+    DGREL=$(awk '$1=="dG_release_kJ_mol"{print $2}' boresch_analytical.gs)
+    mkdir -p ../results_analytical.d
+    echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
+  fi
+  cd ..
+  rm -f "$part"
+  ARCHIVE_HAD_OLD=""
+  [[ -e "${STRUCT_ID}.tar.gz" ]] && ARCHIVE_HAD_OLD=1
+  ARCHIVE_STAGE=tar
+  if tar -czf "$part" --exclude="${STRUCT_ID}/job_run.lock" \
+         --exclude="${STRUCT_ID}/.archive.lock" "${STRUCT_ID}/" \
+     && [[ -s "$part" ]] && gzip -t "$part" && mv -f "$part" "${STRUCT_ID}.tar.gz"; then
+    ARCHIVE_STAGE=rm
+    bytes=$(stat -c %s "${STRUCT_ID}.tar.gz" 2>/dev/null)
+    if rm -rf "${STRUCT_ID}/"; then
+      archive_note "Archived ${STRUCT_ID} to ${STRUCT_ID}.tar.gz (${bytes:-?} bytes, gzip test" \
+                   "passed); directory removed."
+    else
+      archive_note "Archived ${STRUCT_ID} to ${STRUCT_ID}.tar.gz (${bytes:-?} bytes, gzip test" \
+                   "passed), but ${STRUCT_ID}/ could not be removed completely; remove it by hand."
+    fi
+    ARCHIVE_STAGE=""
+    return 0
+  fi
+  ARCHIVE_STAGE=""
+  archive_note "Archive failed or empty for ${STRUCT_ID} (tar, the gzip test or the rename" \
+               "failed, see above); keeping directory."
+  rm -f "$part"
+  rmdir "${STRUCT_ID}/.archive.lock" 2>/dev/null
+  return 1
+}
+
 # Get structure ID from current directory name
 STRUCT_ID=$(basename $(pwd))
+
+# --archive: archive a structure whose cycles are all done but which is still a
+# directory. The archive step runs only at the end of the task that completes the
+# last cycle, so a structure whose archive failed there stayed a directory, and no
+# later run tried again: --restart had no cycle to submit for it (1AKJ in
+# bm_fe_amber_3a, whose tar met a full disk). groscore_fe.py --restart submits this
+# mode for such a directory, and it can be run by hand in one. It holds the job lock,
+# like a setup, and refuses (exit 1) while a cycle task holds a cycle lock (a lock
+# whose owner is shown dead is reclaimed and removed, take_lock), while
+# ../<ID>.tar.gz exists already, or while another task archives the structure.
+# The total of cycles comes from GROSCORE_NUMCYCLES (set by groscore_fe.py), else
+# from numruns in ../run_config.gs, which every invocation of groscore_fe.py
+# records, and only then from run.gs, which holds the -n of the first submission:
+# by hand after '-n <more> --restart', run.gs would let it archive a structure whose
+# later cycles are still to run.
+if [[ "$MODE" == "archive" ]]; then
+  if [[ -n "${GROSCORE_NUMCYCLES:-}" ]]; then
+    NUMCYCLES=$GROSCORE_NUMCYCLES; _from="GROSCORE_NUMCYCLES"
+  else
+    NUMCYCLES=$(awk '$1 == "numruns" {n = $2} END {print n + 0}' ../run_config.gs 2>/dev/null)
+    _from="numruns in ../run_config.gs"
+    if [[ ! "$NUMCYCLES" =~ ^[1-9][0-9]*$ ]]; then
+      MAXRUNS=$(awk 'NF >= 2 {m = $2} END {print m + 0}' run.gs 2>/dev/null)
+      NUMCYCLES=$(( ${MAXRUNS:-0} / 2 )); _from="run.gs"
+    fi
+  fi
+  echo "Archiving ${STRUCT_ID}: $NUMCYCLES cycles wanted ($_from)."
+  if [[ -e "../${STRUCT_ID}.tar.gz" ]]; then
+    echo "Not archived: ../${STRUCT_ID}.tar.gz exists already. Compare it with this"
+    echo "  directory and remove one of the two by hand."
+    exit 1
+  fi
+  for _lock in results_fe_c*.lock; do
+    [[ -e "$_lock" ]] || continue
+    if ! take_lock "$_lock"; then
+      echo "Not archived: $_lock is held by $LOCK_OWNER, so a cycle task may be working here."
+      exit 1
+    fi
+    rm -rf "$_lock"
+  done
+  archive_structure
+  case $? in
+    0) exit 0 ;;
+    2) echo "Not archived: $ARCHIVE_WHY."; exit 1 ;;
+    *) exit 1 ;;
+  esac
+fi
 
 # A SETUP NEVER CERTIFIES CYCLES IT DID NOT START. protocol_id.gs, written when a
 # setup completes, is what lets a cycle run (see the cycle phase), so a setup run
@@ -569,7 +811,10 @@ if [[ "$MODE" == "cycle" ]]; then
       exit 1
     fi
     [[ $waited -eq 0 ]] && echo "Cycle $CYCLE_ARG waiting for shared setup of $STRUCT_ID ..."
-    sleep $WAIT_INT
+    # In the background and waited for, so a TERM (scancel) ends the wait at once:
+    # bash runs a trap only after a foreground command, but interrupts `wait`.
+    sleep $WAIT_INT &
+    wait $!
     waited=$((waited+WAIT_INT))
   done
   [[ $waited -gt 0 ]] && echo "Setup ready after ${waited}s; starting cycle $CYCLE_ARG."
@@ -1865,14 +2110,25 @@ fi
   # first. INT and TERM exit after releasing, for the reason at the setup lock:
   # this trap used not to, so a TERM let the cycle carry on, and in legacy mode
   # start the next cycle's legs, until the KILL that follows it.
-  trap 'release_cycle_lock; release_job_lock' EXIT
-  trap 'stop_leg; release_cycle_lock; release_job_lock; exit 130' INT
-  trap 'stop_leg; release_cycle_lock; release_job_lock; exit 143' TERM
+  trap '_rc=$?; release_cycle_lock; release_job_lock; task_banner end "exit $_rc, after ${SECONDS} s"' EXIT
+  trap 'stop_leg; archive_abort; release_cycle_lock; release_job_lock; exit 130' INT
+  trap 'stop_leg; archive_abort; release_cycle_lock; release_job_lock; exit 143' TERM
 
+  # A cycle does not start in a directory that is being archived (.archive.lock): a
+  # task queued under a larger -n would otherwise run its legs in a directory the
+  # archive is about to remove. Checked once the cycle lock is held, which an
+  # --archive job looks for before it takes .archive.lock.
   claim_cycle() {
     local lock=results_fe_c$1.lock
     if take_lock "$lock"; then
       CYCLE_LOCK="$lock"
+      if [[ -d .archive.lock ]]; then
+        release_cycle_lock
+        echo "Cycle $1: $STRUCT_ID is being archived (.archive.lock) - skipping."
+        echo "  If no task archives it, remove $STRUCT_ID/.archive.lock and any"
+        echo "  ../$STRUCT_ID.tar.gz.part by hand."
+        return 1
+      fi
       return 0
     fi
     echo "Cycle $1: already running elsewhere (owner $LOCK_OWNER) - skipping."
@@ -2090,6 +2346,13 @@ fi
     NEEDS_RESULT=1
     if [[ -f $RESFILE ]] && complete_row $RESFILE; then
       NEEDS_RESULT=0
+      # A complete row whose .done was never written (a kill between the two, or a
+      # touch on a full disk) gets it here: nothing else writes it, and without it
+      # the structure could never be archived. groscore_fe.py submits such cycles.
+      if [[ ! -f results_fe_c${cycle}.done ]]; then
+        touch results_fe_c${cycle}.done \
+          && echo "Cycle $cycle: its row is complete; results_fe_c${cycle}.done written now."
+      fi
     fi
     if [[ $NEEDS_RESULT -eq 1 ]]; then
       for w in $(fe_xvgs); do
@@ -2099,10 +2362,22 @@ fi
       # a field into an empty string: that silently writes a short line which no
       # NaN check would ever flag for repair. Fall back to NaN so the row keeps its
       # FE_RESULT_NF fields and is retried on the next run.
+      # A failure also says why, on stderr, in the job log: the integrators name the
+      # broken line of a damaged record (integrate_dhdl.py, integrate.py), and their
+      # stderr used to go to /dev/null, so each NaN of bm_fe_amber_3a had to be
+      # explained by hand from the xvg. What they write while succeeding (the note on
+      # a leg that ends one record step short) stays out of the log as before.
       integrate_or_nan() {
-        local out
-        out=$("$@" 2>/dev/null) || out=""
-        [[ -z "$out" ]] && out="NaN"
+        local out rc errf
+        errf=$(mktemp 2>/dev/null) || errf=""
+        out=$("$@" 2>"${errf:-/dev/null}")
+        rc=$?
+        if [[ $rc -ne 0 || -z "$out" ]]; then
+          echo "  ${2##*/} failed for cycle $cycle (exit $rc): ${*:3}" >&2
+          [[ -n "$errf" && -s "$errf" ]] && sed 's/^/    /' "$errf" >&2
+          out="NaN"
+        fi
+        [[ -n "$errf" ]] && rm -f "$errf"
         printf '%s' "$out"
       }
       # Each stage is integrated at ITS OWN pull rate, read back from
@@ -2124,7 +2399,10 @@ fi
       # it. --leg-ps goes with it because mdrun writes dhdl on multiples of nstdhdl
       # and does not force a final row at nsteps, so a leg whose nsteps is not a
       # multiple would otherwise have its ramp stretched onto the rows it did
-      # record.
+      # record. --last-ps, where that last row is (floor(nsteps/nstdhdl) records),
+      # lets integrate_dhdl.py refuse a record that lost its last row, which is the
+      # row a disk that fills at the end of a leg takes; it is left out for an mdp
+      # without nstdhdl.
       # The values are attached with '=', and a lambda within 1e-9 of zero is
       # snapped to it. Both guard the same failure, which cost test5 all 47 of
       # its cycles.
@@ -2150,9 +2428,11 @@ fi
           /^ *delta-lambda *=/ {gsub(/[ \t]/,"",$2); d=$2+0; have_d=1}
           /^ *nsteps *=/       {gsub(/[ \t]/,"",$2); n=$2+0; have_n=1}
           /^ *dt *=/           {gsub(/[ \t]/,"",$2); t=$2+0; have_t=1}
+          /^ *nstdhdl *=/      {gsub(/[ \t]/,"",$2); s=$2+0; have_s=1}
           END { if (!have_i || !have_d || !have_n || !have_t) exit 1
                 printf "--lambda-start=%.10g --lambda-end=%.10g --leg-ps=%.10g",
-                       z(i), z(i + d*n), n*t }' "$1"
+                       z(i), z(i + d*n), n*t
+                if (have_s && s > 0) printf " --last-ps=%.10g", int(n / s) * s * t }' "$1"
       }
       # The mdp a leg ran with, looked up by leg name.
       mdp_of() {
@@ -2278,6 +2558,11 @@ fi
       else
         echo "Cycle $cycle FAILED: not every work is numeric, no .done written:"
         echo "  $(cat $RESFILE)"
+        echo "  Why is above ('... failed for cycle $cycle'). A damaged xvg stays damaged:"
+        echo "  every rerun integrates it again. Move aside that leg's files and those of"
+        echo "  every leg that goes on from it (each leg starts from the one before it;"
+        echo "  boundrev2, holdbrev1 and boundrev1 from holdfwd0), or the whole cycle,"
+        echo "  then resubmit to run them again."
         CYCLE_FAILED=1
       fi
     fi
@@ -2293,41 +2578,13 @@ fi
     echo "At least one cycle finished without a complete result."
   fi
 
-  # Archive completed structure to reduce inode count.
-  # Only when EVERY cycle has finished -- with cycles running as parallel array
-  # tasks, whichever task finishes last does the archiving. `mkdir` is atomic, so
-  # it elects a single winner even if several tasks finish simultaneously (two
-  # tasks tarring/deleting the same directory would be destructive).
-  # Guard the rm behind a successful, non-empty tar so a killed/broken archive
-  # can never delete the source directory (a 0-byte tar once wiped a structure).
-  # The cycles counted are 1..NUMCYCLES, as in job.run: counting every .done, those
-  # of cycles above the total from an earlier, larger -n made the first task of an
-  # array that ended archive and remove the directory while the others still ran in
-  # it (review S5).
-  DONE_CYCLES=0
-  for ((c = 1; c <= NUMCYCLES; c++)); do
-    [[ -f results_fe_c$c.done ]] && DONE_CYCLES=$((DONE_CYCLES+1))
-  done
-  if [[ $NUMCYCLES -gt 0 && $DONE_CYCLES -eq $NUMCYCLES ]] && mkdir .archive.lock 2>/dev/null; then
-    # Last chance to lift the analytical term out of the structure directory:
-    # once this is a tarball, boresch_analytical.gs is unreachable to the scorer
-    # and the structure would score PENDING forever despite having every cycle.
-    if [[ -f boresch_analytical.gs ]]; then
-      DGREL=$(awk '$1=="dG_release_kJ_mol"{print $2}' boresch_analytical.gs)
-      mkdir -p ../results_analytical.d
-      echo "$STRUCT_ID $DGREL" > ../results_analytical.d/${STRUCT_ID}.gs
-    fi
-    cd ..
-    # A legacy job still holds job_run.lock here. It stays out of the archive: an
-    # unpacked copy would carry an owner whose death another host cannot prove.
-    if tar -czf "${STRUCT_ID}.tar.gz" --exclude="${STRUCT_ID}/job_run.lock" "${STRUCT_ID}/" \
-       && [[ -s "${STRUCT_ID}.tar.gz" ]]; then
-      rm -rf "${STRUCT_ID}/"
-    else
-      echo "Archive failed or empty for ${STRUCT_ID}; keeping directory."
-      rm -f "${STRUCT_ID}.tar.gz"
-      rmdir "${STRUCT_ID}/.archive.lock" 2>/dev/null
-    fi
+  # The task that finished the last cycle archives the structure (archive_structure:
+  # every cycle 1..NUMCYCLES done, one task elected by .archive.lock). A complete
+  # structure this task does not archive says why: another task archives it, or one
+  # died doing so and left its marker, which stops every later attempt.
+  archive_structure
+  if [[ $? -eq 2 && "$ARCHIVE_WHY" == "another task"* ]]; then
+    echo "Not archived by this task: $ARCHIVE_WHY."
   fi
 else
   echo $STRUCT_ID "BROKEN" >> ../results_0.gs

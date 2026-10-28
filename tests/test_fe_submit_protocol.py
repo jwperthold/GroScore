@@ -46,6 +46,15 @@ pinned, against a fake sbatch that records every call:
       says why: one that records a crash or a kill, or has no line, is submitted.
       PROBE_FAIL is still submitted, and so is a structure whose last line is
       SETUP_RUNNING again.
+  [9] A directory with every cycle done (results_fe_c<N>.done) and no archive gets
+      a job_fe.run --archive job, on SLURM (slurm_fe/archive_<ID>.run, a short time
+      limit, GROSCORE_NUMCYCLES) and to the local runner (logging beside the
+      directory it removes): its archive used to be made only by the task that
+      finished the last cycle, so a failed one (1AKJ in bm_fe_amber_3a) was never
+      tried again. A directory whose rows are all complete but a .done is missing
+      gets those cycles, which write it. One with an archive under way or killed
+      (.archive.lock) gets nothing and is reported; so is one with an <ID>.tar.gz
+      beside it. The --sequential unpack removes .archive.lock, as the others do.
 
 Run:  python3 tests/test_fe_submit_protocol.py
 """
@@ -353,6 +362,9 @@ check("submitted once, OLD held", calls == ["array_submit.run"]
 seq_script = open(os.path.join(run, "array_submit.run")).read()
 check("the array exports the recorded total (GROSCORE_NUMCYCLES=4)",
       "export GROSCORE_NUMCYCLES=4\n" in seq_script, seq_script[-300:])
+check("its unpack removes .archive.lock, as the setup job's does",
+      '  rm \"${STRUCT_ID}.tar.gz\"\n  rm -rf \"${STRUCT_ID}/.archive.lock\"\nfi\n' in seq_script,
+      seq_script[-300:])
 p, calls = gs(run, "-n", "6", "--restart", "--sequential")
 seq_script = open(os.path.join(run, "array_submit.run")).read()
 check("-n 6 --restart --sequential: the array exports GROSCORE_NUMCYCLES=6",
@@ -455,6 +467,78 @@ check("the summary: 3 structures held back, with how to set one up again",
       "NOT SUBMITTED: 3 structures held back and left untouched." in out
       and "'<ID> SETUP_RUNNING'" in out,
       [l for l in out.splitlines() if "NOT SUBMITTED" in l])
+
+print("\n[9] a finished structure that is still a directory gets an archive job")
+S9 = ["COMPLETE", "NOMARK", "BOTH", "PARTIAL", "BUSY", "RECREATED"]
+run = new_run("archive", S9, "numruns\t4\nprotocol_id\t%s\n" % CUR,
+              rows={"COMPLETE": [1, 2, 3, 4], "NOMARK": [1, 2, 3, 4], "BOTH": [1, 2, 3, 4],
+                    "PARTIAL": [1, 2], "BUSY": [1, 2, 3, 4], "RECREATED": [1, 2, 3, 4]})
+for sid in S9:
+    setup_files(os.path.join(run, sid))
+for sid, cycles in (("COMPLETE", (1, 2, 3, 4)), ("NOMARK", (1, 2, 3)),
+                    ("BOTH", (1, 2, 3, 4)), ("PARTIAL", (1, 2)), ("BUSY", (1, 2, 3, 4))):
+    for c in cycles:
+        put(os.path.join(run, sid, "results_fe_c%d.done" % c), "")
+os.makedirs(os.path.join(run, "BUSY", ".archive.lock"))
+put(os.path.join(run, "BOTH.tar.gz"), "an older archive\n")
+both_md5 = md5(os.path.join(run, "BOTH.tar.gz"))
+p, calls = gs(run, "--restart", "-n", "4")
+out = p.stdout
+check("rc 0", p.returncode == 0, p.stderr[-300:])
+check("submitted: COMPLETE's archive job, NOMARK's cycle 4, PARTIAL's cycles 3-4",
+      calls == ["slurm_fe/archive_COMPLETE.run", "slurm_fe/cycles_NOMARK.run",
+                "slurm_fe/cycles_PARTIAL.run"], calls)
+script = open(os.path.join(run, "slurm_fe", "archive_COMPLETE.run")).read() \
+    if os.path.exists(os.path.join(run, "slurm_fe", "archive_COMPLETE.run")) else ""
+check("the archive job: the template, its name, a short limit, the total, --archive",
+      script.startswith(open(os.path.join(REPO, "slurm", "workstation.sh")).read().rstrip("\n") + "\n")
+      and "#SBATCH --job-name=fearch_COMPLETE\n#SBATCH --time=08:00:00\n\n" in script
+      and script.endswith("export GROSCORE_NUMCYCLES=4\ncd COMPLETE || exit 1\n./job.run --archive\n"),
+      script)
+check("COMPLETE says why it gets one",
+      "COMPLETE: all 4 cycles complete but not archived; submitting its archive job." in out)
+check("NOMARK (rows complete, .done of cycle 4 missing): cycle 4, to write it; no archive job",
+      "NOMARK: complete rows but no results_fe_c<N>.done for cycle(s) 4; submitting them to write it."
+      in out and "#SBATCH --array=4\n" in open(os.path.join(run, "slurm_fe", "cycles_NOMARK.run")).read()
+      and not os.path.exists(os.path.join(run, "slurm_fe", "archive_NOMARK.run")))
+check("RECREATED (rows, but no .done at all: not the directory they came from): nothing",
+      "RECREATED: all 4 cycles complete, nothing to submit." in out
+      and not os.path.exists(os.path.join(run, "slurm_fe", "cycles_RECREATED.run")))
+check("BOTH (directory and BOTH.tar.gz): reported, no job, the archive untouched",
+      "BOTH: all 4 cycles complete, nothing to submit." in out
+      and "Both BOTH/ and BOTH.tar.gz exist; the directory is used. Compare them and remove one by hand."
+      in out and not os.path.exists(os.path.join(run, "slurm_fe", "archive_BOTH.run"))
+      and md5(os.path.join(run, "BOTH.tar.gz")) == both_md5)
+check("BUSY (.archive.lock): reported as under way or interrupted, no job",
+      "BUSY: all 4 cycles complete; an archive is under way or was interrupted (BUSY/.archive.lock)."
+      " If no task archives it, remove BUSY/.archive.lock by hand." in out
+      and not os.path.exists(os.path.join(run, "slurm_fe", "archive_BUSY.run")), out[-600:])
+check("the summary counts the archive job",
+      "Submitted 0 setup job(s) + 2 cycle array(s) + 1 archive job(s), target 4" in out,
+      [l for l in out.splitlines() if l.startswith("Submitted")])
+# --run-local: the job list handed to the local runner, launch_local replaced.
+runl = new_run("archive_local", ["COMPLETE"], "numruns\t4\nprotocol_id\t%s\n" % CUR,
+               rows={"COMPLETE": [1, 2, 3, 4]})
+setup_files(os.path.join(runl, "COMPLETE"))
+for c in (1, 2, 3, 4):
+    put(os.path.join(runl, "COMPLETE", "results_fe_c%d.done" % c), "")
+put(os.path.join(work, "archive_local_driver.py"),
+    "import json, sys\n"
+    "sys.argv = ['groscore_fe.py', '--restart', '-n', '4', '--run-local', '--ngpus', '1']\n"
+    "sys.path.insert(0, %r)\n"
+    "import groscore_fe as G\n"
+    "got = []\n"
+    "G.launch_local = lambda jobs, *a, **k: got.extend(jobs) or True\n"
+    "G.setup_and_submit(['COMPLETE'], ['B'])\n"
+    "print('JOBS ' + json.dumps(got))\n" % REPO)
+p = subprocess.run([sys.executable, os.path.join(work, "archive_local_driver.py")], cwd=runl,
+                   capture_output=True, text=True, timeout=600)
+jl = [json.loads(l[5:]) for l in p.stdout.splitlines() if l.startswith("JOBS ")]
+check("--run-local: one local job, ./job.run --archive with GROSCORE_NUMCYCLES=4,"
+      " logging beside the directory it removes",
+      jl == [[{"name": "archive_COMPLETE", "dir": "COMPLETE", "argv": ["./job.run", "--archive"],
+               "env": {"GROSCORE_NUMCYCLES": "4"}, "log": "../job_local_archive_COMPLETE.out"}]],
+      (jl, p.stderr[-300:]))
 
 shutil.rmtree(work, ignore_errors=True)
 print("")

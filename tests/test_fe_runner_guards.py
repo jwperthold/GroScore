@@ -45,6 +45,9 @@ the same, so every path below is the runner's own control flow, in seconds.
       box padding it measures again on the finished replicas, after a replica that
       died twice it runs that replica again from step 0, never from the checkpoint
       the dead run left; neither redoes the setup or a finished replica.
+ [11] A cycle whose row is complete but whose results_fe_c<N>.done was never
+      written (a kill between the two) gets it from the next --cycle task, without a
+      gmx call or an integration; without it the structure was never archived.
 
 Standalone, no pytest: python3 tests/test_fe_runner_guards.py
 """
@@ -200,6 +203,10 @@ class Sandbox:
         with open(os.path.join(self.bin, "gmx"), "w") as f:
             f.write(FAKE_GMX)
         os.chmod(os.path.join(self.bin, "gmx"), 0o755)
+        # Every task reports its GPUs at start and end; not this host's real ones.
+        with open(os.path.join(self.bin, "nvidia-smi"), "w") as f:
+            f.write('#!/bin/sh\necho "0, stub GPU, 00000000:01:00.0, 1 MiB, 2 MiB, 0 %"\n')
+        os.chmod(os.path.join(self.bin, "nvidia-smi"), 0o755)
         self.gmxlog = os.path.join(base, "gmx.log")
         self.stublog = os.path.join(base, "stub.log")
 
@@ -404,6 +411,9 @@ with tempfile.TemporaryDirectory() as tmp:
               (sb.status("S2"), sb.gmx()[:2], sb.stubs()[:2]))
         check("  and the holder's lock is left as it was",
               open(os.path.join(s2, "job_run.lock", "owner")).read().strip() == owner)
+        check("  the task's end line says exit 1",
+              re.search(r"^Task end: .*, exit 1, after \d+ s$", r.stdout, re.M) is not None,
+              r.stdout[-300:])
 
     # -----------------------------------------------------------------------
     print("\n[3] a dead job's lock is reclaimed and released on exit")
@@ -483,8 +493,10 @@ with tempfile.TemporaryDirectory() as tmp:
               r.returncode == 1 and what in r.stdout and sb.gmx() == []
               and not os.path.isfile(os.path.join(s6, "results_fe_c2.done")),
               (r.returncode, r.stdout[-300:], sb.gmx()[:2]))
+    # Cycle 1 has no .done, so cycle 2 does not archive the structure, which stays
+    # for inspection. (A planted .archive.lock used to keep it; a cycle now does not
+    # start beside one.)
     s6 = crafted(sb, "S6c", v15=True, proto=WANT_ID, cycle2_nptc=False)
-    os.makedirs(os.path.join(s6, ".archive.lock"))       # keep it for inspection
     os.makedirs(os.path.join(s6, "job_run.lock"))
     touch(s6, "job_run.lock/owner", text=owner + "\n")
     r = sb.job(s6, ("--cycle", "2"), GROSCORE_NUMCYCLES="2")
@@ -627,6 +639,24 @@ with tempfile.TemporaryDirectory() as tmp:
           (r.returncode, r.stdout[-300:]))
     with open(gmx_path, "w") as f:
         f.write(gmx_orig)
+
+    # -----------------------------------------------------------------------
+    print("\n[11] a complete row without its .done gets it")
+    # The row is written before the .done, so a task killed between them left a
+    # cycle that nothing marked done, and its structure was never archived.
+    s11 = crafted(sb, "S11", v15=True, proto=WANT_ID, cycle2_nptc=False)
+    os.makedirs(os.path.join(run, "results_fe.d"), exist_ok=True)
+    with open(os.path.join(run, "results_fe.d", "S11_c1.gs"), "w") as f:
+        f.write("S11 1 %s 1.5\n" % " ".join("1.0" for _ in P.works()))
+    r = sb.job(s11, ("--cycle", "1"))
+    check("--cycle 1: exit 0, results_fe_c1.done written, and said so",
+          r.returncode == 0 and os.path.isfile(os.path.join(s11, "results_fe_c1.done"))
+          and "Cycle 1: its row is complete; results_fe_c1.done written now." in r.stdout,
+          (r.returncode, r.stdout[-400:]))
+    check("  with no gmx call and no integration", sb.gmx() == []
+          and not [l for l in sb.stubs() if l.startswith("integrate")], (sb.gmx()[:2], sb.stubs()[:3]))
+    check("  cycle 2 is not done, so it is not archived, and nothing says it was",
+          os.path.isdir(s11) and "Not archived" not in r.stdout, r.stdout[-300:])
 
 print()
 if failures:

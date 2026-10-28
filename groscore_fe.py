@@ -1075,6 +1075,40 @@ def report_held(held):
       print("    " + line)
   print("")
 
+def unarchived_complete(sid, numruns):
+  """True when ./sid holds results_fe_c<N>.done for every cycle 1..numruns but is
+  still a directory, with no <sid>.tar.gz beside it.
+
+  job_fe.run archives a structure only in the task that finishes its last cycle, so
+  one whose archive failed there stayed a directory that no later run tried again:
+  with every cycle done, --restart had nothing to submit for it (1AKJ in
+  bm_fe_amber_3a, whose tar met a full disk). Such a directory gets a
+  job_fe.run --archive job. One with a <sid>.tar.gz beside it is reported and left
+  to the user, as job_fe.run --archive refuses it too."""
+  d = "./%s" % sid
+  if not os.path.isdir(d) or os.path.exists("./%s.tar.gz" % sid) or numruns < 1:
+    return False
+  return all(os.path.isfile(os.path.join(d, "results_fe_c%d.done" % c))
+             for c in range(1, numruns + 1))
+
+def unmarked_cycles(sid, numruns):
+  """Cycles 1..numruns of ./sid without results_fe_c<N>.done, in a directory whose
+  setup completed and that has marked at least one cycle done; [] otherwise.
+
+  Called when every cycle has a complete row. job_fe.run writes the row first and
+  the .done after it, so a task killed between the two (or a touch on a full disk)
+  leaves a complete row that nothing marks done, and the structure was never
+  archived. A cycle task for it writes the .done (and archives after the last).
+  The directory must be the one the rows came from: a structure directory
+  recreated inside a run directory that already ran it has rows and no .done at
+  all, and must not get cycles (CYC-4, hold_reason)."""
+  d = "./%s" % sid
+  if not os.path.isfile(os.path.join(d, "setup.done")) \
+     or not glob.glob(os.path.join(d, "results_fe_c*.done")):
+    return []
+  return [c for c in range(1, numruns + 1)
+          if not os.path.isfile(os.path.join(d, "results_fe_c%d.done" % c))]
+
 def setup_and_submit(structids, structchains):
   """Write per-structure run.gs, install job_fe.run, build and submit the jobs.
 
@@ -1123,6 +1157,9 @@ def setup_and_submit(structids, structchains):
         held.append((sid,) + why)
         continue
       print("Setting up %s." % sid)
+      if os.path.exists("./%s.tar.gz" % sid):
+        print("  Both %s/ and %s.tar.gz exist; the directory is used. Compare them and"
+              " remove one by hand." % (sid, sid))
       if not args.restart:
         with open("./%s/run.gs" % sid, "w") as f:
           f.write("%s %d %d %s %d\n" % (structchains[i], args.numruns * 2,
@@ -1204,8 +1241,11 @@ def setup_and_submit(structids, structchains):
       f.write("#SBATCH --array=%s\n\n" % compact_ranges(idx))
       f.write("export GROSCORE_NUMCYCLES=%d\n" % args.numruns)
       f.write("STRUCT_ID=$(awk -v idx=\"$SLURM_ARRAY_TASK_ID\" '$1 == idx {print $2}' struct_map.gs)\n")
+      # .archive.lock goes, as in extract_snippet: archives made before job_fe.run
+      # left it out carry it, and it would stop the structure from being archived.
       f.write("if [[ ! -d \"$STRUCT_ID\" && -f \"${STRUCT_ID}.tar.gz\" ]]; then\n")
-      f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n  rm \"${STRUCT_ID}.tar.gz\"\nfi\n")
+      f.write("  tar -xzf \"${STRUCT_ID}.tar.gz\"\n  rm \"${STRUCT_ID}.tar.gz\"\n"
+              "  rm -rf \"${STRUCT_ID}/.archive.lock\"\nfi\n")
       f.write("cd $STRUCT_ID\n./job.run\n")
     # Flushed first: sbatch writes to the same stdout, and into a redirected log its
     # line otherwise lands above everything printed so far.
@@ -1228,12 +1268,52 @@ def setup_and_submit(structids, structchains):
   throttle = ("%%%d" % args.array_throttle) if args.array_throttle > 0 else ""
 
   local_jobs = []
-  n_setup = n_array = 0
+  n_setup = n_array = n_archive = 0
   for sid in live:
     have = done_cycles.get(sid, set())
     missing = [c for c in range(1, args.numruns + 1) if c not in have]
+    if not missing and os.path.isdir("./%s" % sid):
+      nomark = unmarked_cycles(sid, args.numruns)
+      if nomark:
+        print("  %s: complete rows but no results_fe_c<N>.done for cycle(s) %s;"
+              " submitting them to write it." % (sid, compact_ranges(nomark)))
+        missing = nomark
     if not missing:
-      print("  %s: all %d cycles complete, nothing to submit." % (sid, args.numruns))
+      busy = [p for p in ("%s.tar.gz.part" % sid, "%s/.archive.lock" % sid)
+              if os.path.exists(p)]
+      if busy and os.path.isdir("./%s" % sid):
+        print("  %s: all %d cycles complete; an archive is under way or was interrupted"
+              " (%s). If no task archives it, remove %s by hand."
+              % (sid, args.numruns, " and ".join(busy), " and ".join(busy)))
+        continue
+      if not unarchived_complete(sid, args.numruns):
+        print("  %s: all %d cycles complete, nothing to submit." % (sid, args.numruns))
+        continue
+      # Every cycle done, never archived: an archive-only job (unarchived_complete).
+      # Locally its log goes beside the directory, which the job removes.
+      if args.run_local:
+        local_jobs.append({"name": "archive_%s" % sid, "dir": sid,
+                           "argv": ["./job.run", "--archive"],
+                           "env": {"GROSCORE_NUMCYCLES": str(args.numruns)},
+                           "log": "../job_local_archive_%s.out" % sid})
+        n_archive += 1
+        print("  %s: all %d cycles complete but not archived; queueing its archive."
+              % (sid, args.numruns))
+        continue
+      archive_path = os.path.join("slurm_fe", "archive_%s.run" % sid)
+      with open(archive_path, "w") as f:
+        f.write(template + "\n")
+        f.write("#SBATCH --job-name=fearch_%s\n" % sid)
+        # A tar and a gzip -t, not a cycle: a limit far below the template's, so the
+        # scheduler can fit it in. The largest bm_fe_amber_3a structure is 48 GB.
+        f.write("#SBATCH --time=08:00:00\n\n")
+        f.write("export GROSCORE_NUMCYCLES=%d\n" % args.numruns)
+        f.write("cd %s || exit 1\n./job.run --archive\n" % sid)
+      sys.stdout.flush()
+      if os.system("sbatch %s" % archive_path) == 0:
+        n_archive += 1
+        print("  %s: all %d cycles complete but not archived; submitting its archive job."
+              % (sid, args.numruns))
       continue
 
     if args.run_local:
@@ -1297,8 +1377,9 @@ def setup_and_submit(structids, structchains):
     report_held(held)
     return
 
-  print("Submitted %d setup job(s) + %d cycle array(s), target %d cycles/structure%s.\n"
-        % (n_setup, n_array, args.numruns,
+  print("Submitted %d setup job(s) + %d cycle array(s)%s, target %d cycles/structure%s.\n"
+        % (n_setup, n_array,
+           " + %d archive job(s)" % n_archive if n_archive else "", args.numruns,
            " (max %d concurrent)" % args.array_throttle if args.array_throttle > 0 else ""))
   report_held(held)
 

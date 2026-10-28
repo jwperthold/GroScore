@@ -151,7 +151,7 @@ python ../groscore.py
 - `--ngpus N` - Number of GPUs to distribute local jobs over (mandatory with `--run-local`)
 - `--jobs-per-gpu N` - Concurrent jobs per GPU in local mode (default: 8; `0` starts every job at once)
 - `--threads-per-job N` - CPU threads per local job, i.e. `gmx mdrun -nt` (default: 1)
-- `--restart` - Resubmit jobs (useful for continuing interrupted runs). With a larger `-n` it adds cycles. A restart continues each structure where it stopped: a finished cycle is never run or integrated again, and once a structure's first pull leg has run its restraint set is kept as it is. `run.gs` is not rewritten, so `-ff`, `--no-cutout` and `--no-ligand-param` keep the values of the first submission. To rebuild a structure with other settings or code, set it up again in a fresh run directory
+- `--restart` - Resubmit jobs (useful for continuing interrupted runs). With a larger `-n` it adds cycles. A restart continues each structure where it stopped: a finished cycle is never run or integrated again, and once a structure's first pull leg has run its restraint set is kept as it is. `run.gs` is not rewritten, so `-ff`, `--no-cutout` and `--no-ligand-param` keep the values of the first submission. To rebuild a structure with other settings or code, set it up again in a fresh run directory. In GroScore-FE it also submits an archive job (`job_fe.run --archive`) for a structure whose cycles are all done but which is still a directory, as after an archive that failed
 - `--inject-job-run` - Inject fresh job.run into archived (.tar.gz) structures and submit them. An archive is submitted only with this flag
 - `--rmsd-warn` - Threshold in Å for the [rebinding QC](#rebinding-sanity-check-qc) (default: 10.0). Flags structures; scores are unaffected
 
@@ -436,6 +436,20 @@ structure (`job_fe.run --setup`) and an array of its missing cycles
 cycle tasks per structure, `--sequential` runs setup and all cycles in one job per
 structure, and `--n-boot-bar` sets the BAR bootstrap rows (default 5000).
 
+The task that finishes a structure's last cycle archives the structure directory as
+`<ID>.tar.gz`. The archive is tested with `gzip -t` before the directory is removed,
+and the log says `Archived <ID> to <ID>.tar.gz (N bytes, gzip test passed);
+directory removed.` The same line, with time and host, goes to `archive.log` in the
+run directory, the place to look under `--run-local`, whose job logs live inside the
+archived directory. A structure whose cycles are all done but which is still a
+directory, because its archive failed (a full disk, say), gets an archive-only job
+from `--restart` (with `--sequential`, its whole job, which archives at its end).
+By hand, `GROSCORE_NUMCYCLES=<-n> ./job.run --archive` inside the structure
+directory does the same; without the variable it takes the run's `-n` from
+`run_config.gs`. Every task prints a `Task start:` and a `Task end:` line with the
+time, the host, its SLURM job and the GPUs `nvidia-smi` lists, so a slow node or a
+lost GPU can be found from the log alone.
+
 Results are written to `scores_fe.gs`: dG_bind in kJ/mol and as pKD under each of
 the three estimators, the three cycle components, one column pair per leg, and two
 per-row diagnostics. `Overlap_mean_pct` and `Overlap_min_pct` give the forward and
@@ -715,7 +729,7 @@ Only the last status line of a structure in `results_0.gs` counts. Any other sta
 
 **RMSD reported as `nan`**: The measurement was not made. Possible reasons: a legacy run directory without the check; a frame could not be read or assembled; the index has no `[ Protein ]` group; `gmx rms` failed; or (classic) the cycle's legs did not finish. A missing RMSD never changes a score. Reproduce the failure with `python3 ../../utils/rebound_rmsd.py --ref npt_c<N>.gro --query bindrev_<2N>.gro -v` inside the structure directory; the reason is printed to stderr.
 
-**Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment. `job.run` and `job_fe.run` exit 1 when a cycle ends without a complete result. `job.run` (and `job_fe.run` outside `--cycle` mode) also exits 1 when another job holds `job_run.lock` in the structure directory, as after a second submission while the first still runs, or while an MD leg started by a job that was killed still runs; the message starts with "Safety check". A lock is taken over only from a job shown to be gone: on the same host by its pid and its running leg, on another host by `squeue`, which must answer (a controller error keeps the lock). If that job is gone and `squeue` cannot say so, remove the lock by hand and resubmit. An FE cycle task skips a cycle that another job is running (`results_fe_c<N>.lock` in the structure directory; remove it by hand if that job is gone and `squeue` cannot say so). A TERM (scancel, the walltime, stopping the local runner) stops the running leg and ends the job; the next run starts that leg again from step 0.
+**Job failures**: Ensure GROMACS modules are loaded and paths are correctly set in your SLURM environment. `job.run` and `job_fe.run` exit 1 when a cycle ends without a complete result. `job.run` (and `job_fe.run` outside `--cycle` mode) also exits 1 when another job holds `job_run.lock` in the structure directory, as after a second submission while the first still runs, or while an MD leg started by a job that was killed still runs; the message starts with "Safety check". A lock is taken over only from a job shown to be gone: on the same host by its pid and its running leg, on another host by `squeue`, which must answer (a controller error keeps the lock). If that job is gone and `squeue` cannot say so, remove the lock by hand and resubmit. An FE cycle task skips a cycle that another job is running (`results_fe_c<N>.lock` in the structure directory; remove it by hand if that job is gone and `squeue` cannot say so). A TERM (scancel, the walltime, stopping the local runner) stops the running leg and ends the job; the next run starts that leg again from step 0. An FE work that comes out NaN is explained in the job log under `... failed for cycle N`: `integrate_dhdl.py` refuses a dH/dλ record that is not whole (a broken, unparsable or cut row, a time that goes back or skips rows, or a missing head or last row) and names the line, and `integrate.py` names the row it cannot read. A damaged file stays damaged, and every rerun integrates it again: move aside the files of that leg and of every leg that goes on from it (each leg starts from the one before; `boundrev2`, `holdbrev1` and `boundrev1` from `holdfwd0`), or of the whole cycle, then resubmit with `--restart` to run them again.
 
 Every MD leg that dies is started again from step 0, never from its own checkpoint: in `job.run` every NVT, NPT, pull and push leg, in `job_fe.run` every stage of the probe and of a cycle (the NVT stages, the probe NPT replicas, `npt_c` and the FE legs, each from a newly built tpr). An unfinished run is never continued, and a leg reads the checkpoint of the leg before only once that one has written its `.gro`. Both runners make up to `GROSCORE_LEG_RETRIES` attempts in all (default 2). In `job.run`, `GROSCORE_LEG_TIMEOUT` (default `24h`, sized for a CPU run; the VSC-5 GPU templates set `180m`) ends a 5 ns SMD leg or a minimization that hangs; its NVT/NPT legs have 60 min each. `job_fe.run` uses fixed limits: 60 min per NVT leg, 600 min for `npt_c` and each probe replica, 180 min per FE leg. A `job_fe.run --cycle` task waits up to `GROSCORE_SETUP_WAIT` seconds (default 21600) for its setup, checking every `GROSCORE_SETUP_POLL` seconds (default 30).
 
