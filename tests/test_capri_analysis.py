@@ -13,6 +13,9 @@
      best-scoring model is the reference with i-RMSD 0, the 4 close poses form
      cluster 1 with i-RMSD < 0.5 A, the far ones have i-RMSD > 5 A, a BROKEN
      status gives no pKd, and both plots are written.
+  5. --submit writes <target>_scoring.pdb: MD5 lines in the header in pKd order,
+     in the scoring-set format, models renumbered 1..n, coordinates unchanged,
+     END last; fewer scored models than 10 give a shorter file and a warning.
 
 Run with the groscore environment:  python tests/test_capri_analysis.py
 """
@@ -108,6 +111,30 @@ with tempfile.TemporaryDirectory() as tmp:
         check(rows["T999_0005"][6] == "nan" and rows["T999_0005"][3] == "BROKEN", "4: BROKEN has no pKd")
         check(all(os.path.isfile(os.path.join(run, "analysis", f)) for f in ("irmsd_vs_pkd.png", "clusters_pkd.png")),
               "4: both plots written")
+
+    # 5. scorer submission: best pKd first, MD5 lines in the header in that order, MODEL 1..n,
+    #    coordinates unchanged; only the 4 scored models exist, so 4 instead of 10 with a warning
+    with open(os.path.join(run, "md5_map.gs"), "w") as o:
+        for i in range(6):
+            o.write("T999_%04d  %d  %032x\n" % (i, i, i + 1))
+    p = subprocess.run([sys.executable, SCRIPT, run, "--min-scored", "2", "--submit", "--group", "TEST"],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    sub = os.path.join(run, "analysis", "T999_scoring.pdb")
+    check(p.returncode == 0 and os.path.isfile(sub) and "only 4 scored" in p.stdout,
+          "5: submission written, short of 10 with a warning")
+    if os.path.isfile(sub):
+        lines = open(sub).read().splitlines()
+        md5 = [l for l in lines if l.startswith("REMARK   9")]
+        check(md5 == ["REMARK   9 MODEL %8d MD5 %032x" % (m, m + 1) for m in (0, 1, 2, 4)],
+              "5: MD5 lines in the header in pKd order (models 0, 1, 2, 4), scoring-set format")
+        first_model = lines.index("MODEL        1")
+        check(all(lines.index(l) < first_model for l in md5), "5: MD5 lines precede the first model")
+        check([l for l in lines if l.startswith("MODEL")] == ["MODEL        %d" % k for k in range(1, 5)],
+              "5: models renumbered 1..4")
+        m4 = [l for l in lines[lines.index("MODEL        4"):] if l.startswith("ATOM")]
+        orig = [l for l in open(os.path.join(run, "T999_0004", "input.pdb")).read().splitlines() if l.startswith("ATOM")]
+        check(m4 == orig, "5: coordinates of the submitted model unchanged")
+        check(lines[-1] == "END", "5: file ends with END")
 
 print("\n%d failure(s)" % len(failures))
 sys.exit(1 if failures else 0)

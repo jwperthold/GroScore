@@ -311,6 +311,13 @@ def main():
                     help="scored members a cluster needs to be ranked (default 3)")
     ap.add_argument("--max-rows", type=int, default=25, help="clusters shown in clusters_pkd.png")
     ap.add_argument("-o", "--outdir", help="output directory (default <rundir>/analysis)")
+    ap.add_argument("--submit", action="store_true",
+                    help="also write <target>_scoring.pdb, the scorer submission (see the header)")
+    ap.add_argument("--pick", choices=("top", "cluster"), default="top",
+                    help="submission models: 'top' = best pKd; 'cluster' = the best scored model of each "
+                         "cluster (ranked clusters first), then best pKd (default top)")
+    ap.add_argument("--nsubmit", type=int, default=10, help="models in the submission (default 10)")
+    ap.add_argument("--group", help="group name for a REMARK line of the submission, e.g. 'HUMAN Team 6'")
     args = ap.parse_args()
 
     rundir = args.rundir.rstrip("/")
@@ -469,6 +476,70 @@ def main():
             print("    %4d %7d %5d %6d %6s %6s  %-10s" % (c["rank"], c["cluster"], c["size"], c["n_scored"],
                                                          fmt(c["top4"]), fmt(c["best"]), c["best_id"]))
     print("\n  written: %s/{models.gs, clusters.gs, irmsd_vs_pkd.png, clusters_pkd.png}" % outdir)
+    if args.submit:
+        return write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt)
+    return 0
+
+
+def pick_models(rows, ranked, unranked, how, n):
+    """IDs of the submission in ranking order."""
+    scored = sorted((r for r in rows if math.isfinite(r["pkd"])), key=lambda r: (-r["pkd"], r["id"]))
+    if how == "top":
+        return [r["id"] for r in scored[:n]]
+    by_id = {r["id"]: r for r in rows}
+    picks = [c["best_id"] for c in ranked]                       # best member of each ranked cluster
+    rest = [c["best_id"] for c in unranked if c["best_id"] != "-"]
+    rest += [r["id"] for r in scored if r["cluster"] == 0]       # an unclustered model is its own cluster
+    picks += sorted(rest, key=lambda s: (-by_id[s]["pkd"], s))
+    for r in scored:                                             # fill up with the best remaining models
+        if r["id"] not in picks:
+            picks.append(r["id"])
+    return picks[:n]
+
+
+def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt):
+    """<target>_scoring.pdb as CAPRI asks for a scorer submission (answer of the organisers,
+    round 66): the models in decreasing order, numbered MODEL 1..n; the REMARK 9 MD5 line of
+    each model in the header, in the same order; HEADER, COMPND and AUTHOR are not required.
+    The models are written with the scoring-set coordinates, unchanged."""
+    by_id = {r["id"]: r for r in rows}
+    picks = pick_models(rows, ranked, unranked, args.pick, args.nsubmit)
+    if len(picks) < args.nsubmit:
+        print("  WARNING: only %d scored model(s); the submission has %d instead of %d"
+              % (len(picks), len(picks), args.nsubmit))
+    bad = [s for s in picks if not by_id[s]["md5"] or by_id[s]["md5"] in ("?", "MISSING")]
+    if bad:
+        print("  ERROR: no MD5 code for %s (md5_map.gs); no submission written" % " ".join(bad))
+        return 1
+    path = os.path.join(outdir, "%s_scoring.pdb" % target)
+    out = []
+    if args.group:
+        out.append("REMARK   1 %s SCORER SUBMISSION, %s" % (target, args.group))
+    out.append("REMARK   1 GROSCORE SMD SCORES AS PKD, %s, MODELS PICKED BY %s"
+               % (calib_txt.split(" (")[0].replace(" x ", " * "), "PKD" if args.pick == "top" else "CLUSTER, THEN PKD"))
+    for s in picks:
+        out.append("REMARK   9 MODEL %8d MD5 %s" % (int(by_id[s]["model"]), by_id[s]["md5"]))
+    for k, s in enumerate(picks, start=1):
+        text = read_pdb_text(rundir, s)
+        out.append("MODEL     %4d" % k)
+        out += [l.rstrip("\r\n") for l in text.splitlines() if l.startswith(("ATOM  ", "HETATM", "TER"))]
+        out.append("ENDMDL")
+    out.append("END")
+    with open(path, "w") as o:
+        o.write("\n".join(out) + "\n")
+    with open(os.path.join(outdir, "submission.gs"), "w") as o:
+        o.write("# %s scorer submission (%s): %s\n" % (target, os.path.basename(path), calib_txt))
+        o.write("# Rank  Structure_ID  CAPRI_model  pKd  Cycles  RMSD_flag  Cluster  iRMSD_A  MD5\n")
+        for k, s in enumerate(picks, start=1):
+            r = by_id[s]
+            o.write("%d  %s  %s  %s  %s  %s  %d  %s  %s\n" % (k, s, r["model"], fmt(r["pkd"]), r["cycles"],
+                                                         r["flag"], r["cluster"], fmt(r["irmsd"]), r["md5"]))
+    print("\n  Submission (%s, pick %s):" % (os.path.basename(path), args.pick))
+    print("    %4s %-10s %6s %6s %7s %7s" % ("rank", "ID", "model", "pKd", "cluster", "cycles"))
+    for k, s in enumerate(picks, start=1):
+        r = by_id[s]
+        print("    %4d %-10s %6s %6s %7d %7s" % (k, s, r["model"], fmt(r["pkd"]), r["cluster"], r["cycles"]))
+    print("  written: %s, %s" % (path, os.path.join(outdir, "submission.gs")))
     return 0
 
 
