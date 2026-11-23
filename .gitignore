@@ -10,3 +10,6 @@ local_jobs.json
 local_runner.log
 local_runner.pid
 job_local*.out
+
+# CAPRI round run directories (capri/prepare_round.py output), e.g. capri66/
+capri[0-9]*/

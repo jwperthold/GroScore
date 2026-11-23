@@ -299,6 +299,10 @@ The `sp.gs` file specifies which structures to analyze and which PDB chain(s) co
 
 The `renumber_pdb.py` utility reads the PDB file, assigns sequential residue numbers, and generates `chain_map.gs` containing residue numbers for protein B, which other utilities use for protein separation.
 
+### CAPRI Rounds
+
+`capri/prepare_round.py <Target<n>.pdb[.gz]> -c <protein B chains>` turns the scoring set of a live CAPRI round (one multi-model PDB with a `REMARK 9 MODEL <n> MD5 <hash>` line per model, and no receptor/ligand chain assignment, unlike the Score_set files `benchmark/capri_benchmark/prepare_capri.py` reads) into a run directory (default `./T<n>`; `capri[0-9]*/` is git-ignored): `T<n>_<NNNN>/input.pdb` per complete model (its records unchanged, TER after each chain), `sp.gs`, and `md5_map.gs` (`ID model MD5`; the scorer submission quotes the MD5 codes, in ranking order). A gzip file cut short is read up to the cut (decompressed piece by piece, so nothing before it is lost), the complete models are written and it exits 1; `--resume` adds the models without a directory from a fixed copy and never touches an existing one. A model lacking a protein B chain, or with no other chain, is skipped and named. Standard library, Python 3.7+. Test: `tests/test_capri_round.py`.
+
 ## Code Patterns
 
 - File parsing filters comments with `if not line.strip().startswith("#")`
