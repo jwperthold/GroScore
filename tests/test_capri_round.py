@@ -13,6 +13,7 @@ chain B):
   3. an existing run directory is refused without --resume; with --resume and
      the whole file, only model 3 is written, model 0's input.pdb is not
      rewritten, and sp.gs / md5_map.gs list 0, 1, 3.
+  4. a gzip file named Target999.pdb.gz.1 is read as gzip (magic bytes).
 
 Run:  python3 tests/test_capri_round.py
 """
@@ -104,6 +105,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check(open(m0).read().endswith("REMARK marker\n"), "3: an existing input.pdb is not rewritten")
     check([r[0] for r in listed(os.path.join(out2, "sp.gs"))] == ["T999_0000", "T999_0001", "T999_0003"],
           "3: sp.gs lists every model directory present")
+
+    # 4. gzip recognised by content, not name (a browser's second download: .gz.1)
+    again = os.path.join(tmp, "Target999.pdb.gz.1")
+    open(again, "wb").write(gzip.compress(text.encode()))
+    rc, log = run(again, "-c", "B", "-o", os.path.join(tmp, "again"))
+    check("written 3" in log and "T999" in log, "4: a gzip file named .gz.1 is read as gzip, target T999")
 
 print("\n%d failure(s)" % len(failures))
 sys.exit(1 if failures else 0)

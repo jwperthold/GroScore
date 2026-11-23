@@ -46,11 +46,15 @@ def default_target(path):
 
 
 def read_lines(path, problems):
-    """The text lines of a .pdb or .pdb.gz. A gzip file is decompressed piece by
-    piece, so every line before a cut is returned (gzip.open would raise on the
-    whole last block it reads and lose up to 8 KB before the cut); a cut, a
-    damaged stream or trailing garbage is appended to problems."""
-    if not path.endswith(".gz"):
+    """The text lines of a PDB file, plain or gzip. Gzip is recognised by its magic
+    bytes, not the name (a browser saves a second download as Target383.pdb.gz.1).
+    A gzip file is decompressed piece by piece, so every line before a cut is
+    returned (gzip.open would raise on the whole last block it reads and lose up
+    to 8 KB before the cut); a cut, a damaged stream or trailing garbage is
+    appended to problems."""
+    with open(path, "rb") as fh:   # a missing or unreadable file raises here
+        is_gzip = fh.read(2) == b"\x1f\x8b"
+    if not is_gzip:
         with open(path) as fh:
             for line in fh:
                 yield line.rstrip("\r\n")
