@@ -760,7 +760,7 @@ The setup scripts write the chains of the complex and the oligosaccharides coval
 
 If you use GroScore in your research, please cite:
 
-> Perthold, J. W.; Petrov, D.; Oostenbrink, C. GroScore: Automated Scoring of Protein–Protein Interactions Using Bidirectional Steered Molecular Dynamics. *J. Chem. Inf. Model.* **2026**, Application Note. https://doi.org/10.1021/acs.jcim.6c01771
+> Perthold, J. W.; Petrov, D.; Oostenbrink, C. GroScore: Automated Scoring of Protein–Protein Interactions Using Bidirectional Steered Molecular Dynamics. *J. Chem. Inf. Model.* **2026**, *66* (20): 13032–13040. https://doi.org/10.1021/acs.jcim.6c01771
 
 The software itself is archived on Zenodo with one DOI per release from v1.4 on; the concept DOI https://doi.org/10.5281/zenodo.22686986 resolves to the latest release.
 
