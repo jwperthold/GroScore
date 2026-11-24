@@ -9,7 +9,7 @@ from scipy import stats
 #------------------------------------------------------
 
 parser = argparse.ArgumentParser(description="Input files for GroScore")
-parser.add_argument('-n','--numruns', type=int, default=5, required=False, help="Number of pull/push cycles to perform (default: 5)")
+parser.add_argument('-n','--numruns', type=int, default=None, required=False, help="Number of pull/push cycles to perform (default: 5). A scoring-only call (results_0.gs exists, no --restart) without -n takes the count the last submission used, and every cycle present is scored either way")
 parser.add_argument('-s','--structparams', type=str, default="sp.gs", required=False, help="GroSscore strucutre parameter file")
 parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", choices=["gromos54a8", "gromos54a8_rf", "charmm36", "amber19sb_opc", "amber19sb_opc3"], help="Force field to use (default: amber19sb_opc3)")
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
@@ -169,6 +169,58 @@ def read_legacy(filepath, push):
     rmsd = to_float(tmp[2]) if push and len(tmp) >= 3 else float('nan')
     rows.append((tmp[0], to_float(tmp[1]), rmsd))
   return rows, bad
+
+
+def submitted_cycles(structids):
+  """(cycles, source) the last submission asked for, or (None, None).
+
+  A scoring-only call (results_0.gs exists, no --restart) used to take its count
+  from -n's default of 5 whatever the jobs ran: a run submitted with -n 1 reported
+  '0 of N structures ... have all 5 requested cycles complete', and one submitted
+  with -n 10 was scored from cycles 1-5 only (CAPRI round 66, T381). Every
+  submission exports GROSCORE_NUMCYCLES = -n, into array_submit.run under SLURM and
+  into each job's env in local_jobs.json with --run-local; the newer of the two is
+  the last submission. Without either (a run directory from before
+  GROSCORE_NUMCYCLES), MAXRUNS/2 of the structures' run.gs, which the first
+  submission writes and --restart never rewrites; the most common value."""
+  found = []
+  if os.path.isfile("array_submit.run"):
+    with open("array_submit.run") as f:
+      for line in f:
+        m = re.match(r"\s*export\s+GROSCORE_NUMCYCLES=(\d+)\s*$", line)
+        if m:
+          found.append((os.path.getmtime("array_submit.run"), int(m.group(1)), "array_submit.run"))
+          break
+  if os.path.isfile("local_jobs.json"):
+    import json
+    try:
+      with open("local_jobs.json") as f:
+        spec = json.load(f)
+      ns = {int(j["env"]["GROSCORE_NUMCYCLES"]) for j in spec.get("jobs", [])
+            if "GROSCORE_NUMCYCLES" in j.get("env", {})}
+      if ns:
+        found.append((os.path.getmtime("local_jobs.json"), max(ns), "local_jobs.json"))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+      pass
+  if found:
+    _, n, src = max(found)
+    return n, src
+  counts = {}
+  for sid in structids:
+    path = os.path.join(sid, "run.gs")
+    if not os.path.isfile(path):
+      continue
+    try:
+      with open(path) as f:
+        tok = f.read().split()
+      maxruns = int(tok[1])
+    except (OSError, IndexError, ValueError):
+      continue
+    if maxruns >= 2:
+      counts[maxruns // 2] = counts.get(maxruns // 2, 0) + 1
+  if counts:
+    return max(counts, key=lambda n: (counts[n], n)), "run.gs"
+  return None, None
 
 
 def read_percycle(dirpath, known):
@@ -523,7 +575,23 @@ if numstructs == 0:
   exit(1)
 print("Reading input parameters finished.")
 print("GroScore will calculate a binding free energy estimate for " + str(numstructs) + " structures.")
-print("Each structure will undergo " + str(args.numruns) + " independent equilibration cycles (each cycle = 1 pull + 1 push).")
+# A call without --restart in a run directory that has results_0.gs submits nothing
+# and only scores; without -n it takes the count the jobs were submitted with.
+scoring_only = os.path.isfile("results_0.gs") and not args.restart
+if args.numruns is None:
+  n, src = submitted_cycles(structids) if scoring_only else (None, None)
+  args.numruns = n if n else 5
+  numruns_src = "from %s" % src if src else "default"
+else:
+  numruns_src = "-n"
+if args.numruns < 1:
+  print("Error: -n must be at least 1")
+  exit(1)
+if scoring_only:
+  print("Scoring only (results_0.gs exists, no --restart): %d requested cycle%s (%s)."
+        % (args.numruns, "s" if args.numruns > 1 else "", numruns_src))
+else:
+  print("Each structure will undergo " + str(args.numruns) + " independent equilibration cycles (each cycle = 1 pull + 1 push).")
 if args.restart:
   print("RESTART MODE: Will resubmit jobs even if run.gs exists.")
 print("")
@@ -684,30 +752,44 @@ if os.path.isfile("results_0.gs"):
 #------------------------------------------------------
 # Cycle data: per-cycle files (job.run since v1.5), else the legacy results_<n>.gs
 
-frenstruct = np.zeros(shape=(numstructs,args.numruns*2))
+index = {s: l for l, s in enumerate(structids)}
+percycle, marked, badfiles = read_percycle("results.d", set(structids))
+
+# The arrays hold every cycle present, not only the requested ones: a cycle beyond
+# -n (a smaller -n than the run was submitted with) is scored, never dropped.
+legacy_j = []
+for path in glob.glob("results_*.gs"):
+  m = re.fullmatch(r"results_(\d+)\.gs", os.path.basename(path))
+  if m and int(m.group(1)) > 0:
+    legacy_j.append(int(m.group(1)))
+ncycles = max([args.numruns] + [c for cyc in percycle.values() for c in cyc]
+              + [(j + 1) // 2 for j in legacy_j])
+if ncycles > args.numruns:
+  print("Cycles beyond the %d requested are present (up to cycle %d); they are scored too."
+        % (args.numruns, ncycles))
+
+frenstruct = np.zeros(shape=(numstructs,ncycles*2))
 frenstruct[:,:] = "NaN"
 # Re-bound backbone RMSD per structure and cycle (Angstrom). Purely diagnostic: it
 # never changes a score, it only flags cycles in which the partners failed to
 # return to the bound pose.
-rmsdstruct = np.zeros(shape=(numstructs,args.numruns))
+rmsdstruct = np.zeros(shape=(numstructs,ncycles))
 rmsdstruct[:,:] = "NaN"
-index = {s: l for l, s in enumerate(structids)}
 
-percycle, marked, badfiles = read_percycle("results.d", set(structids))
 if badfiles:
   print("WARNING: %d malformed file%s in results.d skipped: %s" % (
         len(badfiles), "s" if len(badfiles) > 1 else "", ", ".join(badfiles[:5])
         + (", ..." if len(badfiles) > 5 else "")))
 for sid, cyc in percycle.items():
   for c, (pull, push, rmsd) in cyc.items():
-    if 1 <= c <= args.numruns:
+    if 1 <= c <= ncycles:
       frenstruct[index[sid], 2*c - 2] = pull
       frenstruct[index[sid], 2*c - 1] = push
       rmsdstruct[index[sid], c - 1] = rmsd
 
 nbad = 0
 conflicts = {}      # struct_id -> first (file, old, new) where a later finite row changed a work
-for j in range(1, args.numruns*2 + 1):
+for j in range(1, ncycles*2 + 1):
   rows, bad = read_legacy("results_%d.gs" % j, push=(j % 2 == 0))
   nbad += bad
   for sid, val, rmsd in rows:

@@ -283,6 +283,69 @@ check("no directory and no archive: exit 1, nothing run in the run directory",
       rr.returncode == 1 and "STRAY" not in rr.stdout, (rr.returncode, rr.stdout))
 shutil.rmtree(d, ignore_errors=True)
 
+# ---------------------------------------------------------------------------
+print("\n[5] scoring-only calls: the requested count is the submitted one")
+
+
+def scoring_dir(ncyc, **files):
+    """Run directory with structures A and B (stage 0 OK), ncyc complete cycles each."""
+    dd = tempfile.mkdtemp(prefix="cls_n_")
+    write(os.path.join(dd, "sp.gs"), "A\tB\nB\tB\n")
+    write(os.path.join(dd, "results_0.gs"), "# stage 0\nA OK\nB OK\n")
+    for s in ("A", "B"):
+        for c in range(1, ncyc + 1):
+            percycle(dd, s, c, -100 - c, -60)
+    for name, text in files.items():
+        write(os.path.join(dd, name.replace("__", "/")), text)
+    return dd
+
+
+d = scoring_dir(1, **{"array_submit.run": "#!/bin/bash\nexport GROSCORE_NUMCYCLES=1\n./job.run\n"})
+r = run_groscore(d)
+check("submitted with -n 1, scored without -n: 1 requested cycle, from array_submit.run",
+      "1 requested cycle (from array_submit.run)" in r.stdout
+      and "All 1 requested cycles are complete!" in r.stdout, r.stdout[-400:])
+shutil.rmtree(d, ignore_errors=True)
+
+d = scoring_dir(6, **{"array_submit.run": "export GROSCORE_NUMCYCLES=10\n"})
+r = run_groscore(d)
+avg = rows(os.path.join(d, "scores_avg.gs"))
+check("submitted with -n 10, 6 cycles done: 0 of 2 have all 10 (v1.5: 'all 5 complete')",
+      "0 of 2 structures with stage-0 status OK have all 10 requested cycles complete." in r.stdout,
+      r.stdout[-400:])
+check("... and the score uses all 6 cycles (v1.5 without -n: cycles 1-5 only)",
+      avg.get("A", [None] * 4)[3] == "6", avg.get("A"))
+shutil.rmtree(d, ignore_errors=True)
+
+d = scoring_dir(6, **{"array_submit.run": "export GROSCORE_NUMCYCLES=10\n"})
+r = run_groscore(d, "-n", "3")
+avg = rows(os.path.join(d, "scores_avg.gs"))
+check("explicit -n 3 below the data: said, all 6 cycles still scored, 'all 3 complete'",
+      "Cycles beyond the 3 requested are present (up to cycle 6)" in r.stdout
+      and avg.get("A", [None] * 4)[3] == "6" and "All 3 requested cycles are complete!" in r.stdout,
+      (avg.get("A"), r.stdout[-300:]))
+shutil.rmtree(d, ignore_errors=True)
+
+d = scoring_dir(2, **{"array_submit.run": "export GROSCORE_NUMCYCLES=5\n",
+                      "local_jobs.json": '{"jobs": [{"name": "A", "env": {"GROSCORE_NUMCYCLES": "2"}}]}'})
+os.utime(os.path.join(d, "array_submit.run"), (1e9, 1e9))
+r = run_groscore(d)
+check("local_jobs.json newer than array_submit.run: its count (2) wins",
+      "2 requested cycles (from local_jobs.json)" in r.stdout, r.stdout[-300:])
+shutil.rmtree(d, ignore_errors=True)
+
+d = scoring_dir(2, **{"A__run.gs": "B 4 1 amber19sb_opc3 1\n", "B__run.gs": "B 4 1 amber19sb_opc3 1\n"})
+r = run_groscore(d)
+check("no submission script: MAXRUNS/2 of run.gs (4/2 = 2)",
+      "2 requested cycles (from run.gs)" in r.stdout and "All 2 requested cycles are complete!" in r.stdout,
+      r.stdout[-300:])
+shutil.rmtree(d, ignore_errors=True)
+
+d = scoring_dir(1)
+r = run_groscore(d)
+check("nothing recorded: the default 5", "5 requested cycles (default)" in r.stdout, r.stdout[-300:])
+shutil.rmtree(d, ignore_errors=True)
+
 print()
 if failures:
     print("FAILED (%d):" % len(failures))

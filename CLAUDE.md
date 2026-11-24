@@ -36,7 +36,7 @@ python groscore.py --run-local --ngpus 8
 ```
 
 **Command-line options:**
-- `-n, --numruns` - Number of pull/push cycles (default: 5)
+- `-n, --numruns` - Number of pull/push cycles (default: 5). A call in a run directory with `results_0.gs` and without `--restart` only scores; without `-n` it takes the count the last submission used (`GROSCORE_NUMCYCLES` in `array_submit.run` or `local_jobs.json`, the newer one; else MAXRUNS/2 of `run.gs`; else 5), so the completeness line reports the cycles actually requested. The score arrays hold every cycle present, so a cycle beyond `-n` is scored, never dropped (said in the log)
 - `-s, --structparams` - Structure parameter file (default: `sp.gs`)
 - `-ff, --forcefield` - Force field: `amber19sb_opc3` (default), `amber19sb_opc`, `gromos54a8`, `gromos54a8_rf` (GROMOS 54A8 with its reaction field), or `charmm36`
 - `--no-cutout` - Use full protein structure instead of interface cutout (slower, cutout is default)
