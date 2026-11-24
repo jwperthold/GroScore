@@ -128,7 +128,7 @@ parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_cons
 parser.add_argument('--ligand-param', dest='ligand_param', action='store_const',
                     const=True, default=None,
                     help="Enable OpenFF small-molecule parametrization (the default).")
-parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ (default: workstation).")
+parser.add_argument('--slurm', type=str, default=None, help="SLURM template name from slurm/ (default: workstation; a --restart without it uses the template of the previous submission).")
 parser.add_argument('--run-local', dest='run_local', action='store_true',
                     help="Run on this machine instead of submitting to SLURM. Setup jobs and "
                          "cycles are started in the background and spread round-robin over the "
@@ -166,9 +166,10 @@ parser.add_argument('--rmsd-warn', type=float, default=10.0, metavar='A',
                     help="Warn about cycles whose re-bound backbone RMSD exceeds this "
                          "value in Angstrom (default: 10.0). Free energies are always "
                          "reported; the check only flags them.")
-parser.add_argument('--array-throttle', type=int, default=0, metavar='N',
+parser.add_argument('--array-throttle', type=int, default=None, metavar='N',
                     help="Max cycle-array tasks running concurrently per structure "
-                         "(SLURM %%N). Use 1 on a single-GPU workstation; 0 = no limit (default).")
+                         "(SLURM %%N). Use 1 on a single-GPU workstation; 0 = no limit (default; "
+                         "a --restart without it keeps the previous submission's limit).")
 parser.add_argument('--sequential', action='store_true',
                     help="Legacy submission: one job per structure running all cycles "
                          "sequentially, instead of a setup job + per-cycle job array.")
@@ -285,6 +286,10 @@ def write_run_config(**kw):
 # --threads-per-job, --array-throttle, --sequential, --restart, --inject-job-run
 # are scheduling; -s is which structures; --n-boot-bar and --rmsd-warn only change
 # how finished works are summarised and can be varied freely on the same data.
+# (A --restart still submits with the previous --slurm template and --array-throttle
+# unless given: the generated scripts name them, utils/slurm_settings.py. That is a
+# default for the next submission, not a setting of the directory, and an explicit
+# value changes it without any warning.)
 #
 #         attr           key            parse   format             default
 REMEMBERED = [
@@ -342,6 +347,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "uti
 from local_runner import launch_local, print_local_status
 import estimators as est
 import fe_protocol as P
+import slurm_settings
 
 # Display names for the bound sub-legs, taken from the protocol so a reshaping of
 # BOUND renames the channels and the columns with it. A run from before the bound
@@ -1120,13 +1126,31 @@ def setup_and_submit(structids, structchains):
   job_src = os.path.join(script_dir, "job_fe.run")
   if not os.path.isfile(job_src):
     print("Error: job_fe.run not found in %s" % script_dir); sys.exit(1)
-  # Checked before anything is written, so a mistyped --slurm leaves no structure
-  # half prepared.
-  slurm_template = os.path.join(script_dir, "slurm", args.slurm + ".sh")
-  if not os.path.isfile(slurm_template):
-    print("Error: SLURM template not found: %s" % slurm_template); sys.exit(1)
-  with open(slurm_template) as t:
-    template = t.read().rstrip("\n")
+  # The previous submission's template and cycle-array throttle, unless --slurm /
+  # --array-throttle say otherwise (utils/slurm_settings.py). Checked before
+  # anything is written, so a mistyped --slurm leaves no structure half prepared.
+  if args.run_local:
+    args.array_throttle = args.array_throttle or 0
+    template = ""
+  else:
+    args.slurm, note, err = slurm_settings.choose_template(
+        args.slurm, args.restart, glob.glob(os.path.join("slurm_fe", "*.run")) + ["array_submit.run"],
+        script_dir)
+    if err:
+      print(err); sys.exit(1)
+    if note:
+      print(note)
+    args.array_throttle, note = slurm_settings.choose_throttle(
+        args.array_throttle, args.restart, glob.glob(os.path.join("slurm_fe", "cycles_*.run")))
+    if note:
+      print(note)
+    slurm_template = os.path.join(script_dir, "slurm", args.slurm + ".sh")
+    if not os.path.isfile(slurm_template):
+      print("Error: SLURM template not found: %s" % slurm_template); sys.exit(1)
+    # The marker line names the template for a later --restart; a comment, so it
+    # does not end sbatch's directive block.
+    template = slurm_settings.read_template(script_dir, args.slurm) + "\n" + \
+        slurm_settings.marker(args.slurm).rstrip("\n")
 
   with open("struct_map.gs", "w") as f:
     f.write("# Array_Index Structure_ID\n")

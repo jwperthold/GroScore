@@ -29,6 +29,12 @@ lenses of the v1.4 audit, every one reproduced by a verifier).
       generated script exports GROSCORE_NUMCYCLES = -n, removes a tarball only
       after a complete extraction, and never runs job.run outside a structure
       directory.
+  [5] Scoring-only calls (CAPRI round 66). Without -n the requested count is the
+      submitted one (array_submit.run, local_jobs.json, run.gs, else 5), and every
+      cycle present is scored, also beyond -n (v1.5: -n's default of 5 for both).
+  [6] --restart without --slurm uses the previous submission's template: its marker
+      line, or the template its header starts with; a header matching none stops the
+      restart before anything is set up (v1.5: the workstation template).
 
 Every expected number is written out, never computed from the code under test.
 
@@ -344,6 +350,68 @@ shutil.rmtree(d, ignore_errors=True)
 d = scoring_dir(1)
 r = run_groscore(d)
 check("nothing recorded: the default 5", "5 requested cycles (default)" in r.stdout, r.stdout[-300:])
+shutil.rmtree(d, ignore_errors=True)
+
+# ---------------------------------------------------------------------------
+print("\n[6] --restart reuses the previous submission's SLURM template")
+VSC5 = open(os.path.join(ROOT, "slurm", "vsc5.sh")).read().rstrip("\n") + "\n"
+WS = open(os.path.join(ROOT, "slurm", "workstation.sh")).read().rstrip("\n") + "\n"
+
+
+def sub_dir():
+    dd = tempfile.mkdtemp(prefix="cls_slurm_")
+    fk = os.path.join(dd, ".fakebin")
+    write(os.path.join(fk, "sbatch"), '#!/bin/bash\necho "$*" >> "$SBATCH_LOG"\n')
+    os.chmod(os.path.join(fk, "sbatch"), 0o755)
+    ev = dict(os.environ, PATH=fk + ":" + os.environ["PATH"], SBATCH_LOG=os.path.join(dd, "sbatch.log"))
+    rr = os.path.join(dd, "run")
+    write(os.path.join(rr, "sp.gs"), "S1\tB\n")
+    write(os.path.join(rr, "S1", "input.pdb"), "END\n")
+    return dd, rr, ev
+
+
+def script(rr):
+    p = os.path.join(rr, "array_submit.run")
+    return open(p).read() if os.path.isfile(p) else ""
+
+
+d, run, env = sub_dir()
+r = run_groscore(run, "-n", "1", "--slurm", "vsc5", env=env)
+check("first submission with --slurm vsc5: the template, then its marker line",
+      script(run).startswith(VSC5 + "# GroScore SLURM template: vsc5\n#SBATCH --array=0\n"),
+      script(run)[len(VSC5) - 40:len(VSC5) + 80])
+r = run_groscore(run, "-n", "2", "--restart", env=env)
+check("--restart without --slurm: vsc5 again (v1.5: the workstation template)",
+      script(run).startswith(VSC5 + "# GroScore SLURM template: vsc5\n")
+      and "SLURM template vsc5, as the previous submission (array_submit.run)" in r.stdout,
+      (script(run)[:60], r.stdout[-300:]))
+r = run_groscore(run, "-n", "2", "--restart", "--slurm", "workstation", env=env)
+check("--restart --slurm workstation: as asked, and the log names the previous vsc5",
+      script(run).startswith(WS + "# GroScore SLURM template: workstation\n")
+      and "SLURM template workstation, as asked (the previous submission, array_submit.run, used vsc5)."
+      in r.stdout, r.stdout[-300:])
+shutil.rmtree(d, ignore_errors=True)
+
+d, run, env = sub_dir()
+write(os.path.join(run, "results_0.gs"), "# stage 0\n")
+write(os.path.join(run, "array_submit.run"), VSC5 + "#SBATCH --array=0\n\nexport GROSCORE_NUMCYCLES=1\n")
+r = run_groscore(run, "-n", "2", "--restart", env=env)
+check("a script from before the marker: recognised as vsc5 by its header",
+      script(run).startswith(VSC5 + "# GroScore SLURM template: vsc5\n"), r.stdout[-300:])
+shutil.rmtree(d, ignore_errors=True)
+
+d, run, env = sub_dir()
+write(os.path.join(run, "results_0.gs"), "# stage 0\n")
+write(os.path.join(run, "array_submit.run"), "#!/bin/bash\n#SBATCH --partition=gone\n#SBATCH --array=0\n")
+r = run_groscore(run, "-n", "2", "--restart", env=env)
+check("a previous script matching no template: exit 1, nothing set up or submitted",
+      r.returncode == 1 and "names no template and starts with none in slurm/" in r.stdout
+      and not os.path.isfile(env["SBATCH_LOG"]) and not os.path.isfile(os.path.join(run, "S1", "job.run")),
+      (r.returncode, r.stdout[-300:]))
+r = run_groscore(run, "-n", "2", "--restart", "--slurm", "nosuch", env=env)
+check("a mistyped --slurm: exit 1 before any structure is set up",
+      r.returncode == 1 and "SLURM template not found: slurm/nosuch.sh" in r.stdout
+      and not os.path.isfile(os.path.join(run, "S1", "job.run")), (r.returncode, r.stdout[-300:]))
 shutil.rmtree(d, ignore_errors=True)
 
 print()

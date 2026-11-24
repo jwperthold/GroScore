@@ -14,7 +14,7 @@ parser.add_argument('-s','--structparams', type=str, default="sp.gs", required=F
 parser.add_argument('-ff','--forcefield', type=str, default="amber19sb_opc3", choices=["gromos54a8", "gromos54a8_rf", "charmm36", "amber19sb_opc", "amber19sb_opc3"], help="Force field to use (default: amber19sb_opc3)")
 parser.add_argument('--no-cutout', dest='cutout', action='store_false', help="Disable interface cutout, use full protein structure")
 parser.add_argument('--no-ligand-param', dest='ligand_param', action='store_false', help="Run without small-molecule ligands: none is parametrized or merged, and each is named in the job log. Without it, CHARMM36 and GROMOS 54A8 stop every structure with a ligand in the simulated region as LIGAND_FAIL.")
-parser.add_argument('--slurm', type=str, default="workstation", help="SLURM template name from slurm/ directory (default: workstation)")
+parser.add_argument('--slurm', type=str, default=None, help="SLURM template name from slurm/ directory (default: workstation; a --restart without it uses the template of the previous submission)")
 parser.add_argument('--run-local', dest='run_local', action='store_true',
                     help="Run on this machine instead of submitting to SLURM. Jobs are "
                          "started in the background and spread round-robin over the local "
@@ -46,6 +46,7 @@ if args.ngpus and not args.run_local:
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
 from local_runner import launch_local, print_local_status
+import slurm_settings
 import estimators as est
 
 #------------------------------------------------------
@@ -592,6 +593,22 @@ if scoring_only:
         % (args.numruns, "s" if args.numruns > 1 else "", numruns_src))
 else:
   print("Each structure will undergo " + str(args.numruns) + " independent equilibration cycles (each cycle = 1 pull + 1 push).")
+  if not args.run_local:
+    # The template of the previous submission, unless --slurm says otherwise
+    # (utils/slurm_settings.py). Settled before anything is written.
+    args.slurm, note, err = slurm_settings.choose_template(
+        args.slurm, args.restart, ["array_submit.run"], os.path.dirname(os.path.abspath(__file__)))
+    if err:
+      print(err)
+      exit(1)
+    if note:
+      print(note)
+    if not os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), "slurm",
+                                       args.slurm + ".sh")):
+      print("Error: SLURM template not found: slurm/%s.sh (templates: %s). Nothing was set up."
+            % (args.slurm, ", ".join(slurm_settings.template_names(
+                os.path.dirname(os.path.abspath(__file__))))))
+      exit(1)
 if args.restart:
   print("RESTART MODE: Will resubmit jobs even if run.gs exists.")
 print("")
@@ -701,6 +718,7 @@ if args.restart or not os.path.isfile("results_0.gs"):
       template_lines = tmpl.read()
     f = open("array_submit.run", "w")
     f.write(template_lines.rstrip("\n") + "\n")
+    f.write(slurm_settings.marker(args.slurm))      # what a later --restart reuses
     # Only the submitted structures, by their struct_map.gs index.
     f.write("#SBATCH --array=%s\n"%array_spec(live))
     f.write("\n")

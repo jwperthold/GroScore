@@ -55,6 +55,11 @@ pinned, against a fake sbatch that records every call:
       gets those cycles, which write it. One with an archive under way or killed
       (.archive.lock) gets nothing and is reported; so is one with an <ID>.tar.gz
       beside it. The --sequential unpack removes .archive.lock, as the others do.
+  [S] --restart without --slurm / --array-throttle uses the previous submission's
+      template (its marker line, or the template its header starts with) and the
+      %N of its cycle array; explicit options win; a previous script matching no
+      template stops the restart before anything is installed or submitted
+      (v1.5: the workstation template and no throttle).
 
 Run:  python3 tests/test_fe_submit_protocol.py
 """
@@ -539,6 +544,59 @@ check("--run-local: one local job, ./job.run --archive with GROSCORE_NUMCYCLES=4
       jl == [[{"name": "archive_COMPLETE", "dir": "COMPLETE", "argv": ["./job.run", "--archive"],
                "env": {"GROSCORE_NUMCYCLES": "4"}, "log": "../job_local_archive_COMPLETE.out"}]],
       (jl, p.stderr[-300:]))
+
+print("\n[S] --restart reuses the previous submission's SLURM template and array throttle")
+VSC5 = open(os.path.join(REPO, "slurm", "vsc5.sh")).read().rstrip("\n") + "\n"
+WS = open(os.path.join(REPO, "slurm", "workstation.sh")).read().rstrip("\n") + "\n"
+
+
+def cyc_script(run, sid):
+    return open(os.path.join(run, "slurm_fe", "cycles_%s.run" % sid)).read()
+
+
+run = new_run("slurm_keep", ["SK"], "", history=False)
+put(os.path.join(run, "SK", "input.pdb"), "END\n")
+p, calls = gs(run, "-n", "2", "--slurm", "vsc5", "--array-throttle", "2")
+s = cyc_script(run, "SK")
+check("first submission: vsc5, its marker line, cycles 1-2 throttled %2",
+      s.startswith(VSC5 + "# GroScore SLURM template: vsc5\n") and "#SBATCH --array=1-2%2\n" in s,
+      (p.stdout[-300:], s[len(VSC5) - 20:len(VSC5) + 120]))
+p, calls = gs(run, "--restart", "-n", "3")
+s = cyc_script(run, "SK")
+setup = open(os.path.join(run, "slurm_fe", "setup_SK.run")).read()
+check("--restart without options: vsc5 and %2 again, both said (v1.5: workstation, none)",
+      s.startswith(VSC5) and setup.startswith(VSC5) and "#SBATCH --array=1-3%2\n" in s
+      and "SLURM template vsc5, as the previous submission" in p.stdout
+      and "Array throttle %2, as the previous submission" in p.stdout,
+      (p.stdout[-400:], [l for l in s.splitlines() if "--array" in l]))
+p, calls = gs(run, "--restart", "-n", "3", "--slurm", "workstation", "--array-throttle", "0")
+s = cyc_script(run, "SK")
+check("explicit --slurm workstation --array-throttle 0: as asked, no throttle",
+      s.startswith(WS + "# GroScore SLURM template: workstation\n") and "#SBATCH --array=1-3\n" in s
+      and "as asked (the previous submission" in p.stdout, (p.stdout[-300:], s[:200]))
+
+run = new_run("slurm_legacy", ["SL"], "", history=False)
+put(os.path.join(run, "SL", "input.pdb"), "END\n")
+p, calls = gs(run, "-n", "1")                    # a first submission, then made to look pre-marker
+put(os.path.join(run, "slurm_fe", "cycles_SL.run"),
+    VSC5 + "#SBATCH --job-name=fecyc_SL\n#SBATCH --array=1%3\n\nexport GROSCORE_NUMCYCLES=1\n")
+put(os.path.join(run, "slurm_fe", "setup_SL.run"), VSC5 + "#SBATCH --job-name=fesetup_SL\n")
+p, calls = gs(run, "--restart", "-n", "2")
+s = cyc_script(run, "SL")
+check("scripts from before the marker: vsc5 by header, %3 from the old --array line",
+      s.startswith(VSC5 + "# GroScore SLURM template: vsc5\n") and "#SBATCH --array=1-2%3\n" in s,
+      (p.stdout[-300:], [l for l in s.splitlines() if "--array" in l]))
+
+run = new_run("slurm_unknown", ["SU"], "", history=False)
+put(os.path.join(run, "SU", "input.pdb"), "END\n")
+p, calls = gs(run, "-n", "1")
+for name in ("cycles_SU.run", "setup_SU.run"):
+    put(os.path.join(run, "slurm_fe", name), "#!/bin/bash\n#SBATCH --partition=gone\n")
+os.remove(os.path.join(run, "SU", "job.run"))
+p, calls = gs(run, "--restart", "-n", "2")
+check("a previous script matching no template: exit 1, nothing submitted, job.run not installed",
+      p.returncode == 1 and not calls and "names no template and starts with none in slurm/" in p.stdout
+      and not os.path.isfile(os.path.join(run, "SU", "job.run")), (p.returncode, p.stdout[-300:], calls))
 
 shutil.rmtree(work, ignore_errors=True)
 print("")
