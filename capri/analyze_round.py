@@ -39,7 +39,7 @@ Writes into <rundir>/analysis/ (or -o):
                       reference, cluster, contacts, MD5
   clusters.gs         one row per cluster: rank, size, scored, top-4 / mean /
                       best pKd, centre and its i-RMSD
-  irmsd_vs_pkd.png    i-RMSD to the best-scoring model (x) vs pKd (y)
+  irmsd_vs_pkd.png    i-RMSD to the best-scoring model (x) vs pKd (y, reversed: 0 at the top, best at the bottom)
   clusters_pkd.png    pKd of the scored members of each cluster
 Run with the groscore environment (numpy, scipy, matplotlib):
   python capri/analyze_round.py capri66/T381
@@ -245,8 +245,15 @@ def plot_irmsd(path, rows, ref_id, top3, title, calib_txt):
                     fontsize=7.5, color=INK, va="center",
                     bbox=dict(boxstyle="square,pad=0.15", fc="white", ec="none"), zorder=5)
     ax.set_xlabel("i-RMSD to best-scoring model %s (\u00c5)" % ref_id, fontsize=9)
-    ax.set_ylabel("predicted pKd", fontsize=9)
+    ax.set_ylabel("predicted pKd (axis reversed: best at the bottom)", fontsize=9)
     ax.set_xlim(left=-1.0)
+    # pKd reversed, as an energy is drawn (as if it were -pKd): 0 at the top, the
+    # highest pKd at the bottom, so the best models sit low as in a docking funnel
+    y = [r["pkd"] for r in sc]
+    if y:
+        lo, hi = min(0.0, min(y)), max(y)
+        pad = 0.04 * max(hi - lo, 1.0)
+        ax.set_ylim(hi + pad, lo - pad if lo < 0 else 0.0)
     ax.set_title(title, fontsize=10, color=INK, loc="left")
     fig.text(0.01, 0.0, calib_txt, fontsize=7, color=INK2, va="top")
     ax.legend(fontsize=7.5, frameon=False, loc="lower right", labelcolor=INK2)
