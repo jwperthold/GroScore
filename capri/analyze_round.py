@@ -301,7 +301,7 @@ def fmt(x, nd=2):
     return "nan" if x is None or not math.isfinite(x) else ("%.*f" % (nd, x))
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("rundir", help="run directory (sp.gs, scores_avg.gs, structure dirs or archives)")
     ap.add_argument("-ff", "--forcefield", default="amber19sb_opc3", choices=sorted(CALIBRATION),
@@ -322,7 +322,9 @@ def main():
                          "cluster (ranked clusters first), then best pKd (default top)")
     ap.add_argument("--nsubmit", type=int, default=10, help="models in the submission (default 10)")
     ap.add_argument("--group", help="group name for a REMARK line of the submission, e.g. 'HUMAN Team 6'")
-    args = ap.parse_args()
+    ap.add_argument("--exclude", help="file of Structure_IDs (first field of each line, '#' comments) "
+                                      "not to submit; they are still scored, clustered and plotted")
+    args = ap.parse_args(argv)
 
     rundir = args.rundir.rstrip("/")
     target = os.path.basename(os.path.abspath(rundir))
@@ -485,20 +487,37 @@ def main():
     return 0
 
 
-def pick_models(rows, ranked, unranked, how, n):
-    """IDs of the submission in ranking order."""
-    scored = sorted((r for r in rows if math.isfinite(r["pkd"])), key=lambda r: (-r["pkd"], r["id"]))
+def pick_models(rows, ranked, unranked, how, n, skip=()):
+    """IDs of the submission in ranking order; the IDs in skip are not submitted."""
+    skip = set(skip)
+    scored = sorted((r for r in rows if math.isfinite(r["pkd"]) and r["id"] not in skip),
+                    key=lambda r: (-r["pkd"], r["id"]))
     if how == "top":
         return [r["id"] for r in scored[:n]]
     by_id = {r["id"]: r for r in rows}
-    picks = [c["best_id"] for c in ranked]                       # best member of each ranked cluster
-    rest = [c["best_id"] for c in unranked if c["best_id"] != "-"]
+    best = {}                                                    # best submittable member per cluster
+    for r in scored:
+        best.setdefault(r["cluster"], r["id"])
+    picks = [best[c["cluster"]] for c in ranked if c["cluster"] in best]
+    rest = [best[c["cluster"]] for c in unranked if c["cluster"] in best]
     rest += [r["id"] for r in scored if r["cluster"] == 0]       # an unclustered model is its own cluster
-    picks += sorted(rest, key=lambda s: (-by_id[s]["pkd"], s))
+    picks += sorted(set(rest), key=lambda s: (-by_id[s]["pkd"], s))
     for r in scored:                                             # fill up with the best remaining models
         if r["id"] not in picks:
             picks.append(r["id"])
     return picks[:n]
+
+
+def read_exclude(path):
+    """Structure_IDs of an exclusion file (first field of each line)."""
+    if not path:
+        return set()
+    out = set()
+    for line in open(path):
+        line = line.split("#")[0].split()
+        if line:
+            out.add(line[0])
+    return out
 
 
 def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt):
@@ -507,7 +526,12 @@ def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib
     each model in the header, in the same order; HEADER, COMPND and AUTHOR are not required.
     The models are written with the scoring-set coordinates, unchanged."""
     by_id = {r["id"]: r for r in rows}
-    picks = pick_models(rows, ranked, unranked, args.pick, args.nsubmit)
+    skip = read_exclude(getattr(args, "exclude", None))
+    if skip:
+        n_sc = sum(1 for r in rows if math.isfinite(r["pkd"]) and r["id"] in skip)
+        print("\n  --exclude %s: %d ID(s), %d of them scored, not submitted"
+              % (args.exclude, len(skip), n_sc))
+    picks = pick_models(rows, ranked, unranked, args.pick, args.nsubmit, skip)
     if len(picks) < args.nsubmit:
         print("  WARNING: only %d scored model(s); the submission has %d instead of %d"
               % (len(picks), len(picks), args.nsubmit))
