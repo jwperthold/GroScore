@@ -16,6 +16,11 @@
   5. --submit writes <target>_scoring.pdb: MD5 lines in the header in pKd order,
      in the scoring-set format, models renumbered 1..n, coordinates unchanged,
      END last; fewer scored models than 10 give a shorter file and a warning.
+  6. the records the upload service demands are there and in the CAPRI order:
+     HEADER with the target number, a COMPND group per side with its MOLECULE and
+     CHAIN assignments (continuation in columns 8-10), AUTHOR from --group, then
+     the REMARKs and the models; --header, --author, --receptor-name and
+     --ligand-name override, and the names default to RECEPTOR and LIGAND.
 
 Run with the groscore environment:  python tests/test_capri_analysis.py
 """
@@ -135,6 +140,39 @@ with tempfile.TemporaryDirectory() as tmp:
         orig = [l for l in open(os.path.join(run, "T999_0004", "input.pdb")).read().splitlines() if l.startswith("ATOM")]
         check(m4 == orig, "5: coordinates of the submitted model unchanged")
         check(lines[-1] == "END", "5: file ends with END")
+
+    # 6. the records the upload service demands: HEADER, AUTHOR, and COMPND with a
+    #    MOLECULE description and CHAIN assignments, in the order of the CAPRI format
+    p = subprocess.run([sys.executable, SCRIPT, run, "--min-scored", "2", "--submit",
+                        "--group", "TEST", "--receptor-name", "Alpha chain",
+                        "--ligand-name", "Beta chain"],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    if p.returncode == 0 and os.path.isfile(sub):
+        lines = open(sub).read().splitlines()
+        check(lines[0] == "HEADER    CAPRI TARGET 999", "6: HEADER first, with the target number")
+        check(lines[1:7] == ["COMPND    MOL_ID: 1;",
+                             "COMPND   2 MOLECULE: ALPHA CHAIN;",
+                             "COMPND   3 CHAIN: A;",
+                             "COMPND   4 MOL_ID: 2;",
+                             "COMPND   5 MOLECULE: BETA CHAIN;",
+                             "COMPND   6 CHAIN: B;"],
+              "6: one COMPND group per side, MOLECULE and CHAIN, continuation in columns 8-10")
+        check(lines[7] == "AUTHOR    TEST", "6: AUTHOR after the COMPND block, from --group")
+        idx = [i for i, l in enumerate(lines) if l.startswith(("HEADER", "COMPND", "AUTHOR",
+                                                               "REMARK", "MODEL"))]
+        check(idx == sorted(idx) and lines[idx[-1]].startswith("MODEL"),
+              "6: HEADER, COMPND, AUTHOR, REMARK, then the models")
+    else:
+        check(False, "6: runs with --receptor-name / --ligand-name\n" + p.stdout)
+    p = subprocess.run([sys.executable, SCRIPT, run, "--min-scored", "2", "--submit",
+                        "--author", "SOMEONE ELSE", "--header", "CAPRI_02"],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    if p.returncode == 0:
+        lines = open(sub).read().splitlines()
+        check(lines[0] == "HEADER    CAPRI_02", "6: --header overrides the default")
+        check("AUTHOR    SOMEONE ELSE" in lines, "6: --author wins over --group")
+        check("MOLECULE: RECEPTOR;" in "\n".join(lines) and "MOLECULE: LIGAND;" in "\n".join(lines),
+              "6: the molecule names default to RECEPTOR and LIGAND")
 
 print("\n%d failure(s)" % len(failures))
 sys.exit(1 if failures else 0)

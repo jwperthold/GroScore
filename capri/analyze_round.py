@@ -41,8 +41,13 @@ Writes into <rundir>/analysis/ (or -o):
                       best pKd, centre and its i-RMSD
   irmsd_vs_pkd.png    i-RMSD to the best-scoring model (x) vs pKd (y, reversed: best at the bottom)
   clusters_pkd.png    pKd of the scored members of each cluster
+and with --submit the scorer submission <target>_scoring.pdb and submission.gs.
+The submission carries HEADER, COMPND (one group per side, with its MOLECULE and
+CHAIN assignments) and AUTHOR: the organisers answered that those are not
+required, but the upload service refuses a file without them.
+
 Run with the groscore environment (numpy, scipy, matplotlib):
-  python capri/analyze_round.py capri66/T381
+  python capri/analyze_round.py capri66/T381 --submit --group 'HUMAN Team 6'
 """
 import argparse, math, os, sys, tarfile
 
@@ -337,6 +342,14 @@ def main(argv=None):
                          "cluster (ranked clusters first), then best pKd (default top)")
     ap.add_argument("--nsubmit", type=int, default=10, help="models in the submission (default 10)")
     ap.add_argument("--group", help="group name for a REMARK line of the submission, e.g. 'HUMAN Team 6'")
+    ap.add_argument("--author", help="AUTHOR record of the submission (default: --group). The upload "
+                                     "service refuses a file without one")
+    ap.add_argument("--header", help="HEADER record of the submission (default: CAPRI TARGET <n>, the "
+                                     "digits of the run directory's name)")
+    ap.add_argument("--receptor-name", default="RECEPTOR",
+                    help="MOLECULE of the COMPND group of the receptor chains (default RECEPTOR)")
+    ap.add_argument("--ligand-name", default="LIGAND",
+                    help="MOLECULE of the COMPND group of the protein B chains (default LIGAND)")
     ap.add_argument("--exclude", help="file of Structure_IDs (first field of each line, '#' comments) "
                                       "not to submit; they are still scored and clustered, and both "
                                       "plots mark them with an x")
@@ -506,8 +519,14 @@ def main(argv=None):
                                                          fmt(c["top4"]), fmt(c["best"]), c["best_id"]))
     print("\n  written: %s/{models.gs, clusters.gs, irmsd_vs_pkd.png, clusters_pkd.png}" % outdir)
     if args.submit:
+        order = []                                   # chain ids as the models write them
+        for key in models[ref_id].keys:
+            if key[0] not in order:
+                order.append(key[0])
+        b = protb[ref_id]
         return write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt,
-                                excluded)
+                                excluded, ([c for c in order if c not in b],
+                                           [c for c in order if c in b]))
     return 0
 
 
@@ -544,11 +563,33 @@ def read_exclude(path):
     return out
 
 
-def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt, skip=()):
-    """<target>_scoring.pdb as CAPRI asks for a scorer submission (answer of the organisers,
-    round 66): the models in decreasing order, numbered MODEL 1..n; the REMARK 9 MD5 line of
-    each model in the header, in the same order; HEADER, COMPND and AUTHOR are not required.
-    The models are written with the scoring-set coordinates, unchanged."""
+def compnd_block(mols):
+    """COMPND records for [(molecule name, [chain, ...]), ...], in PDB layout: the
+    continuation number right-justified in columns 8-10, the text from column 12
+    (column 11 on the first line, which has no continuation number)."""
+    out = []
+    for mid, (name, chains) in enumerate(mols, start=1):
+        for text in ("MOL_ID: %d;" % mid, "MOLECULE: %s;" % name.upper(),
+                     "CHAIN: %s;" % ", ".join(chains)):
+            out.append("COMPND    " + text if not out else "COMPND %3d %s" % (len(out) + 1, text))
+    return out
+
+
+def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt, skip=(),
+                     chains=((), ())):
+    """<target>_scoring.pdb as CAPRI asks for a scorer submission: the models in
+    decreasing order, numbered MODEL 1..n, with the REMARK 9 MD5 line of each in the
+    header in the same order, and the coordinates of the scoring set, unchanged.
+
+    The organisers answered that HEADER, COMPND and AUTHOR are not required, but the
+    upload service refuses a file without them ("No HEADER information", "No AUTHOR
+    information", "No MOLECULE description under COMPND record", "No CHAIN assignments
+    under COMPND record"), so they are written: HEADER with the target number, one
+    COMPND group per side with its MOLECULE and its CHAIN assignments (--receptor-name
+    / --ligand-name, the chains taken from the models and sp.gs), and AUTHOR from
+    --author, else --group. The CAPRI format page has the record order
+    (https://www.ebi.ac.uk/pdbe/complex-pred/capri/capri-format/): HEADER, COMPND,
+    AUTHOR, REMARK, then the models."""
     by_id = {r["id"]: r for r in rows}
     if skip:
         n_sc = sum(1 for r in rows if math.isfinite(r["pkd"]) and r["id"] in skip)
@@ -563,7 +604,17 @@ def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib
         print("  ERROR: no MD5 code for %s (md5_map.gs); no submission written" % " ".join(bad))
         return 1
     path = os.path.join(outdir, "%s_scoring.pdb" % target)
-    out = []
+    num = "".join(c for c in target if c.isdigit())
+    author = args.author or args.group
+    if not author:
+        print("  WARNING: no --author and no --group; AUTHOR says GROSCORE. The upload service "
+              "refuses a file without an AUTHOR record")
+        author = "GROSCORE"
+    out = [args.header or ("CAPRI TARGET %s" % num if num else "CAPRI TARGET %s" % target)]
+    out[0] = "HEADER    " + out[0]
+    mols = [(args.receptor_name, list(chains[0])), (args.ligand_name, list(chains[1]))]
+    out += compnd_block([m for m in mols if m[1]])
+    out.append("AUTHOR    " + author)
     if args.group:
         out.append("REMARK   1 %s SCORER SUBMISSION, %s" % (target, args.group))
     out.append("REMARK   1 GROSCORE SMD SCORES AS PKD, %s, MODELS PICKED BY %s"

@@ -285,7 +285,11 @@ def main():
     print("  written: %s, %s" % (os.path.join(outdir, "paratope.gs"), excl))
     print()
 
-    argv = [rundir] + rest
+    # the COMPND molecule names of the submission, which this script knows; before
+    # rest, so an explicit --receptor-name / --ligand-name of the caller still wins
+    names = ["--receptor-name", "HER2 ECTODOMAIN" if her2 else "RECEPTOR",
+             "--ligand-name", "SINGLE-DOMAIN ANTIBODY (VHH)"]
+    argv = [rundir] + names + rest
     if not args.no_filter and rejected:
         argv += ["--exclude", excl]
     return ar.main(argv)
