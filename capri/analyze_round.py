@@ -220,7 +220,7 @@ def style(ax):
     ax.yaxis.label.set_color(INK2)
 
 
-def plot_irmsd(path, rows, ref_id, top3, title, calib_txt):
+def plot_irmsd(path, rows, ref_id, top3, title, calib_txt, excluded=()):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -235,6 +235,10 @@ def plot_irmsd(path, rows, ref_id, top3, title, calib_txt):
         ax.scatter([r["irmsd"] for r in pts], [r["pkd"] for r in pts], s=30, color=SERIES[k],
                    marker=MARKERS[k], edgecolors="white", linewidths=0.8, zorder=3,
                    label="cluster %d (rank %d)" % (cid, k + 1))
+    ex = [r for r in sc if r["id"] in excluded]          # struck out over their own dot, so
+    if ex:                                               # colour still gives the cluster
+        ax.scatter([r["irmsd"] for r in ex], [r["pkd"] for r in ex], s=26, marker="x",
+                   color=INK, linewidths=0.9, zorder=4, label="excluded (%d)" % len(ex))
     for x in (2.0, 4.0):
         ax.axvline(x, color=INK2, lw=0.6, ls=(0, (3, 3)), zorder=1)
         ax.text(x, 1.0, " %g \u00c5" % x, transform=ax.get_xaxis_transform(), va="top", ha="left",
@@ -259,6 +263,8 @@ def plot_irmsd(path, rows, ref_id, top3, title, calib_txt):
 
 
 def plot_clusters(path, cl_rows, rows_by_cluster, unclustered_pkd, title, calib_txt, max_rows, n_ranked):
+    """rows_by_cluster and unclustered_pkd hold (pKd, excluded) per scored member;
+    an excluded one is struck out with an x and still counts in its cluster's bar."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -273,15 +279,22 @@ def plot_clusters(path, cl_rows, rows_by_cluster, unclustered_pkd, title, calib_
     fig, ax = plt.subplots(figsize=(6.4, 0.9 + 0.28 * max(n, 4)))
     style(ax)
     rng = np.random.default_rng(0)
-    for i, vals in enumerate(data):
+    n_ex = 0
+    for i, pairs in enumerate(data):
         y = n - 1 - i
         is_un = unclustered_pkd and i == n - 1
         col = GRAY if is_un else SERIES[0]
+        vals = np.array([v for v, _ in pairs], dtype=float)
+        gone = np.array([bool(e) for _, e in pairs], dtype=bool)
         jit = rng.uniform(-0.12, 0.12, len(vals))
         ax.scatter(vals, y + jit, s=14, color=col, edgecolors="white", linewidths=0.6, zorder=3)
+        if gone.any():
+            n_ex += int(gone.sum())
+            ax.scatter(vals[gone], (y + jit)[gone], s=18, marker="x", color=INK,
+                       linewidths=0.8, zorder=4)
         if not is_un and len(vals) > 1:
-            top = np.mean(sorted(vals, reverse=True)[:4])
-            ax.plot([top, top], [y - 0.32, y + 0.32], color=INK, lw=1.5, solid_capstyle="round", zorder=4)
+            top = float(np.mean(sorted(vals, reverse=True)[:4]))
+            ax.plot([top, top], [y - 0.32, y + 0.32], color=INK, lw=1.5, solid_capstyle="round", zorder=5)
     if 0 < n_ranked < min(len(show), max_rows):      # ranked clusters above the line, unranked below
         ax.axhline(n - n_ranked - 0.5, color=INK2, lw=0.6, ls=(0, (3, 3)))
     ax.set_yticks(range(n))
@@ -290,7 +303,9 @@ def plot_clusters(path, cl_rows, rows_by_cluster, unclustered_pkd, title, calib_
     ax.set_xlabel("predicted pKd (dots: scored members; bar: mean of the best 4)", fontsize=9)
     ax.set_title(title, fontsize=10, color=INK, loc="left")
     fig.text(0.01, 0.0, calib_txt + "\nlabels: #rank cluster (scored/size); clusters with fewer scored "
-             "members are below the dashed line, unranked", fontsize=7, color=INK2, va="top")
+             "members are below the dashed line, unranked"
+             + ("\nx: excluded from the submission; it still counts in its cluster's bar"
+                if n_ex else ""), fontsize=7, color=INK2, va="top")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
@@ -323,12 +338,14 @@ def main(argv=None):
     ap.add_argument("--nsubmit", type=int, default=10, help="models in the submission (default 10)")
     ap.add_argument("--group", help="group name for a REMARK line of the submission, e.g. 'HUMAN Team 6'")
     ap.add_argument("--exclude", help="file of Structure_IDs (first field of each line, '#' comments) "
-                                      "not to submit; they are still scored, clustered and plotted")
+                                      "not to submit; they are still scored and clustered, and both "
+                                      "plots mark them with an x")
     args = ap.parse_args(argv)
 
     rundir = args.rundir.rstrip("/")
     target = os.path.basename(os.path.abspath(rundir))
     outdir = args.outdir or os.path.join(rundir, "analysis")
+    excluded = read_exclude(args.exclude)
     slope, icpt = CALIBRATION[args.forcefield]
     calib_txt = "pKd = %.4f x score + %.4f (%s, %s)" % (slope, icpt, args.forcefield, args.scores)
 
@@ -450,10 +467,12 @@ def main(argv=None):
 
     top3 = [c["cluster"] for c in ranked[:3]]
     title = "%s: %d of %d models scored" % (target, len(scored), len(ids))
-    plot_irmsd(os.path.join(outdir, "irmsd_vs_pkd.png"), rows, ref_id, top3, title, calib_txt)
-    by_cluster = {c["cluster"]: [pkd[ids[i]] for i in clusters[c["cluster"] - 1] if math.isfinite(pkd[ids[i]])]
+    plot_irmsd(os.path.join(outdir, "irmsd_vs_pkd.png"), rows, ref_id, top3, title, calib_txt, excluded)
+    by_cluster = {c["cluster"]: [(pkd[ids[i]], ids[i] in excluded)
+                                 for i in clusters[c["cluster"] - 1] if math.isfinite(pkd[ids[i]])]
                   for c in cl_rows}
-    unclustered = [r["pkd"] for r in rows if r["cluster"] == 0 and math.isfinite(r["pkd"])]
+    unclustered = [(r["pkd"], r["id"] in excluded) for r in rows
+                   if r["cluster"] == 0 and math.isfinite(r["pkd"])]
     show = ranked + [c for c in unranked if c["n_scored"] > 0]
     plot_clusters(os.path.join(outdir, "clusters_pkd.png"), show, by_cluster, unclustered,
                   title + ", %d FCC clusters" % len(clusters), calib_txt, args.max_rows, len(ranked))
@@ -471,6 +490,10 @@ def main(argv=None):
               "(left out of their i-RMSD)" % len(mm))
     print("  FCC: %d clusters (largest %d), %d unclustered; %d ranked (>= %d scored members)"
           % (len(clusters), max((len(c) for c in clusters), default=0), n_un, len(ranked), args.min_scored))
+    if excluded:
+        print("  --exclude %s: %d ID(s), %d of them scored and marked with an x in both plots"
+              % (args.exclude, len(excluded),
+                 sum(1 for r in rows if math.isfinite(r["pkd"]) and r["id"] in excluded)))
     print("\n  Top models by pKd:")
     print("    %-10s %6s %7s %6s %7s" % ("ID", "pKd", "iRMSD", "FCC", "cluster"))
     for r in sorted((r for r in rows if math.isfinite(r["pkd"])), key=lambda r: -r["pkd"])[:10]:
@@ -483,7 +506,8 @@ def main(argv=None):
                                                          fmt(c["top4"]), fmt(c["best"]), c["best_id"]))
     print("\n  written: %s/{models.gs, clusters.gs, irmsd_vs_pkd.png, clusters_pkd.png}" % outdir)
     if args.submit:
-        return write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt)
+        return write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt,
+                                excluded)
     return 0
 
 
@@ -520,13 +544,12 @@ def read_exclude(path):
     return out
 
 
-def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt):
+def write_submission(args, rundir, target, outdir, rows, ranked, unranked, calib_txt, skip=()):
     """<target>_scoring.pdb as CAPRI asks for a scorer submission (answer of the organisers,
     round 66): the models in decreasing order, numbered MODEL 1..n; the REMARK 9 MD5 line of
     each model in the header, in the same order; HEADER, COMPND and AUTHOR are not required.
     The models are written with the scoring-set coordinates, unchanged."""
     by_id = {r["id"]: r for r in rows}
-    skip = read_exclude(getattr(args, "exclude", None))
     if skip:
         n_sc = sum(1 for r in rows if math.isfinite(r["pkd"]) and r["id"] in skip)
         print("\n  --exclude %s: %d ID(s), %d of them scored, not submitted"

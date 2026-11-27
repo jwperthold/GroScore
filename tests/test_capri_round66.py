@@ -18,6 +18,9 @@ capri/analyze_round.py's --exclude.
   5. analyze_round.py --exclude: the excluded models keep score, cluster and
      i-RMSD but are not submitted, and with --pick cluster a cluster whose best
      member is excluded contributes its best remaining one instead.
+  6. both plots mark an excluded model with an x: the same input renders the same
+     bytes, so the two PNGs changing when one plotted model is excluded is the
+     mark, and the run says so only when something is excluded.
 
 Run with the groscore environment:  python tests/test_capri_round66.py
 """
@@ -235,6 +238,37 @@ with tempfile.TemporaryDirectory() as tmp:
             subm = [l.split()[1] for l in open(os.path.join(ana, "submission.gs")) if not l.startswith("#")]
             check("T381_0000" not in subm and "T381_0002" not in subm and subm,
                   "5: --pick cluster takes a cluster's best remaining member instead")
+
+# 6. both plots mark the excluded models with an x
+with tempfile.TemporaryDirectory() as tmp:
+    run = os.path.join(tmp, "T381")
+    build(run)
+    excl = os.path.join(tmp, "skip.gs")
+    with open(excl, "w") as o:
+        o.write("T381_0002\n")
+    base = ["--min-size", "2", "--min-scored", "2"]
+    out = {}
+    for tag, extra in (("plain", []), ("marked", ["--exclude", excl]), ("again", ["--exclude", excl])):
+        d = os.path.join(tmp, tag)
+        p = subprocess.run([sys.executable, GENERAL, run] + base + ["-o", d] + extra,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        out[tag] = (p.returncode, p.stdout, d)
+    ok = all(v[0] == 0 for v in out.values())
+    check(ok, "6: runs with and without --exclude%s" % ("" if ok else "\n" + out["marked"][1]))
+    if ok:
+        png = {}
+        for tag in out:
+            png[tag] = {f: open(os.path.join(out[tag][2], f), "rb").read()
+                        for f in ("irmsd_vs_pkd.png", "clusters_pkd.png")}
+        check(png["marked"] == png["again"],
+              "6: the same input renders the same bytes (so a difference below means the mark)")
+        check(png["marked"]["irmsd_vs_pkd.png"] != png["plain"]["irmsd_vs_pkd.png"],
+              "6: irmsd_vs_pkd.png differs once a plotted model is excluded")
+        check(png["marked"]["clusters_pkd.png"] != png["plain"]["clusters_pkd.png"],
+              "6: clusters_pkd.png differs too")
+        check("marked with an x in both plots" in out["marked"][1]
+              and "marked with an x" not in out["plain"][1],
+              "6: reported only when something is excluded")
 
 print("\n%d failure(s)" % len(failures))
 sys.exit(1 if failures else 0)
